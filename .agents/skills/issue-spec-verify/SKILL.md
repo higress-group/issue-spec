@@ -16,10 +16,9 @@ Coordinator: use issue-spec-workflow for final routing. In repository durable mo
 ## Verification Role Packet
 
 1. Accept only the sealed verification assignment for the exact immutable subject revision, affected scenarios, required test commands/check selectors, and result schema. Do not load proposal/Design bodies, the complete DAG, link matrices, post-merge policy, or provider routing.
-2. Resolve every subject-revision-bound required test against the sealed subject revision, run the resulting command, and record assigned_selector plus resolved_revision alongside the executed command and outcome. Preserve literal selectors byte-for-byte. Missing, extra, failed, stale, or substituted test evidence blocks completion.
-3. Run only the required focused tests/checks against the exact revision. Keep local self-reported test evidence distinct from provider-owned check identity and conclusion; never invent externally observed check evidence.
-4. Generate/submit the bounded VERIFY receipt under the real verifier identity. Record command/check identity, revision, result, and failures. Do not collect or pass runtime-specific session IDs.
-5. A failed, pending, stale, or mismatched check is a blocker with a focused refresh/remediation result. Verification does not create or refresh REVIEW, infer links from prose, or replace independent review.
+2. Inspect only the sealed exact detached subject. Outside it, write only `{"summary":"..."}`, then run `issue-spec role complete --assignment-file <sealed-packet.json> --decision-file <decision.json> --output <receipt.json> --agent <verifier-name> --json` from the snapshot. Do not collect or pass runtime session IDs.
+3. The command runs every sealed test and derives check selectors without claiming provider outcomes, then atomically self-validates v1 evidence. Missing, failed, stale, or substituted evidence blocks output.
+4. Return only the bounded result and verification summary. Failed/pending provider checks remain Coordinator acceptance blockers; verification never creates REVIEW, links, provider evidence, or acceptance state.
 
 ## Project Workflow
 

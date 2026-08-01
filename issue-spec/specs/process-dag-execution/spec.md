@@ -686,3 +686,67 @@ For every revision-sensitive required test or check, the issue-spec workflow MUS
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/381#issuecomment-5151641246
+
+### Requirement: Role-owned completion publishes self-validating receipt evidence
+
+A non-Coordinator implementation, review, or verification role MUST complete
+from its sealed packet and immutable Git tree with `issue-spec role complete`.
+The command MUST accept only the role's closed semantic decision, derive every
+mechanical receipt fact, execute every sealed test, seal the existing
+`issue-spec.receipt/v1` model, publish outside the managed tree atomically, and
+strictly re-read the same logical identity before reporting success.
+Coordinator acceptance MUST remain a separate recomputing authority and MUST
+NOT repair, normalize, or reseal producer evidence.
+
+#### Scenario: implementation role completes with one command
+
+- **WHEN** a worker has its final clean one-commit DCO result and closed implementation decision
+- **THEN** role completion derives its revision and paths, runs all focused tests, and returns one bounded self-validating receipt identity
+
+#### Scenario: sealed tests cannot be replaced by the caller
+
+- **WHEN** role completion executes required tests
+- **THEN** selector identity and command come only from the sealed role payload, with bound selectors resolved against the authoritative revision
+
+#### Scenario: failed execution emits no acceptable receipt
+
+- **WHEN** packet, decision, Git observation, selector resolution, or test execution fails
+- **THEN** no newly acceptable success receipt is published
+
+#### Scenario: output is atomic and self-validating
+
+- **WHEN** all role observations and tests pass
+- **THEN** a mode-0600 same-directory temporary file is synchronized, renamed, strictly re-read, and compared with the in-memory identity before success
+
+#### Scenario: canonical digest ignores JSON file framing
+
+- **WHEN** the same logical receipt is framed with LF, CRLF, indentation, or trailing JSON whitespace
+- **THEN** read-only inspection reports the same recomputed digest while semantic tamper, unknown fields, or additional JSON values fail
+
+#### Scenario: Coordinator validation does not repair role evidence
+
+- **WHEN** Coordinator acceptance reads a role receipt with bad structure, digest, revision, paths, tests, or provenance
+- **THEN** acceptance fails without modifying or resealing that receipt
+
+#### Scenario: existing receipt contracts remain compatible
+
+- **WHEN** a historical valid version-1 receipt is parsed or accepted
+- **THEN** its canonical logical bytes and existing acceptance behavior remain unchanged
+
+#### Scenario: review and verification preserve role decisions
+
+- **WHEN** independent review or verification completes at an exact detached subject
+- **THEN** the role-owned verdict/findings or summary is preserved while tests, check selectors, revision, and provenance are derived mechanically
+
+#### Scenario: generated role guidance uses the bounded command
+
+- **WHEN** Apply, Review, or Verify role guidance is generated
+- **THEN** it creates only the closed decision JSON, invokes `issue-spec role complete`, and leaves acceptance and lifecycle mutation to the Coordinator
+
+#### Scenario: instruction compaction is regression tested
+
+- **WHEN** representative generated role packets are compared with the former manual evidence recipe
+- **THEN** each new role packet retains trust, revision, test, and failure constraints with fewer measured bytes
+
+Source SPEC:
+- https://github.com/higress-group/issue-spec/issues/396#SPEC-396001
