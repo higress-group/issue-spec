@@ -1698,6 +1698,9 @@ type runnerPhaseBackend struct {
 	fakeGitHubBackend
 	notificationOpts            []github.NotificationListOptions
 	repositorySubscriptionCalls int
+	repositoryMetadata          github.Repository
+	repositoryMetadataErr       error
+	repositoryMetadataCalls     int
 }
 
 func (b *runnerPhaseBackend) PollNotifications(_ context.Context, opts github.NotificationListOptions) (github.NotificationListResult, error) {
@@ -1708,6 +1711,19 @@ func (b *runnerPhaseBackend) PollNotifications(_ context.Context, opts github.No
 func (b *runnerPhaseBackend) GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error) {
 	b.repositorySubscriptionCalls++
 	return github.RepositorySubscriptionResult{Subscription: github.RepositorySubscription{Subscribed: true, Reason: "subscribed"}}, nil
+}
+
+func (b *runnerPhaseBackend) GetRepository(_ context.Context, repository string) (github.RepositoryResult, error) {
+	b.repositoryMetadataCalls++
+	if b.repositoryMetadataErr != nil {
+		return github.RepositoryResult{}, b.repositoryMetadataErr
+	}
+	metadata := b.repositoryMetadata
+	if metadata.ID == 0 {
+		metadata = github.Repository{ID: 7301, FullName: repository, CloneURL: "https://github.com/" + repository + ".git",
+			HTMLURL: "https://github.com/" + repository, DefaultBranch: "main"}
+	}
+	return github.RepositoryResult{Repository: metadata}, nil
 }
 
 func runnerPreflightCheck(t *testing.T, report commentrunner.PreflightReport, name string) commentrunner.PreflightCheck {

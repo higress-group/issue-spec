@@ -82,3 +82,35 @@ repository state, prompts, clone URLs, or durable runner records.
 - **THEN** the runner MUST revoke revocable source leases, delete job-private source credential files, record the lease lifecycle without secret values, and preserve only the process-level profile PAT file for later authorized sessions
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4932917391
+
+### Requirement: GitHub polling runners bind configured repositories from authenticated metadata
+
+A native GitHub polling runner MUST resolve every explicitly configured repository into a complete credential-free operator binding using repository metadata returned by the selected authenticated GitHub backend, MUST reject unavailable, incomplete, mismatched, or unsafe metadata during preflight before command intake, and MUST re-resolve the same trusted source for new dispatch and resume validation without deriving clone coordinates from issue content, webhook payloads, hostnames, or repository slug transformation.
+
+#### Scenario: preflight validates each configured GitHub binding
+
+- **WHEN** runner poll preflight evaluates an explicitly configured repository and the authenticated backend returns matching complete repository metadata
+- **THEN** preflight succeeds only after validating a credential-free clone URL, canonical web URL, stable repository identity, and API-observed default branch as an operator binding
+
+#### Scenario: invalid GitHub metadata fails before intake
+
+- **WHEN** authenticated repository metadata is unavailable, incomplete, mismatched to the configured repository, ambiguous, or contains an unsafe URL
+- **THEN** runner poll preflight fails with an actionable repository-binding diagnostic and does not begin accepting commands
+
+#### Scenario: new GitHub sessions pin authenticated repository metadata
+
+- **WHEN** a native GitHub polling runner dispatches a new command after successful preflight
+- **THEN** dispatch re-resolves authenticated repository metadata, pins the complete operator snapshot before workspace creation, and never uses issue or comment content as a clone source
+
+#### Scenario: GitHub resume detects live metadata drift
+
+- **WHEN** a native GitHub polling runner resumes a session after the authenticated repository identity, clone URL, web URL, or default branch differs from the pinned snapshot
+- **THEN** resume fails with the existing binding-drift diagnostic before touching the workspace
+
+#### Scenario: self-hosted binding resolution stays fail closed
+
+- **WHEN** runner serve resolves a self-hosted issue repository
+- **THEN** it continues to require its authorized active server binding and does not fall back to GitHub polling metadata or slug-derived clone coordinates
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/377#issuecomment-5151525429

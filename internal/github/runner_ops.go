@@ -26,6 +26,14 @@ type CommentRevisionOperations interface {
 	GetIssueComment(context.Context, string, int64) (RunnerCommentResult, error)
 }
 
+// RepositoryMetadataOperations is the narrow authenticated repository
+// metadata surface used to resolve trusted polling-runner source bindings. It
+// remains separate from RunnerOperations so intake-only consumers and fakes do
+// not need to implement source binding discovery.
+type RepositoryMetadataOperations interface {
+	GetRepository(context.Context, string) (RepositoryResult, error)
+}
+
 // RunnerOperations is the polling-runner GitHub API surface. It is separate
 // from Operations because runner intake needs HTTP status/header metadata.
 type RunnerOperations interface {
@@ -124,6 +132,11 @@ type RepositorySubscriptionResult struct {
 	Metadata     ResponseMetadata
 }
 
+type RepositoryResult struct {
+	Repository Repository
+	Metadata   ResponseMetadata
+}
+
 type CollaboratorPermissionResult struct {
 	Permission CollaboratorPermission
 	CanWrite   bool
@@ -161,6 +174,7 @@ type NotificationSubject struct {
 type Repository struct {
 	ID            int64  `json:"id"`
 	FullName      string `json:"full_name"`
+	CloneURL      string `json:"clone_url"`
 	HTMLURL       string `json:"html_url"`
 	URL           string `json:"url"`
 	DefaultBranch string `json:"default_branch"`
@@ -212,6 +226,19 @@ func (c *Client) GetRepositorySubscription(ctx context.Context, repo string) (Re
 		return RepositorySubscriptionResult{Metadata: meta}, err
 	}
 	return RepositorySubscriptionResult{Subscription: subscription, Metadata: meta}, nil
+}
+
+func (c *Client) GetRepository(ctx context.Context, repo string) (RepositoryResult, error) {
+	parsed, err := ParseRepo(repo)
+	if err != nil {
+		return RepositoryResult{}, err
+	}
+	var repository Repository
+	meta, err := c.doRunnerJSON(ctx, http.MethodGet, "/repos/"+parsed, nil, nil, ConditionalRequest{}, false, &repository)
+	if err != nil {
+		return RepositoryResult{Metadata: meta}, err
+	}
+	return RepositoryResult{Repository: repository, Metadata: meta}, nil
 }
 
 func (c *Client) GetIssueContext(ctx context.Context, repo string, issueNumber int, conditional ConditionalRequest) (IssueContextResult, error) {

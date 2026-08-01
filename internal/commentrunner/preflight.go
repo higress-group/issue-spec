@@ -14,6 +14,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	"github.com/higress-group/issue-spec/internal/github"
 )
 
@@ -149,6 +150,7 @@ func RunPreflightForTransportWithOptions(ctx context.Context, cfg Config, transp
 
 	selection, backendErr := deps.SelectBackend(ctx, cfg.Hostname)
 	var runnerBackend PreflightRunnerBackend
+	runnerBackendErr := backendErr
 	if backendErr != nil {
 		report.add(PreflightCheck{Name: "github-backend", Status: CheckError, Detail: backendErr.Error(), Hint: "Run issue-spec auth status --json or configure ISSUE_SPEC_GITHUB_BACKEND."})
 	} else {
@@ -160,8 +162,10 @@ func RunPreflightForTransportWithOptions(ctx context.Context, cfg Config, transp
 		var err error
 		runnerBackend, err = deps.OpenBackend(ctx, selection)
 		if err != nil {
+			runnerBackendErr = err
 			report.add(PreflightCheck{Name: "runner-backend", Status: CheckError, Detail: err.Error(), Hint: "Selected GitHub backend must support runner repository subscription checks."})
 		} else {
+			runnerBackendErr = nil
 			info := runnerBackend.BackendInfo()
 			report.add(PreflightCheck{Name: "runner-backend", Status: CheckOK, Detail: fmt.Sprintf("%s backend ready for %s", info.Name, info.Host)})
 		}
@@ -177,8 +181,12 @@ func RunPreflightForTransportWithOptions(ctx context.Context, cfg Config, transp
 		report.add(PreflightCheck{Name: "command-intake-transport", Status: CheckOK, Detail: "self-hosted webhook intake via runner serve"})
 		report.add(PreflightCheck{Name: "notification-backend", Status: CheckSkipped, Detail: "self-hosted profiles use runner serve; notification polling and repository watches are not applicable"})
 	} else {
+		for _, repo := range cfg.Repositories {
+			report.add(repositoryBindingCheck(ctx, "repository-binding:"+repo, repo, runnerBackend, runnerBackendErr))
+		}
+
 		watchBackend := runnerBackend
-		watchErr := backendErr
+		watchErr := runnerBackendErr
 		watchCheckPrefix := "repository-watch:"
 		if cfg.NotificationTokenEnv != "" {
 			watchCheckPrefix = "notification-watch:"
@@ -239,6 +247,36 @@ func RunPreflightForTransportWithOptions(ctx context.Context, cfg Config, transp
 	}
 	report.finish()
 	return report
+}
+
+func repositoryBindingCheck(ctx context.Context, name, repo string, backend PreflightRunnerBackend, backendErr error) PreflightCheck {
+	check := PreflightCheck{Name: name}
+	if backendErr != nil {
+		check.Status = CheckError
+		check.Detail = "cannot resolve authenticated repository metadata because the GitHub backend is unavailable: " + backendErr.Error()
+		return check
+	}
+	if backend == nil {
+		check.Status = CheckError
+		check.Detail = "cannot resolve authenticated repository metadata because runner backend is unavailable"
+		return check
+	}
+	metadata, ok := backend.(github.RepositoryMetadataOperations)
+	if !ok {
+		check.Status = CheckError
+		check.Detail = "selected GitHub backend does not support authenticated repository metadata"
+		return check
+	}
+	resolution, err := (repository.GitHubResolver{Metadata: metadata}).ResolveRepository(ctx, repo)
+	if err != nil {
+		check.Status = CheckError
+		check.Detail = "repository binding lookup failed: " + err.Error()
+		check.Hint = "Ensure the configured repository matches readable authenticated GitHub metadata with safe credential-free URLs."
+		return check
+	}
+	check.Status = CheckOK
+	check.Detail = fmt.Sprintf("authenticated GitHub repository binding ready (id=%s default_branch=%s)", resolution.Binding.ExternalRepositoryID, resolution.DefaultBranch)
+	return check
 }
 
 func (d PreflightDependencies) withDefaults() PreflightDependencies {

@@ -17,6 +17,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
+	"github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
@@ -1159,6 +1160,10 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 	if !ok {
 		return nil, nil, fmt.Errorf("selected GitHub backend does not support runner status writeback")
 	}
+	metadataBackend, ok := backend.(github.RepositoryMetadataOperations)
+	if !ok {
+		return nil, nil, fmt.Errorf("selected GitHub backend does not support authenticated repository metadata")
+	}
 	var cleanup func()
 	if store == nil {
 		opened, err := crstate.OpenFileStore(cfg.StatePath)
@@ -1172,7 +1177,7 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 	writebacks := wrapRunnerWriteback(&writeback.Service{GitHub: runnerBackend, Store: store}, a.runnerDiagnostics)
 	dispatcher := &jobs.Dispatcher{
 		Store:        store,
-		Repositories: jobs.StaticRepositoryResolver{Hostname: cfg.Hostname},
+		Repositories: repository.GitHubResolver{Metadata: metadataBackend},
 		Workspaces:   workspaces,
 		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{
 			UnsafeNoSandbox: cfg.UnsafeNoSandbox,

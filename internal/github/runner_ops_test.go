@@ -299,6 +299,33 @@ func TestRunnerSubscriptionPermissionAndWriteMapping(t *testing.T) {
 	}
 }
 
+func TestRunnerGetRepositoryUsesAuthenticatedMetadataEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/Acme/Widgets" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			t.Fatalf("authorization = %q", got)
+		}
+		w.Header().Set("X-RateLimit-Remaining", "41")
+		_ = json.NewEncoder(w).Encode(Repository{ID: 7301, FullName: "Acme/Widgets",
+			CloneURL: "https://github.com/Acme/Widgets.git", HTMLURL: "https://github.com/Acme/Widgets", DefaultBranch: "main"})
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL("github.com", server.URL, "token", server.Client())
+	result, err := client.GetRepository(t.Context(), "Acme/Widgets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Repository.ID != 7301 || result.Repository.FullName != "Acme/Widgets" ||
+		result.Repository.CloneURL != "https://github.com/Acme/Widgets.git" ||
+		result.Repository.HTMLURL != "https://github.com/Acme/Widgets" || result.Repository.DefaultBranch != "main" ||
+		result.Metadata.StatusCode != http.StatusOK || result.Metadata.RateLimit.Remaining != 41 {
+		t.Fatalf("repository result = %+v", result)
+	}
+}
+
 func TestRunnerCommentCreateUpdateReturnMetadata(t *testing.T) {
 	var createdBody, updatedBody, reactionContent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
