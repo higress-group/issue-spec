@@ -41,7 +41,7 @@ func TestStatusFullAndCompactShareBoundedRelationshipIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	task := model.Artifact{Issue: 383, URL: "https://example.test/issues/383#issuecomment-2",
+	task := model.Artifact{Issue: 382, URL: "https://example.test/issues/382#issuecomment-2",
 		Comment: model.ParseTypedComment(taskBody)}
 	artifacts := []model.Artifact{spec, task}
 	for index := 1; index <= 12; index++ {
@@ -302,7 +302,7 @@ func statusAcceptedVerificationArtifacts(t *testing.T, revision, prURL string) [
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-spec"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-task"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-task"
 	process := statusWorkspaceProcess(t, model.ProcessExecutionChangeBearing, revision)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-process"
 	linkArtifacts(t, &spec, &task)
@@ -521,7 +521,7 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 				spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 				spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 				task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-				task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+				task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 				process := statusWorkspaceProcess(t, class, strings.Repeat("a", 40))
 				process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 				verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
@@ -559,7 +559,7 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 func TestStatusDefaultProcessEvidenceDoesNotOverrideCollectedEvidence(t *testing.T) {
 	const (
 		specURL    = "https://github.com/o/r/issues/1#issuecomment-1"
-		taskURL    = "https://github.com/o/r/issues/3#issuecomment-2"
+		taskURL    = "https://github.com/o/r/issues/2#issuecomment-2"
 		processURL = "https://github.com/o/r/issues/3#issuecomment-3"
 		prURL      = "https://github.com/o/r/pull/7"
 	)
@@ -609,7 +609,7 @@ func TestStatusDefaultProcessEvidenceDoesNotOverrideCollectedEvidence(t *testing
 func TestStatusSurfacesCoordinatorAuthoredChangeBearingEvidence(t *testing.T) {
 	const (
 		specURL = "https://github.com/o/r/issues/1#issuecomment-1"
-		taskURL = "https://github.com/o/r/issues/3#issuecomment-2"
+		taskURL = "https://github.com/o/r/issues/2#issuecomment-2"
 		prURL   = "https://github.com/o/r/pull/7"
 	)
 	process := typedArtifactWithAgent(t, 3, "PROCESS", "PROCESS-001", "done", "Coordinator",
@@ -1044,7 +1044,7 @@ func persistedCrossIssueProcessReplacement(t *testing.T) ([]model.Artifact, stri
 	current := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
 	foreign := typedArtifact(t, 1, "PROCESS", "PROCESS-900", "done", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-spec"
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-task"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-task"
 	current.URL = "https://github.com/o/r/issues/3#issuecomment-current"
 	foreign.URL = "https://github.com/o/r/issues/1#issuecomment-foreign"
 	linkArtifacts(t, &spec, &task)

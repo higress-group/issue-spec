@@ -234,7 +234,7 @@ func normalizeBuildOptions(values []BuildOptions) (BuildOptions, error) {
 func buildCatalog(artifacts []model.Artifact) (catalog, error) {
 	set := catalog{artifacts: map[string]model.Artifact{}, refs: map[string]model.ArtifactRef{},
 		byID: map[string]string{}, byURL: map[string]string{}}
-	proposalIssues, implementIssues := map[int]bool{}, map[int]bool{}
+	proposalIssues, designIssues, implementIssues := map[int]bool{}, map[int]bool{}, map[int]bool{}
 	for _, artifact := range artifacts {
 		if strings.TrimSpace(artifact.Comment.ID) == "" {
 			continue
@@ -270,19 +270,37 @@ func buildCatalog(artifacts []model.Artifact) (catalog, error) {
 		switch ref.Type {
 		case "SPEC":
 			proposalIssues[ref.Issue] = true
-		case "TASK", "PROCESS", "REVIEW", "VERIFY":
+		case "TASK":
+			designIssues[ref.Issue] = true
+		case "PROCESS", "REVIEW", "VERIFY":
 			implementIssues[ref.Issue] = true
 		}
 	}
 	if len(proposalIssues) > 1 {
 		return catalog{}, fmt.Errorf("%w: SPEC artifacts span multiple proposal issues", ErrInvalid)
 	}
-	if len(implementIssues) > 1 {
-		return catalog{}, fmt.Errorf("%w: TASK/PROCESS/REVIEW/VERIFY artifacts span multiple implement issues", ErrInvalid)
+	if len(designIssues) > 1 {
+		return catalog{}, fmt.Errorf("%w: TASK artifacts span multiple design issues", ErrInvalid)
 	}
-	for proposal := range proposalIssues {
-		if implementIssues[proposal] {
-			return catalog{}, fmt.Errorf("%w: proposal and implement artifacts share issue %d", ErrInvalid, proposal)
+	if len(implementIssues) > 1 {
+		return catalog{}, fmt.Errorf("%w: PROCESS/REVIEW/VERIFY artifacts span multiple implement issues", ErrInvalid)
+	}
+	roles := []struct {
+		name   string
+		issues map[int]bool
+	}{
+		{name: "proposal", issues: proposalIssues},
+		{name: "design", issues: designIssues},
+		{name: "implement", issues: implementIssues},
+	}
+	for left := 0; left < len(roles); left++ {
+		for right := left + 1; right < len(roles); right++ {
+			for issue := range roles[left].issues {
+				if roles[right].issues[issue] {
+					return catalog{}, fmt.Errorf("%w: %s and %s artifacts share issue %d", ErrInvalid,
+						roles[left].name, roles[right].name, issue)
+				}
+			}
 		}
 	}
 	return set, nil

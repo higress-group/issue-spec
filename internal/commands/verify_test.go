@@ -1282,9 +1282,9 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	}
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-005", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
-	task := typedArtifact(t, 9, "TASK", "TASK-006", "done", strings.ReplaceAll(canonicalTaskContent, "TASK-001", "TASK-006"))
+	task := typedArtifact(t, 2, "TASK", "TASK-006", "done", strings.ReplaceAll(canonicalTaskContent, "TASK-001", "TASK-006"))
 	task.Comment = model.ParseTypedComment(strings.ReplaceAll(task.Comment.Body, "SPEC-001", "SPEC-005"))
-	task.URL = "https://github.com/o/r/issues/9#issuecomment-2"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	finalProcess := typedArtifact(t, 9, "PROCESS", "PROCESS-101", "done", "## Process: verify\n\n### Parent TASK\n\n- TASK-006\n\n### Execution Class\n\n- verification\n\n### Covers\n\n- SPEC-005\n\n### Handoff\n\nN/A")
 	finalProcess.URL = comments[0].HTMLURL
 	linkArtifacts(t, &spec, &task)
@@ -1344,7 +1344,7 @@ func TestBuildFinalVerifyReportConsumesExactAcceptedLocalTestReceipt(t *testing.
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: verify\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- verification\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\nN/A")
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	linkArtifacts(t, &spec, &task)
@@ -1709,7 +1709,7 @@ func newGitHubVerifyWithoutPRApp(t *testing.T, processContent string) (*app, *by
 	t.Setenv(auth.GitHubBackendAPIURLEnv, "")
 	const (
 		specURL    = "https://github.com/o/r/issues/1#issuecomment-1"
-		taskURL    = "https://github.com/o/r/issues/3#issuecomment-2"
+		taskURL    = "https://github.com/o/r/issues/2#issuecomment-2"
 		processURL = "https://github.com/o/r/issues/3#issuecomment-3"
 		verifyURL  = "https://github.com/o/r/issues/3#issuecomment-4"
 	)
@@ -1726,8 +1726,10 @@ func newGitHubVerifyWithoutPRApp(t *testing.T, processContent string) (*app, *by
 			switch issue {
 			case 1:
 				return []github.Comment{spec}, nil
+			case 2:
+				return []github.Comment{task}, nil
 			case 3:
-				return []github.Comment{task, process, verify}, nil
+				return []github.Comment{process, verify}, nil
 			default:
 				return nil, nil
 			}
@@ -2051,7 +2053,7 @@ func TestBuildFinalVerifyReportWithoutPRAuthorityFailsChangeBearing(t *testing.T
 		spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 		spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 		task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-		task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+		task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 		process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 		process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 		verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
@@ -2105,7 +2107,7 @@ func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	// An independent review PROCESS is mandatory for any SPEC with a valid
@@ -2183,7 +2185,7 @@ func TestBuildFinalVerifyReportAcceptsExactSelfHostedRationaleAndNativeLedgerRev
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = specURL
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://issues.example/acme/widgets/issues/3#issuecomment-2"
+	task.URL = "https://issues.example/acme/widgets/issues/2#issuecomment-2"
 	process := typedArtifactWithAgent(t, 3, "PROCESS", "PROCESS-001", "done", "Coordinator", canonicalProcessContentWithClass(model.ProcessExecutionChangeBearing))
 	process.URL = "https://issues.example/acme/widgets/issues/3#issuecomment-3"
 	reviewProcess := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", canonicalReviewProcess)
@@ -2327,7 +2329,7 @@ func TestBuildFinalVerifyReportRequiresIndependentReviewProcess(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
@@ -2366,7 +2368,7 @@ func TestBuildFinalVerifyReportRejectsCoordinatorAuthoredChangeBearingEvidence(t
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifactWithAgent(t, 3, "PROCESS", "PROCESS-001", "done", "Coordinator", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
@@ -2405,7 +2407,7 @@ func TestBuildFinalVerifyReportRejectsSelfAuthoredReview(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	reviewProcess := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", canonicalReviewProcess)
@@ -2457,7 +2459,7 @@ func TestBuildFinalVerifyReportUsesVerificationCarrierInsteadOfRationale(t *test
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: verify\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- verification\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\nN/A")
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Verification Summary: final\n\nTests passed for PROCESS-001.\n\n### Covered SPECs\n\n- SPEC-001")
@@ -2484,7 +2486,7 @@ func TestBuildFinalVerifyReportBlocksOpenP0P1Findings(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	reviewProcess := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", canonicalReviewProcess)
@@ -2560,7 +2562,7 @@ func TestBuildFinalVerifyReportBlocksFailedAndPendingChecks(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	review := typedArtifact(t, 3, "REVIEW", "REVIEW-001", "done", "## Review\n\nnone")
@@ -2610,7 +2612,7 @@ func TestBuildFinalVerifyReportRequiresSerialHandoff(t *testing.T) {
 		spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 		spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 		task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-		task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+		task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 		p1 := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: p1\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- orchestration\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\n"+handoff)
 		p1.URL = "https://github.com/o/r/issues/3#issuecomment-31"
 		p2 := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", "## Process: p2\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- orchestration\n\n### Dependencies\n\n- PROCESS-001\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A")
@@ -2787,13 +2789,6 @@ func typedArtifact(t *testing.T, issue int, typ, id, status, content string) mod
 
 func typedArtifactWithAgent(t *testing.T, issue int, typ, id, status, agent, content string) model.Artifact {
 	t.Helper()
-	// TASK, PROCESS, REVIEW, and VERIFY are all Implement artifacts in the
-	// canonical relationship model. Older fixtures used the Design issue for
-	// TASK comments, which only passed while readers silently fell back after
-	// relationship index construction failed.
-	if typ == "TASK" && issue == 2 {
-		issue = 3
-	}
 	body, err := model.EnsureTypedBody(typ, id, content, model.BodyOptions{Status: status, Agent: agent})
 	if err != nil {
 		t.Fatal(err)

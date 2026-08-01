@@ -264,7 +264,7 @@ func TestFinalVerifyWiresExactSnapshotWorkspaceEvidence(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: verify\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- verification\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\nN/A")
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Verification Summary: final\n\nTests passed for PROCESS-001.\n\n### Covered SPECs\n\n- SPEC-001")
@@ -311,7 +311,7 @@ func TestFinalVerifyBindsZeroFindingReviewToExactSubjectRevision(t *testing.T) {
 		spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 		spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 		task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-		task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
+		task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 		process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalReviewProcess)
 		process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 		reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001", "## Review Sync Summary\n\nReviewed PROCESS-001 and SPEC-001 with zero findings.", model.BodyOptions{
@@ -382,7 +382,7 @@ func TestFinalVerifyRequiresExactCurrentReviewForEverySpec(t *testing.T) {
 		spec2 := typedArtifact(t, 1, "SPEC", "SPEC-002", "confirmed", "## Requirement: Z\n\nZ MUST work.\n\n### Scenario: ok\n\n- **WHEN** z\n- **THEN** it works")
 		spec2.URL = "https://github.com/o/r/issues/1#issuecomment-2"
 		task := typedArtifact(t, 2, "TASK", "TASK-001", "done", strings.Replace(canonicalTaskContent, "- SPEC-001", "- SPEC-001\n- SPEC-002", 1))
-		task.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+		task.URL = "https://github.com/o/r/issues/2#issuecomment-3"
 		process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalReviewProcess)
 		process.URL = "https://github.com/o/r/issues/3#issuecomment-4"
 		process.Comment = model.ParseTypedComment(strings.Replace(process.Comment.Body, "- SPEC-001", "- SPEC-001\n- SPEC-002", 1))

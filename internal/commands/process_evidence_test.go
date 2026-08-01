@@ -47,7 +47,7 @@ func TestBuildProcessEvidenceFailsClosedWhenRelationshipIndexFails(t *testing.T)
 func relationshipIndexFailureArtifacts(t *testing.T) []model.Artifact {
 	t.Helper()
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement\n\n### Scenario: one")
-	task := typedArtifact(t, 3, "TASK", "TASK-001", "done", canonicalTaskContent)
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
 	process := processClassArtifact(t, "PROCESS-001", "verification", "SPEC-001", "done")
 	reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001",
 		"### Covered PROCESSes\n\n- PROCESS-001\n\n### Covered SPECs\n\n- SPEC-001",
@@ -913,7 +913,7 @@ func externalProcessArtifact(t *testing.T, processID string) model.Artifact {
 }
 
 func TestBuildProcessEvidenceUsesCollectorRevisionNotTypedText(t *testing.T) {
-	const taskURL = "https://example.test/issues/3#task"
+	const taskURL = "https://example.test/issues/2#task"
 	const prURL = "https://example/pr"
 	processBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-001", "## Process: verify\n\n### Execution Class\n\n- verification\n\n### Required Checks\n\n- unit tests\n\n### Covers\n\n- SPEC-001", model.BodyOptions{Status: "done", Links: map[string][]string{"Related Comments": {taskURL}, "PR": {prURL}}})
 	if err != nil {
@@ -925,7 +925,7 @@ func TestBuildProcessEvidenceUsesCollectorRevisionNotTypedText(t *testing.T) {
 	}
 	artifacts := []model.Artifact{
 		{Issue: 1, URL: "https://example.test/issues/1#spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
-		{Issue: 3, URL: taskURL, Comment: model.TypedComment{Type: "TASK", ID: "TASK-001", Status: "done"}},
+		{Issue: 2, URL: taskURL, Comment: model.TypedComment{Type: "TASK", ID: "TASK-001", Status: "done"}},
 		{Issue: 3, URL: "https://example.test/issues/3#process", Comment: model.ParseTypedComment(processBody)},
 		{Issue: 3, URL: "https://example.test/issues/3#verify", Comment: model.ParseTypedComment(verifyBody)},
 	}

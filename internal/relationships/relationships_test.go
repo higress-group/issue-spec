@@ -33,7 +33,7 @@ func TestRegistryIsClosedOrientedAndExplicitlyExcludesOtherAuthorities(t *testin
 		t.Fatal("registry caller mutated closed table")
 	}
 
-	left := model.ArtifactRef{Issue: 3, Type: "TASK", ID: "TASK-001", URL: "https://example.test/tasks/1"}
+	left := model.ArtifactRef{Issue: 2, Type: "TASK", ID: "TASK-001", URL: "https://example.test/tasks/1"}
 	right := model.ArtifactRef{Issue: 1, Type: "SPEC", ID: "SPEC-001", URL: "https://example.test/specs/1"}
 	for _, pair := range [][2]model.ArtifactRef{{left, right}, {right, left}} {
 		owner, target, err := Normalize(TaskCoversSpec, pair[0], pair[1])
@@ -65,7 +65,7 @@ func TestRegistryIsClosedOrientedAndExplicitlyExcludesOtherAuthorities(t *testin
 
 func TestResolveUsesExactArtifactsAndSemanticOwnerInEitherPairOrder(t *testing.T) {
 	spec := relationshipArtifact(t, 1, "SPEC", "SPEC-001", "## Specification", nil)
-	task := relationshipArtifact(t, 3, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- SPEC-001", nil)
+	task := relationshipArtifact(t, 2, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- SPEC-001", nil)
 	prerequisite := relationshipArtifact(t, 3, "PROCESS", "PROCESS-001",
 		"## Process\n\n### Parent TASK\n\n- TASK-001\n\n### Dependencies\n\n- N/A", nil)
 	dependent := relationshipArtifact(t, 3, "PROCESS", "PROCESS-002",
@@ -114,9 +114,54 @@ func TestResolveUsesExactArtifactsAndSemanticOwnerInEitherPairOrder(t *testing.T
 	assert(ProcessSupersededBy, superseded, prerequisite, superseded.Comment.ID, prerequisite.Comment.ID)
 }
 
+func TestBuildIndexAcceptsProposalDesignImplementRoleTopology(t *testing.T) {
+	spec := relationshipArtifact(t, 1, "SPEC", "SPEC-001", "## Specification", nil)
+	task := relationshipArtifact(t, 2, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- SPEC-001", []string{spec.URL})
+	process := relationshipArtifact(t, 3, "PROCESS", "PROCESS-001",
+		"## Process\n\n### Parent TASK\n\n- TASK-001", []string{task.URL})
+	review := relationshipArtifact(t, 3, "REVIEW", "REVIEW-001",
+		"## Review\n\n### Covered PROCESSes\n\n- PROCESS-001\n\n### Covered SPECs\n\n- SPEC-001",
+		[]string{process.URL, spec.URL})
+	verify := relationshipArtifact(t, 3, "VERIFY", "VERIFY-001",
+		"## Verify\n\n### Covered PROCESSes\n\n- PROCESS-001\n\n### Covered SPECs\n\n- SPEC-001",
+		[]string{process.URL, spec.URL})
+
+	index, err := BuildIndex([]model.Artifact{verify, task, spec, review, process})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[Kind]bool{
+		TaskCoversSpec: true, ProcessParentTask: true, ReviewCoversProcess: true,
+		ReviewCoversSpec: true, VerifyCoversProcess: true, VerifyCoversSpec: true,
+	}
+	for _, edge := range index.Edges {
+		delete(want, edge.Kind)
+	}
+	if len(index.Edges) != 6 || len(want) != 0 {
+		t.Fatalf("three-issue canonical edges=%+v missing=%v", index.Edges, want)
+	}
+}
+
+func TestBuildIndexRejectsTypedArtifactsOnWrongPhaseIssue(t *testing.T) {
+	spec := relationshipArtifact(t, 1, "SPEC", "SPEC-001", "## Specification", nil)
+	task := relationshipArtifact(t, 2, "TASK", "TASK-001", "## Task", nil)
+	process := relationshipArtifact(t, 3, "PROCESS", "PROCESS-001", "## Process", nil)
+	for name, artifacts := range map[string][]model.Artifact{
+		"TASK in Implement": {spec, relationshipArtifact(t, 3, "TASK", "TASK-001", "## Task", nil), process},
+		"PROCESS in Design": {spec, task, relationshipArtifact(t, 2, "PROCESS", "PROCESS-001", "## Process", nil)},
+		"SPEC in Design":    {relationshipArtifact(t, 2, "SPEC", "SPEC-001", "## Specification", nil), task, process},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := BuildIndex(artifacts); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "artifacts share issue") {
+				t.Fatalf("wrong phase role error=%v", err)
+			}
+		})
+	}
+}
+
 func TestResolveAndBuildIndexRejectExactIdentityAmbiguity(t *testing.T) {
 	spec := relationshipArtifact(t, 1, "SPEC", "SPEC-001", "## Specification", nil)
-	task := relationshipArtifact(t, 3, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- SPEC-001", []string{spec.URL})
+	task := relationshipArtifact(t, 2, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- SPEC-001", []string{spec.URL})
 	ref, _ := task.Ref()
 	wrongURL := ref
 	wrongURL.URL = "https://example.test/tasks/other"
@@ -130,15 +175,18 @@ func TestResolveAndBuildIndexRejectExactIdentityAmbiguity(t *testing.T) {
 	urlCollision.URL = spec.URL
 	wrongIssueURL := task
 	wrongIssueURL.URL = "https://example.test/issues/4#issuecomment-1"
+	otherDesignIssue := relationshipArtifact(t, 4, "TASK", "TASK-009", "## Task", nil)
 	otherImplementIssue := relationshipArtifact(t, 4, "PROCESS", "PROCESS-009", "## Process", nil)
-	repeatedLink := relationshipArtifact(t, 3, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- SPEC-001",
+	repeatedLink := relationshipArtifact(t, 2, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- SPEC-001",
 		[]string{spec.URL, spec.URL})
 	for name, input := range map[string][]model.Artifact{
 		"duplicate typed id": {spec, duplicateID, task},
 		"duplicate url":      {spec, urlCollision, task},
 		"url wrong issue":    {spec, wrongIssueURL},
-		"wrong issue role":   {spec, task, otherImplementIssue},
-		"duplicate link":     {spec, repeatedLink},
+		"multiple designs":   {spec, task, otherDesignIssue},
+		"multiple implements": {spec, task,
+			relationshipArtifact(t, 3, "PROCESS", "PROCESS-008", "## Process", nil), otherImplementIssue},
+		"duplicate link": {spec, repeatedLink},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := BuildIndex(input); !errors.Is(err, ErrAmbiguous) && !errors.Is(err, ErrInvalid) {
@@ -164,9 +212,9 @@ func TestResolveAndBuildIndexRejectExactIdentityAmbiguity(t *testing.T) {
 func TestBuildIndexClassifiesCanonicalBacklinkStaleAndUnknownWithoutPromotingBacklinks(t *testing.T) {
 	spec1 := relationshipArtifact(t, 1, "SPEC", "SPEC-001", "## Specification", nil)
 	spec2 := relationshipArtifact(t, 1, "SPEC", "SPEC-002", "## Specification", nil)
-	task1 := relationshipArtifact(t, 3, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- SPEC-001",
+	task1 := relationshipArtifact(t, 2, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- SPEC-001",
 		[]string{spec1.APIURL + "/", "https://outside.example/unknown/"})
-	task2 := relationshipArtifact(t, 3, "TASK", "TASK-002", "## Task\n\n### Covers\n\n- SPEC-001", nil)
+	task2 := relationshipArtifact(t, 2, "TASK", "TASK-002", "## Task\n\n### Covers\n\n- SPEC-001", nil)
 	spec1.Comment.Links[RelatedCommentsField] = []string{task1.URL}
 	spec2.Comment.Links[RelatedCommentsField] = []string{task2.URL}
 
@@ -214,7 +262,7 @@ func TestBuildIndexIsDeterministicAndCapsEachAdjacency(t *testing.T) {
 		spec := relationshipArtifact(t, 1, "SPEC", id, "## Specification", nil)
 		ids, links, artifacts = append(ids, id), append(links, spec.URL), append(artifacts, spec)
 	}
-	task := relationshipArtifact(t, 3, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- "+strings.Join(ids, "\n- "), links)
+	task := relationshipArtifact(t, 2, "TASK", "TASK-001", "## Task\n\n### Covers\n\n- "+strings.Join(ids, "\n- "), links)
 	artifacts = append(artifacts, task)
 	first, err := BuildIndex(artifacts, BuildOptions{IdentityLimit: 2})
 	if err != nil {
