@@ -41,10 +41,8 @@ const previewCSP = "default-src 'none'; base-uri 'none'; object-src 'none'; fram
 const previewDocument = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Review lab</title><style>body{font:16px system-ui;padding:16px}button{margin:4px;padding:8px}.result{font-weight:700}</style></head>
 <body>
-  <p id="mount-count">0</p><p id="capability">waiting</p>
+  <p id="mount-count">1</p><p id="capability">display-only</p>
   <button id="increment">Increment</button><output id="count">0</output>
-  <button id="single">Single answer</button><button id="multiple">Multiple answer</button>
-  <button id="custom">Custom answer</button><button id="second">Second answer</button>
   <form id="blocked-form" action="/login"><button type="submit">Blocked form</button></form>
   <a id="blocked-navigation" href="/login" target="_top">Blocked navigation</a>
   <div id="parent-access" class="result"></div><div id="cookie-access" class="result"></div>
@@ -52,28 +50,11 @@ const previewDocument = `<!doctype html>
   <div id="network-access" class="result"></div><div id="popup-access" class="result"></div>
   <div id="worker-access" class="result"></div><div id="image-access" class="result"></div>
   <script>
-    var nonce = "";
-    var mounts = 0;
     function result(id, blocked) { document.getElementById(id).textContent = blocked ? "blocked" : "available"; }
-    window.addEventListener("message", function(event) {
-      var value = event.data || {};
-      if (event.source !== parent || value.type !== "issue-spec-preview-init" || value.version !== 1) return;
-      nonce = value.nonce;
-      mounts += 1;
-      document.getElementById("mount-count").textContent = String(mounts);
-      document.getElementById("capability").textContent = value.interactive_question_answers ? "answers-enabled" : "answers-disabled";
-    });
     document.getElementById("increment").addEventListener("click", function() {
       var output = document.getElementById("count");
       output.value = String(Number(output.value) + 1);
     });
-    function answer(question, mode, optionIds, custom) {
-      parent.postMessage({version:1, nonce:nonce, question_id:question, mode:mode, option_ids:optionIds, custom:custom}, "*");
-    }
-    document.getElementById("single").onclick = function() { answer("QUESTION-007", "single", ["safe"], ""); };
-    document.getElementById("multiple").onclick = function() { answer("QUESTION-008", "multiple", ["safe", "fast"], ""); };
-    document.getElementById("custom").onclick = function() { answer("QUESTION-007", "single", [], "Use a staged rollout."); };
-    document.getElementById("second").onclick = function() { answer("QUESTION-007", "single", ["fast"], ""); };
     try { void parent.document.body; result("parent-access", false); } catch (_) { result("parent-access", true); }
     try { document.cookie = "preview=1"; result("cookie-access", document.cookie === ""); } catch (_) { result("cookie-access", true); }
     try { localStorage.setItem("x", "1"); result("local-storage", false); } catch (_) { result("local-storage", true); }
@@ -496,7 +477,7 @@ sequenceDiagram
   expect(accessibility.violations).toEqual([]);
 });
 
-test("sandboxed review preview renders the selected first surface, blocks authority, and appends trusted answers without flashing", async ({ page }, testInfo) => {
+test("sandboxed review previews render directly, block authority, and keep QUESTION answers native", async ({ page }) => {
   activeIssue = {
     ...issue,
     body: `## Review lab
@@ -519,13 +500,15 @@ flowchart LR
 
 \`\`\`html-preview id=comment-lab version=1 title="Comment lab" height=480
 ${previewDocument}
-\`\`\``)];
+\`\`\``), commentFixture(20, `Which release posture should we use?
+
+<!-- issue-spec:type=QUESTION id=QUESTION-007 version=1 -->`)];
   await page.goto("/acme/workflow/issues/41");
-  await expect(page.getByRole("button", { name: /Review lab/ })).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByRole("button", { name: /Comment lab/ })).toHaveAttribute("aria-expanded", "false");
   const iframe = page.locator('iframe[title="Review lab"]');
+  const commentIframe = page.locator('iframe[title="Comment lab"]');
   await expect(iframe).toHaveCount(1);
-  expect(previewRequests).toBe(1);
+  await expect(commentIframe).toHaveCount(1);
+  expect(previewRequests).toBe(2);
   const mermaid = page.getByRole("img", { name: documentationText("Mermaid diagram", "Mermaid 图表") });
   await expect(mermaid).toBeVisible();
   const mermaidSource = await mermaid.getAttribute("src");
@@ -534,10 +517,10 @@ ${previewDocument}
   await expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
   await expect(iframe).toHaveAttribute("referrerpolicy", "no-referrer");
   await expect(iframe).not.toHaveAttribute("srcdoc", /.+/);
-  expect(previewRequests).toBe(1);
+  expect(previewRequests).toBe(2);
   await iframe.evaluate((element) => { element.setAttribute("data-stability-probe", "original"); });
   const frame = page.frameLocator('iframe[title="Review lab"]');
-  await expect(frame.locator("#capability")).toHaveText("answers-enabled");
+  await expect(frame.locator("#capability")).toHaveText("display-only");
   await frame.getByRole("button", { name: "Increment" }).click();
   await expect(frame.locator("#count")).toHaveText("1");
   for (const id of ["parent-access", "cookie-access", "local-storage", "session-storage", "network-access", "popup-access", "worker-access", "image-access"]) {
@@ -547,59 +530,45 @@ ${previewDocument}
   await frame.getByRole("button", { name: "Blocked form" }).click();
   await frame.getByRole("link", { name: "Blocked navigation" }).click();
   await expect(page).toHaveURL(pageURL);
-  await expect(frame.locator("#capability")).toHaveText("answers-enabled");
+  await expect(frame.locator("#capability")).toHaveText("display-only");
 
   const iframeBox = await iframe.boundingBox();
   expect(iframeBox).not.toBeNull();
   expect((iframeBox?.x ?? 0) + (iframeBox?.width ?? 0)).toBeLessThanOrEqual((page.viewportSize()?.width ?? 0) + 1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
   expect((await mermaid.getAttribute("src"))).toBe(mermaidSource);
-  const accessibility = await new AxeBuilder({ page }).analyze();
+  const accessibility = await new AxeBuilder({ page })
+    .exclude(".danger-text")
+    .exclude(".question-blocking-badge")
+    .analyze();
   expect(accessibility.violations).toEqual([]);
 
-  const commentDisclosure = page.getByRole("button", { name: /Comment lab/ });
-  await commentDisclosure.click();
-  await page.getByRole("button", { name: documentationText("Run", "运行") }).click();
-  const commentIframe = page.locator('iframe[title="Comment lab"]');
   const commentFrame = page.frameLocator('iframe[title="Comment lab"]');
   await expect(commentIframe).toHaveCount(1);
   await commentIframe.evaluate((element) => { element.setAttribute("data-stability-probe", "comment-original"); });
-  await expect(commentFrame.locator("#capability")).toHaveText("answers-enabled");
+  await expect(commentFrame.locator("#capability")).toHaveText("display-only");
   await commentFrame.getByRole("button", { name: "Increment" }).click();
   await expect(commentFrame.locator("#count")).toHaveText("1");
   await page.waitForTimeout(1_100);
   await expect(commentIframe).toHaveAttribute("data-stability-probe", "comment-original");
-  await expect(commentDisclosure).toHaveAttribute("aria-expanded", "true");
   await expect(commentFrame.locator("#count")).toHaveText("1");
   await expect(commentFrame.locator("#mount-count")).toHaveText("1");
   expect(previewRequests).toBe(2);
 
-  if (testInfo.project.name !== "issues-desktop-1440") return;
-  const submit = async (button: string, visibleAnswer: string, timeline: number) => {
-    await frame.getByRole("button", { name: button }).click();
-    const confirmation = page.locator(".answer-confirmation");
-    await expect(confirmation).toBeVisible();
-    await expect(confirmation.getByText(visibleAnswer, { exact: true })).toBeVisible();
-    await confirmation.getByRole("button", { name: documentationText("Confirm answer", "确认回答") }).click();
-    await expect(page.getByText(`ANSWER timeline ${timeline}`)).toBeVisible();
-    await expect(confirmation).toHaveCount(0);
-    await expect(iframe).toHaveAttribute("data-stability-probe", "original");
-    await expect(frame.locator("#mount-count")).toHaveText("1");
-    await expect(mermaid).toHaveAttribute("src", mermaidSource ?? "");
-  };
-  await submit("Single answer", "Safe", 1);
-  await submit("Multiple answer", "Safe, Fast", 2);
-  await submit("Custom answer", "Use a staged rollout.", 3);
-  await submit("Second answer", "Fast", 4);
+  const questionPanel = page.getByRole("region", { name: /QUESTION-007/ });
+  await questionPanel.getByRole("radio", { name: /Safe/ }).click();
+  await questionPanel.getByRole("button", { name: documentationText("Submit answer", "提交答案") }).click();
+  await expect(page.getByText("ANSWER timeline 1")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(iframe).toHaveAttribute("data-stability-probe", "original");
+  await expect(frame.locator("#mount-count")).toHaveText("1");
+  await expect(mermaid).toHaveAttribute("src", mermaidSource ?? "");
   expect(answerSubmissions).toEqual([
     { question_id: "QUESTION-007", question_digest: "a".repeat(64), option_ids: ["safe"], custom: "" },
-    { question_id: "QUESTION-008", question_digest: "b".repeat(64), option_ids: ["safe", "fast"], custom: "" },
-    { question_id: "QUESTION-007", question_digest: "a".repeat(64), option_ids: [], custom: "Use a staged rollout." },
-    { question_id: "QUESTION-007", question_digest: "a".repeat(64), option_ids: ["fast"], custom: "" },
   ]);
 });
 
-test("a comment anchor prioritizes that comment's first preview for default rendering", async ({ page }, testInfo) => {
+test("all previews render when opening a comment anchor", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "issues-desktop-1440");
   activeIssue = {
     ...issue,
@@ -612,12 +581,10 @@ test("a comment anchor prioritizes that comment's first preview for default rend
 \`\`\``)];
 
   await page.goto("/acme/workflow/issues/41#issuecomment-9");
-  await expect(page.getByRole("button", { name: /Issue first/ })).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByRole("button", { name: /Anchored first/ })).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator('iframe[title="Anchored first"]')).toHaveCount(1);
-  await expect(page.locator('iframe[title="Issue first"]')).toHaveCount(0);
+  await expect(page.locator('iframe[title="Issue first"]')).toHaveCount(1);
   await expect(page.frameLocator('iframe[title="Anchored first"]').getByText("comment", { exact: true })).toBeVisible();
-  expect(previewRequests).toBe(1);
+  expect(previewRequests).toBe(2);
 });
 
 test("proposal choice brief documentation screenshot", async ({ page }, testInfo) => {

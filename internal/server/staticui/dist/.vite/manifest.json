@@ -18,8 +18,8 @@
       "_session-DBWpYMYY.js"
     ]
   },
-  "_avatar-Cr1rxuCt.js": {
-    "file": "assets/avatar-Cr1rxuCt.js",
+  "_avatar-CBLpcblq.js": {
+    "file": "assets/avatar-CBLpcblq.js",
     "name": "avatar",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
@@ -38,13 +38,6 @@
     "name": "channel",
     "imports": [
       "_chunk-WYO6CB5R-BRHAua1_.js"
-    ]
-  },
-  "_chevron-right-CueVkL4Q.js": {
-    "file": "assets/chevron-right-CueVkL4Q.js",
-    "name": "chevron-right",
-    "imports": [
-      "_session-DBWpYMYY.js"
     ]
   },
   "_chunk-2Q5K7J3B-C1jixKkw.js": {
@@ -463,19 +456,14 @@
     "file": "assets/init-D6jRqBbL.js",
     "name": "init"
   },
-  "_issue-editor-BZrMCiUZ.css": {
-    "file": "assets/issue-editor-BZrMCiUZ.css",
-    "src": "_issue-editor-BZrMCiUZ.css"
-  },
-  "_issue-editor-C-tUmbNb.js": {
-    "file": "assets/issue-editor-C-tUmbNb.js",
+  "_issue-editor-CKepgPTh.js": {
+    "file": "assets/issue-editor-CKepgPTh.js",
     "name": "issue-editor",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
       "_session-DBWpYMYY.js",
       "_preload-helper-Czpn1I53.js",
-      "_chevron-right-CueVkL4Q.js",
-      "_avatar-Cr1rxuCt.js",
+      "_avatar-CBLpcblq.js",
       "_rotate-ccw-CYQdbwDE.js",
       "_repository-context-DO6G70wP.js",
       "_purify.es-sLXpNpJ5.js",
@@ -485,8 +473,12 @@
       "node_modules/mermaid/dist/mermaid.core.mjs"
     ],
     "css": [
-      "assets/issue-editor-BZrMCiUZ.css"
+      "assets/issue-editor-D9Cs1Zpn.css"
     ]
+  },
+  "_issue-editor-D9Cs1Zpn.css": {
+    "file": "assets/issue-editor-D9Cs1Zpn.css",
+    "src": "_issue-editor-D9Cs1Zpn.css"
   },
   "_label-chips-BcpJx2-o.js": {
     "file": "assets/label-chips-BcpJx2-o.js",
@@ -714,7 +706,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-BeBRDHgL.js",
+    "file": "assets/index-DaA4r7dM.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -731,7 +723,7 @@
       "_circle-dot-ByhnaIxK.js",
       "_git-branch-Bgr_DB-e.js",
       "_lock-keyhole-DWGUNdys.js",
-      "_avatar-Cr1rxuCt.js",
+      "_avatar-CBLpcblq.js",
       "_search-BEPm00hA.js",
       "_clipboard-BXbN6TGa.js",
       "_workflow-Dqt-CxX_.js",
@@ -1711,7 +1703,7 @@
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-BUyRBft0.js",
+    "file": "assets/create-page-OoBa2iYZ.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
@@ -1719,13 +1711,13 @@
       "_rolldown-runtime-QTnfLwEv.js",
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
-      "_issue-editor-C-tUmbNb.js",
+      "_issue-editor-CKepgPTh.js",
       "_repository-context-DO6G70wP.js",
       "_label-chips-BcpJx2-o.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-DSPUGHbl.js",
+    "file": "assets/detail-page-DYhIhBdM.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -1734,11 +1726,11 @@
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
       "_shield-alert-CNCyRhof.js",
-      "_issue-editor-C-tUmbNb.js",
       "_circle-dot-ByhnaIxK.js",
       "_relationships-D51AoD0l.js",
       "_lock-keyhole-DWGUNdys.js",
-      "_avatar-Cr1rxuCt.js",
+      "_issue-editor-CKepgPTh.js",
+      "_avatar-CBLpcblq.js",
       "_rotate-ccw-CYQdbwDE.js",
       "_clipboard-BXbN6TGa.js",
       "_repository-context-DO6G70wP.js",
@@ -1778,7 +1770,7 @@
     ]
   },
   "src/features/search/search-page.tsx": {
-    "file": "assets/search-page-kcwALQ9I.js",
+    "file": "assets/search-page-D5Cz_eny.js",
     "name": "search-page",
     "src": "src/features/search/search-page.tsx",
     "isDynamicEntry": true,
@@ -1787,7 +1779,6 @@
       "_session-DBWpYMYY.js",
       "_arrow-right-BlAe8cFk.js",
       "_building-2-Dr0BhAHR.js",
-      "_chevron-right-CueVkL4Q.js",
       "_message-square-text-B3Guj26-.js",
       "_rotate-ccw-CYQdbwDE.js",
       "_search-BEPm00hA.js",

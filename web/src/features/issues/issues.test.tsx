@@ -385,8 +385,6 @@ describe("canonical issue read authority", () => {
       http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
     );
     const view = renderIssueDetail(activeRepository(false, ["read"]));
-    const disclosure = await screen.findByRole("button", { name: /comment-review/ });
-    expect(disclosure).toHaveAttribute("aria-expanded", "true");
     const iframe = await screen.findByTitle("comment-review") as HTMLIFrameElement;
     const selectedOption = iframe.contentDocument?.createElement("input");
     expect(selectedOption).toBeDefined();
@@ -404,107 +402,45 @@ describe("canonical issue read authority", () => {
     expect(screen.getByTitle("comment-review")).toBe(iframe);
     expect(iframe.contains(selectedOption!)).toBe(true);
     expect(selectedOption!.checked).toBe(true);
-    expect(disclosure).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "Reload" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
 
     act(() => view.client.setQueryData(
       ["issues", "acme", "workflow", 41, "comments"],
       [commentFixture({ body: secondBody, updated_at: "2026-07-10T11:09:00Z" })],
     ));
     await waitFor(() => expect(screen.getByTitle("comment-review")).not.toBe(iframe));
-    const revisedDisclosure = screen.getByRole("button", { name: /comment-review/ });
-    expect(revisedDisclosure).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "Reload" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
   });
 
-  it("confirms current single/custom answers outside the iframe, appends every answer, and preserves the running frame", async () => {
+  it("keeps generic HTML previews display-only even when QUESTION answers are enabled", async () => {
     const body = "```html-preview id=answer-review version=1 title=\"answer-review\" height=480\n<!doctype html><button>Answer</button>\n```";
-    const digest = "a".repeat(64);
-    const question = {
-      id: "QUESTION-007",
-      question: "Which release posture should we use?",
-      blocking: true,
-      default_assumption: "Use Safe.",
-      issue_url: "https://example.test/acme/workflow/issues/41",
-      source_url: "https://example.test/acme/workflow/issues/41#issuecomment-20",
-      choice_model: {
-        version: 1,
-        mode: "single",
-        options: [
-          { id: "safe", label: "Safe", description: "Conservative", tradeoff: "Slower" },
-          { id: "fast", label: "Fast", description: "Rapid", tradeoff: "Riskier" },
-        ],
-        allow_custom: true,
-      },
-    } as const;
-    let comments = [commentFixture()];
-    const submitted: unknown[] = [];
+    let answerPosts = 0;
     server.use(
       http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, html_preview_execution: true, interactive_question_answers: true } })),
       http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))),
-      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json(comments)),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json([commentFixture()])),
       http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
       http.get("http://localhost/repos/acme/workflow/issues/comments/:commentId/reactions", () => HttpResponse.json([])),
       http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
-      http.get("http://localhost/api/v1/repos/acme/workflow/issues/41/questions/QUESTION-007", () => HttpResponse.json({ question, representation_version: 1, body_digest: digest })),
-      http.post("http://localhost/api/v1/repos/acme/workflow/issues/41/answers", async ({ request }) => {
-        submitted.push(await request.json());
-        const created = commentFixture({ id: 9 + submitted.length, body: `ANSWER timeline ${submitted.length}`, reactions: { ...reactions, total_count: 0, "+1": 0 } });
-        comments = [...comments, created];
-        return HttpResponse.json({
-          comment: created,
-          question,
-          question_representation_version: 1,
-          question_body_digest: digest,
-        }, { status: 201 });
+      http.post("http://localhost/api/v1/repos/acme/workflow/issues/41/answers", () => {
+        answerPosts += 1;
+        return HttpResponse.json({}, { status: 201 });
       }),
     );
     renderIssueDetail(activeRepository(true, ["read", "contribute"]));
-    expect(await screen.findByRole("button", { name: /answer-review/ })).toHaveAttribute("aria-expanded", "true");
     const iframe = await screen.findByTitle("answer-review") as HTMLIFrameElement;
     const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
     fireEvent.load(iframe);
-    const nonce = (postMessage.mock.calls.at(-1)?.[0] as { nonce: string }).nonce;
-    const send = (optionIds: string[], custom = "") => fireEvent(window, new MessageEvent("message", {
+    expect(postMessage).not.toHaveBeenCalled();
+
+    fireEvent(window, new MessageEvent("message", {
       origin: "null",
       source: iframe.contentWindow,
-      data: { version: 1, nonce, question_id: "QUESTION-007", mode: "single", option_ids: optionIds, custom },
+      data: { version: 1, nonce: "ignored", question_id: "QUESTION-007", mode: "single", option_ids: ["safe"], custom: "" },
     }));
-
-    send(["safe"]);
-    expect(await screen.findByRole("heading", { name: "Confirm this answer" })).toBeVisible();
-    expect(await screen.findByText("Which release posture should we use?")).toBeVisible();
-    expect(await screen.findByText("Safe")).toBeVisible();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
-    expect(await screen.findByText("ANSWER timeline 1")).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(answerPosts).toBe(0);
     expect(screen.getByTitle("answer-review")).toBe(iframe);
-
-    send(["fast"]);
-    expect(await screen.findByText("Fast")).toBeVisible();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
-    expect(await screen.findByText("ANSWER timeline 2")).toBeVisible();
-    expect(screen.getByTitle("answer-review")).toBe(iframe);
-
-    send([], "Use a staged rollout.");
-    expect(await screen.findByText("Use a staged rollout.")).toBeVisible();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
-    expect(await screen.findByText("ANSWER timeline 3")).toBeVisible();
-    expect(submitted.slice(0, 3)).toEqual([
-      { question_id: "QUESTION-007", question_digest: digest, option_ids: ["safe"], custom: "" },
-      { question_id: "QUESTION-007", question_digest: digest, option_ids: ["fast"], custom: "" },
-      { question_id: "QUESTION-007", question_digest: digest, option_ids: [], custom: "Use a staged rollout." },
-    ]);
-
-    const acceptedCustom = "\0".repeat(2_706) + "x".repeat(5);
-    send([], acceptedCustom);
-    expect(await screen.findByRole("heading", { name: "Confirm this answer" })).toBeVisible();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
-    expect(await screen.findByText("ANSWER timeline 4")).toBeVisible();
-    expect(new TextEncoder().encode(JSON.stringify(submitted[3])).byteLength).toBe(16 * 1_024);
-
-    send([], acceptedCustom + "x");
-    expect(screen.queryByRole("heading", { name: "Confirm this answer" })).not.toBeInTheDocument();
-    expect(submitted).toHaveLength(4);
   });
 
   it("renders native answer controls under a typed QUESTION comment by default and surfaces the effective answer", async () => {
@@ -564,12 +500,9 @@ describe("canonical issue read authority", () => {
 
     await user.click(within(panel).getByRole("radio", { name: /Safe/ }));
     await user.click(within(panel).getByRole("button", { name: "Submit answer" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByRole("heading", { name: "Confirm this answer" })).toBeVisible();
-    expect(await within(dialog).findByText("Safe")).toBeVisible();
-    await user.click(within(dialog).getByRole("button", { name: "Confirm answer" }));
 
     expect(await screen.findByText("ANSWER timeline 1")).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(submitted).toEqual([{ question_id: "QUESTION-007", question_digest: digest, option_ids: ["safe"], custom: "" }]);
     expect(await screen.findByText("Current effective answer")).toBeVisible();
     expect(screen.getByText(/ANSWER-001 by alice/)).toBeVisible();
@@ -616,15 +549,14 @@ describe("canonical issue read authority", () => {
     expect(screen.queryByRole("region", { name: "Answer QUESTION-009" })).not.toBeInTheDocument();
   });
 
-  it("awaits fresh QUESTION authority and rejects cached changes or removal before submission", async () => {
-    const body = "```html-preview id=fresh-authority version=1 title=\"fresh-authority\"\n<!doctype html><button>Answer</button>\n```";
+  it("revalidates fresh QUESTION authority before direct native submission", async () => {
     const question = (text: string, options: Array<{ id: string; label: string }>) => ({
       id: "QUESTION-007",
       question: text,
       blocking: true,
       default_assumption: "Use Safe.",
       issue_url: "https://example.test/acme/workflow/issues/41",
-      source_url: "https://example.test/acme/workflow/issues/41#issuecomment-20",
+      source_url: "https://example.test/acme/workflow/issues/41#issuecomment-9",
       choice_model: {
         version: 1,
         mode: "single",
@@ -635,29 +567,22 @@ describe("canonical issue read authority", () => {
     const cachedQuestion = question("Cached QUESTION must not be shown.", [{ id: "safe", label: "Safe" }]);
     const changedQuestion = question("Changed QUESTION", [{ id: "fast", label: "Fast" }]);
     const freshQuestion = question("Fresh QUESTION", [{ id: "safe", label: "Safe" }]);
-    let authorityState: "changed" | "removed" | "fresh" = "changed";
-    let releaseFirstFetch: () => void = () => undefined;
-    const firstFetch = new Promise<void>((resolve) => { releaseFirstFetch = resolve; });
-    let holdFirstFetch = true;
+    let authorityState: "cached" | "changed" | "fresh" = "cached";
     let questionReads = 0;
     let answerPosts = 0;
-    let comments = [commentFixture()];
+    let comments = [commentFixture({ body: "Choose a release posture.\n\n<!-- issue-spec:type=QUESTION id=QUESTION-007 version=1 -->" })];
     server.use(
-      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, html_preview_execution: true, interactive_question_answers: true } })),
-      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))),
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, interactive_question_answers: true } })),
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture())),
       http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json(comments)),
       http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
       http.get("http://localhost/repos/acme/workflow/issues/comments/:commentId/reactions", () => HttpResponse.json([])),
       http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
-      http.get("http://localhost/api/v1/repos/acme/workflow/issues/41/questions/QUESTION-007", async () => {
+      http.get("http://localhost/api/v1/repos/acme/workflow/issues/41/questions/QUESTION-007", () => {
         questionReads += 1;
-        if (holdFirstFetch) {
-          holdFirstFetch = false;
-          await firstFetch;
-        }
-        if (authorityState === "removed") return HttpResponse.json({ message: "Not found" }, { status: 404 });
-        const current = authorityState === "changed" ? changedQuestion : freshQuestion;
-        return HttpResponse.json({ question: current, representation_version: 1, body_digest: authorityState === "changed" ? "b".repeat(64) : "c".repeat(64) });
+        const current = authorityState === "cached" ? cachedQuestion : authorityState === "changed" ? changedQuestion : freshQuestion;
+        const digest = authorityState === "cached" ? "a".repeat(64) : authorityState === "changed" ? "b".repeat(64) : "c".repeat(64);
+        return HttpResponse.json({ question: current, representation_version: 1, body_digest: digest });
       }),
       http.post("http://localhost/api/v1/repos/acme/workflow/issues/41/answers", async ({ request }) => {
         answerPosts += 1;
@@ -673,48 +598,25 @@ describe("canonical issue read authority", () => {
       }),
     );
     const view = renderIssueDetail(activeRepository(true, ["read", "contribute"]));
-    expect(await screen.findByRole("button", { name: /fresh-authority/ })).toHaveAttribute("aria-expanded", "true");
-    const iframe = await screen.findByTitle("fresh-authority") as HTMLIFrameElement;
-    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
-    fireEvent.load(iframe);
-    const nonce = (postMessage.mock.calls.at(-1)?.[0] as { nonce: string }).nonce;
-    const send = () => fireEvent(window, new MessageEvent("message", {
-      origin: "null",
-      source: iframe.contentWindow,
-      data: { version: 1, nonce, question_id: "QUESTION-007", mode: "single", option_ids: ["safe"], custom: "" },
-    }));
-    view.client.setQueryData(
+    const panel = await screen.findByRole("region", { name: "Answer QUESTION-007" });
+    const user = userEvent.setup();
+    await user.click(within(panel).getByRole("radio", { name: /Safe/ }));
+    authorityState = "changed";
+    await user.click(within(panel).getByRole("button", { name: "Submit answer" }));
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("answer was not appended");
+    expect(answerPosts).toBe(0);
+
+    authorityState = "fresh";
+    act(() => view.client.setQueryData(
       ["issues", "acme", "workflow", 41, "question", "QUESTION-007"],
-      { question: cachedQuestion, representation_version: 1, body_digest: "a".repeat(64) },
-    );
-
-    send();
-    expect(await screen.findByRole("status")).toHaveTextContent("Reloading the current QUESTION");
-    expect(screen.queryByText("Cached QUESTION must not be shown.")).not.toBeInTheDocument();
-    releaseFirstFetch();
-    expect(await screen.findByText("This preview intent does not match the current QUESTION.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Confirm answer" })).toBeDisabled();
-    expect(answerPosts).toBe(0);
-
-    await userEvent.setup().click(screen.getByRole("button", { name: "Cancel" }));
-    authorityState = "fresh";
-    send();
-    expect(await screen.findByText("Fresh QUESTION")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Confirm answer" })).toBeEnabled();
-    authorityState = "removed";
-    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
-    expect(await screen.findByText("The current QUESTION could not be loaded.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Confirm answer" })).toBeDisabled();
-    expect(answerPosts).toBe(0);
-
-    await userEvent.setup().click(screen.getByRole("button", { name: "Cancel" }));
-    authorityState = "fresh";
-    send();
-    expect(await screen.findByText("Fresh QUESTION")).toBeVisible();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
+      { question: freshQuestion, representation_version: 1, body_digest: "c".repeat(64) },
+    ));
+    const refreshedPanel = await screen.findByRole("region", { name: "Answer QUESTION-007" });
+    await user.click(within(refreshedPanel).getByRole("radio", { name: /Safe/ }));
+    await user.click(within(refreshedPanel).getByRole("button", { name: "Submit answer" }));
     expect(await screen.findByText("ANSWER timeline fresh")).toBeVisible();
-    // 4 confirmation reads + 1 pre-submit revalidation + 1 post-success invalidation refetch.
-    expect(questionReads).toBe(6);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(questionReads).toBeGreaterThanOrEqual(3);
     expect(answerPosts).toBe(1);
   });
 
@@ -727,19 +629,17 @@ describe("canonical issue read authority", () => {
     installIssueDetailHandlers();
     server.use(http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))));
     renderIssueDetail(activeRepository(false, ["read"]));
-    expect(await screen.findByRole("button", { name: /read-only/ })).toHaveAttribute("aria-expanded", "true");
     const iframe = await screen.findByTitle("Interactive preview · read-only") as HTMLIFrameElement;
     const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
     fireEvent.load(iframe);
-    const init = postMessage.mock.calls.at(-1)?.[0] as { nonce: string; interactive_question_answers: boolean };
-    expect(init.interactive_question_answers).toBe(false);
+    expect(postMessage).not.toHaveBeenCalled();
     fireEvent(window, new MessageEvent("message", {
       origin: "null",
       source: iframe.contentWindow,
-      data: { version: 1, nonce: init.nonce, question_id: "QUESTION-007", mode: "single", option_ids: ["safe"], custom: "" },
+      data: { version: 1, nonce: "ignored", question_id: "QUESTION-007", mode: "single", option_ids: ["safe"], custom: "" },
     }));
-    expect(screen.queryByRole("heading", { name: "Confirm this answer" })).not.toBeInTheDocument();
-    expect(screen.getByText(/interactive answers are unavailable/i)).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText(/interactive answers/i)).not.toBeInTheDocument();
   });
 
   it("offers repository subscription on the issue list to a reader without triage authority", async () => {

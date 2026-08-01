@@ -201,7 +201,6 @@ function parseHtmlPreviews(source: string) {
   }
   const counts = new Map<string, number>();
   for (const preview of previews) counts.set(preview.id, (counts.get(preview.id) ?? 0) + 1);
-  if (previews.length > 8) previews.forEach((preview) => preview.diagnostics.push("count"));
   previews.forEach((preview) => {
     if ((counts.get(preview.id) ?? 0) > 1) preview.diagnostics.push("duplicate");
   });
@@ -216,19 +215,16 @@ type MarkdownViewProps = {
   source: string;
   className?: string;
   previewContext?: HtmlPreviewContext;
-  renderFirstPreview?: boolean;
 };
 
 export const MarkdownView = memo(function MarkdownView({
   source,
   className = "",
   previewContext,
-  renderFirstPreview = false,
 }: MarkdownViewProps) {
   const { t } = useTranslation();
   const renderedSource = useMemo(() => stripIssueSpecMarkersForRender(source), [source]);
   const htmlPreviews = useMemo(() => parseHtmlPreviews(renderedSource), [renderedSource]);
-  const firstPreviewOffset = renderFirstPreview ? htmlPreviews.keys().next().value : undefined;
   const components = useMemo(() => ({
     a: ({ href, children, node, ...props }: React.ComponentProps<"a"> & { node?: unknown }) => {
       void node;
@@ -246,11 +242,7 @@ export const MarkdownView = memo(function MarkdownView({
     pre: ({ node, children, ...props }: React.ComponentProps<"pre"> & { node?: { position?: { start?: { offset?: number } } } }) => {
       const offset = node?.position?.start?.offset ?? -1;
       const preview = htmlPreviews.get(offset);
-      if (preview && previewContext) return <HtmlPreview
-        descriptor={preview}
-        context={previewContext}
-        defaultRunning={offset === firstPreviewOffset}
-      />;
+      if (preview && previewContext) return <HtmlPreview descriptor={preview} context={previewContext} />;
       const diagram = mermaidSource(children);
       return diagram === null
         ? <pre {...props} tabIndex={0} aria-label={t("markdown.codeBlock")}>{children}</pre>
@@ -261,7 +253,7 @@ export const MarkdownView = memo(function MarkdownView({
       const block = codeClassName?.includes("language-") || codeClassName?.includes("hljs");
       return <code {...props} className={codeClassName} tabIndex={block ? 0 : undefined} aria-label={block ? t("markdown.highlightedCode") : undefined} />;
     },
-  }), [firstPreviewOffset, htmlPreviews, previewContext, t]);
+  }), [htmlPreviews, previewContext, t]);
   return <div className={`markdown-view ${className}`.trim()} data-testid="rendered-markdown">
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMentions]}

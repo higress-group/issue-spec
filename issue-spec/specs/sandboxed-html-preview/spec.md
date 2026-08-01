@@ -11,17 +11,17 @@ Proposal Issues:
 
 ### Requirement: provider-neutral HTML preview source and isolated Web execution
 
-issue-spec MUST preserve an explicit HTML preview fence as lossless issue content, MUST keep it inert and collapsed by default, and MUST execute it only on an enabled Web surface inside a sandbox that cannot acquire issue-spec application privileges; a renderer without that capability SHALL present the source without execution.
+issue-spec MUST preserve an explicit HTML preview fence as lossless issue content, MUST render every valid preview directly on an enabled Web surface inside a sandbox that cannot acquire issue-spec application privileges, and MUST let a renderer without that capability present the source without execution.
 
 #### Scenario: GitHub native rendering degrades to source
 
 - **WHEN** a GitHub-backed issue contains an HTML preview fence and a user opens the issue on GitHub
 - **THEN** GitHub presents the fenced source without executing its HTML, CSS, or JavaScript, and issue-spec can later read the original source unchanged
 
-#### Scenario: enabled issue-spec Web preview is explicit
+#### Scenario: enabled issue-spec Web previews render directly
 
 - **WHEN** a user opens an issue containing a valid HTML preview on an issue-spec Web surface where preview execution is enabled
-- **THEN** the page initially shows a collapsed inert descriptor and creates the isolated preview environment only after the user explicitly runs it
+- **THEN** the page renders the isolated preview iframe in place without a descriptor card, lifecycle controls, or a per-page active-preview limit
 
 #### Scenario: preview cannot inherit application authority
 
@@ -35,7 +35,7 @@ issue-spec MUST preserve an explicit HTML preview fence as lossless issue conten
 
 #### Scenario: editing round-trips a folded preview
 
-- **WHEN** a comment containing a preview is read or edited without expanding or running the preview
+- **WHEN** a comment containing a preview is read or edited without expanding its source
 - **THEN** the stored preview fence and source bytes remain unchanged except for an explicit body replacement
 
 Source SPEC comments:
@@ -75,27 +75,27 @@ Source SPEC comments:
 
 ### Requirement: opaque preview parsing and resource budgets
 
-issue-spec MUST treat HTML preview contents as opaque non-typed data for marker and command recognition, and an executable preview implementation MUST enforce configured source, concurrency, lifecycle, output, and external-resource budgets without blocking normal issue reading or workflow progress.
+issue-spec MUST treat HTML preview contents as opaque non-typed data for marker and command recognition, and an executable preview implementation MUST enforce configured source, dimensions, and external-resource budgets without blocking normal issue reading or workflow progress.
 
 #### Scenario: workflow-shaped preview text stays inert
 
 - **WHEN** an HTML preview contains issue-spec markers, canonical SPEC headings, slash commands, review text, or agent-like instructions
 - **THEN** typed-artifact projection, runner command intake, workflow transitions, and agent context selection do not recognize those strings as semantic input
 
-#### Scenario: previews never auto-run
+#### Scenario: every valid preview renders without lifecycle controls
 
 - **WHEN** an issue with multiple previews loads, rerenders, receives a clock update, or is processed by search, notification, or workflow code
-- **THEN** no preview JavaScript executes until a user explicitly runs one preview
+- **THEN** every valid preview on the enabled issue page renders directly, unchanged frames survive unrelated rerenders, and search, notification, and workflow code still do not execute preview source
 
-#### Scenario: active preview count remains bounded
+#### Scenario: preview count does not suppress valid review surfaces
 
-- **WHEN** a user runs previews beyond the configured per-page active limit or collapses an active preview
-- **THEN** issue-spec tears down or refuses excess sandbox environments while the issue page and stored source remain available
+- **WHEN** an issue or comment contains multiple individually valid previews
+- **THEN** issue-spec renders each preview without a first-preview selection rule or active-frame slot limit
 
-#### Scenario: oversized or long-running content fails locally
+#### Scenario: oversized content fails locally
 
-- **WHEN** preview source exceeds the configured size limit or an active preview exceeds its lifecycle or output budget
-- **THEN** issue-spec stops or declines that preview with an actionable local diagnostic and does not fail the issue, comment, or workflow operation
+- **WHEN** one preview source exceeds the configured size or dimension limit
+- **THEN** issue-spec declines that preview with an actionable local diagnostic and does not fail the issue, comment, or workflow operation
 
 #### Scenario: external resources are denied by default
 
@@ -256,7 +256,7 @@ Source SPEC comments:
 
 ### Requirement: self-host interactive QUESTION answering with append-only typed ANSWER comments
 
-When a capable self-host Web surface shows a typed QUESTION comment carrying a choice model, issue-spec MUST render a native, default-visible answer panel under that comment with bounded single-choice, multiple-choice, and optional custom-answer controls, and MUST show the latest effective ANSWER when one exists. A legacy projection that still embeds answer controls remains supported through the sandbox intent bridge. Each confirmed submission MUST create one new immutable typed ANSWER comment containing the QUESTION snapshot and human choice. For an active QUESTION the latest valid ANSWER by provider-authoritative comment order MUST be the effective decision consumed by later Agents and gates.
+When a capable self-host Web surface shows a typed QUESTION comment carrying a choice model, issue-spec MUST render a native, default-visible answer panel under that comment with bounded single-choice, multiple-choice, and optional custom-answer controls, and MUST show the latest effective ANSWER when one exists. Generic HTML previews are display-only and MUST NOT participate in QUESTION submission. Each valid native submission MUST create one new immutable typed ANSWER comment containing the QUESTION snapshot and human choice. For an active QUESTION the latest valid ANSWER by provider-authoritative comment order MUST be the effective decision consumed by later Agents and gates.
 
 #### Scenario: QUESTION choice metadata supports single and multiple selection
 
@@ -278,19 +278,19 @@ When a capable self-host Web surface shows a typed QUESTION comment carrying a c
 - **WHEN** an active typed QUESTION belongs to a Proposal, Design, or Implement issue
 - **THEN** the native answer panel presents the same selection and submission behavior on the QUESTION comment without changing phase authority
 
-#### Scenario: sandbox emits only a structured answer intent
+#### Scenario: generic preview cannot emit an answer intent
 
-- **WHEN** the user submits a valid selection inside a legacy preview iframe with embedded controls
-- **THEN** the iframe sends a versioned message containing issue binding, QUESTION ID, answer mode, selected option IDs, and custom text and receives no credentials, CSRF token, same-origin privilege, or direct issue API access
+- **WHEN** generic preview JavaScript posts QUESTION-shaped data to its parent
+- **THEN** the host ignores the message, exposes no answer capability to the iframe, and creates no ANSWER
 
-#### Scenario: trusted host confirms and authorizes the answer
+#### Scenario: trusted host validates and authorizes the native answer
 
-- **WHEN** the trusted host receives a QUESTION answer intent from the native panel or a legacy preview bridge
-- **THEN** it validates the intent source and schema, reloads the active QUESTION by ID, verifies permission and CSRF protection, validates the option model, shows the user a modal confirmation, and only then creates a typed ANSWER through a same-origin endpoint
+- **WHEN** the native QUESTION panel submits the selected option IDs or custom text
+- **THEN** it reloads the active QUESTION by ID, verifies permission and CSRF protection, validates the current option model, and creates a typed ANSWER through the same-origin endpoint without a second confirmation modal
 
 #### Scenario: ANSWER captures the complete decision snapshot
 
-- **WHEN** an authorized user confirms an answer
+- **WHEN** an authorized user submits an answer
 - **THEN** the new typed ANSWER records a unique ANSWER ID, QUESTION ID and issue, complete QUESTION text and choice-model snapshot, selected IDs and labels or custom text, authenticated actor, and provider-authoritative creation time
 
 #### Scenario: a later answer changes the effective choice without rewriting history
@@ -301,7 +301,7 @@ When a capable self-host Web surface shows a typed QUESTION comment carrying a c
 #### Scenario: repeated identical submissions are semantically harmless
 
 - **WHEN** an accidental retry or repeated click creates another identical ANSWER
-- **THEN** the latest-answer rule yields the same effective decision and the trusted confirmation step gates every submission to reduce duplicate timeline noise without requiring an idempotency protocol
+- **THEN** the latest-answer rule yields the same effective decision and the native panel disables duplicate clicks while a request is pending without requiring an idempotency protocol
 
 #### Scenario: active blocking QUESTION is satisfied by an ANSWER
 

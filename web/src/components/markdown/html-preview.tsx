@@ -1,10 +1,7 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Play, RefreshCw, Square } from "lucide-react";
+import { memo, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { parsePreviewAnswerMessage, type PreviewAnswerIntent } from "./html-preview-message";
 import "./html-preview.css";
 
-const previewLifetimeMs = 10 * 60 * 1_000;
 const iframeAllow = [
   "accelerometer 'none'", "autoplay 'none'", "camera 'none'", "display-capture 'none'",
   "encrypted-media 'none'", "fullscreen 'none'", "geolocation 'none'", "gyroscope 'none'",
@@ -20,21 +17,9 @@ export type HtmlPreviewDescriptor = {
   source: string;
 };
 
-export type HtmlPreviewActivity = {
-  claim: (key: string) => boolean;
-  release: (key: string) => void;
-};
-
 export type HtmlPreviewContext = {
-  sourceKey: string;
   previewURL: (id: string, digest: string) => string;
-  activity: HtmlPreviewActivity;
-  answersEnabled: boolean;
-  onAnswerIntent?: (intent: PreviewAnswerIntent) => void;
 };
-
-type State = "stopped" | "preparing" | "running" | "error";
-type Failure = "active-limit" | "startup";
 
 const sha256RoundConstants = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -46,22 +31,6 @@ const sha256RoundConstants = new Uint32Array([
   0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ]);
-let fallbackCorrelationSequence = 0;
-
-export function createHtmlPreviewActivity(limit = 2): HtmlPreviewActivity {
-  const active = new Set<string>();
-  return {
-    claim(key) {
-      if (active.has(key)) return true;
-      if (active.size >= limit) return false;
-      active.add(key);
-      return true;
-    },
-    release(key) {
-      active.delete(key);
-    },
-  };
-}
 
 function rotateRight(value: number, bits: number) {
   return (value >>> bits) | (value << (32 - bits));
@@ -141,177 +110,45 @@ async function sourceDigest(source: string) {
   return portableSha256(bytes);
 }
 
-function randomNonce(sourceBinding: string) {
-  const bytes = new Uint8Array(24);
-  const crypto = availableCrypto();
-  if (crypto) {
-    try {
-      crypto.getRandomValues(bytes);
-      return hexBytes(bytes);
-    } catch {
-      // Fall through to a digest-bound, per-page monotonic correlation token.
-    }
-  }
-  fallbackCorrelationSequence += 1;
-  const seed = [
-    sourceBinding, Date.now(), globalThis.performance?.now?.() ?? 0, fallbackCorrelationSequence,
-    Math.random(), Math.random(),
-  ].join(":");
-  return portableSha256(new TextEncoder().encode(seed)).slice(0, 48);
-}
-
 export const HtmlPreview = memo(function HtmlPreview({
   descriptor,
   context,
-  defaultRunning = false,
 }: {
   descriptor: HtmlPreviewDescriptor;
   context: HtmlPreviewContext;
-  defaultRunning?: boolean;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(defaultRunning);
-  const [state, setState] = useState<State>(defaultRunning ? "preparing" : "stopped");
-  const [failure, setFailure] = useState<Failure | null>(null);
-  const [mount, setMount] = useState<{ digest: string; nonce: string; generation: number } | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const previousSource = useRef(descriptor.source);
-  const disclosureTouched = useRef(false);
-  const autoRunSource = useRef("");
-  const alive = useRef(true);
-  const runSerial = useRef(0);
-  const lifetime = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { activity, answersEnabled, onAnswerIntent, previewURL } = context;
-  const key = `${context.sourceKey}:${descriptor.id}`;
-
-  const clearLifetime = useCallback(() => {
-    if (lifetime.current) clearTimeout(lifetime.current);
-    lifetime.current = null;
-  }, []);
-  const stop = useCallback(() => {
-    runSerial.current += 1;
-    clearLifetime();
-    activity.release(key);
-    setMount(null);
-    setFailure(null);
-    setState("stopped");
-  }, [activity, clearLifetime, key]);
-  const armLifetime = useCallback(() => {
-    clearLifetime();
-    lifetime.current = setTimeout(stop, previewLifetimeMs);
-  }, [clearLifetime, stop]);
-  const run = useCallback(async (reload = false) => {
-    const serial = ++runSerial.current;
-    let claimed = false;
-    setFailure(null);
-    setState("preparing");
-    try {
-      const digest = await sourceDigest(descriptor.source);
-      if (!alive.current || serial !== runSerial.current) return;
-      const nonce = randomNonce(digest);
-      claimed = activity.claim(key);
-      if (!claimed) {
-        setFailure("active-limit");
-        setState("error");
-        return;
-      }
-      setMount((current) => ({
-        digest,
-        nonce,
-        generation: reload ? (current?.generation ?? 0) + 1 : (current?.generation ?? 0),
-      }));
-      setState("running");
-      armLifetime();
-    } catch {
-      if (claimed) {
-        activity.release(key);
-        setMount(null);
-      }
-      setFailure("startup");
-      setState("error");
-    }
-  }, [activity, armLifetime, descriptor.source, key]);
+  const [digest, setDigest] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    alive.current = true;
+    let current = true;
+    setDigest(null);
+    setFailed(false);
+    void sourceDigest(descriptor.source).then((value) => {
+      if (current) setDigest(value);
+    }, () => {
+      if (current) setFailed(true);
+    });
     return () => {
-      alive.current = false;
-      runSerial.current += 1;
-      autoRunSource.current = "";
-      clearLifetime();
-      activity.release(key);
+      current = false;
     };
-  }, [activity, clearLifetime, key]);
+  }, [descriptor.source]);
 
-  useEffect(() => {
-    if (previousSource.current === descriptor.source) return;
-    previousSource.current = descriptor.source;
-    stop();
-  }, [descriptor.source, stop]);
-
-  useEffect(() => {
-    if (!defaultRunning || disclosureTouched.current || autoRunSource.current === descriptor.source) return;
-    autoRunSource.current = descriptor.source;
-    setExpanded(true);
-    void run(false);
-  }, [defaultRunning, descriptor.source, run]);
-
-  useEffect(() => {
-    if (!mount || !answersEnabled || !onAnswerIntent) return;
-    const receive = (event: MessageEvent) => {
-      const intent = parsePreviewAnswerMessage(event, iframeRef.current?.contentWindow ?? null, mount.nonce);
-      if (!intent) return;
-      armLifetime();
-      onAnswerIntent(intent);
-    };
-    window.addEventListener("message", receive);
-    return () => window.removeEventListener("message", receive);
-  }, [answersEnabled, armLifetime, mount, onAnswerIntent]);
-
-  const toggle = () => {
-    disclosureTouched.current = true;
-    if (expanded) stop();
-    setExpanded((value) => !value);
-  };
   const title = descriptor.title || t("markdown.preview.defaultTitle", { id: descriptor.id });
-  return <section className="html-preview" data-preview-id={descriptor.id}>
-    <header>
-      <button type="button" className="html-preview-disclosure" aria-expanded={expanded} onClick={toggle}>
-        {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
-        <span><strong>{title}</strong><small>{t("markdown.preview.reviewSurface")}</small></span>
-      </button>
-      <span className={`html-preview-state ${state}`}>{t(`markdown.preview.state.${state}`)}</span>
-    </header>
-    {expanded ? <div className="html-preview-body">
-      <p>{t(answersEnabled ? "markdown.preview.securityAndAnswers" : "markdown.preview.securityOnly")}</p>
-      <div className="html-preview-actions">
-        {!mount ? <button type="button" onClick={() => void run(false)} disabled={state === "preparing"}><Play aria-hidden="true" />{t("markdown.preview.run")}</button> : <>
-          <button type="button" onClick={() => void run(true)}><RefreshCw aria-hidden="true" />{t("markdown.preview.reload")}</button>
-          <button type="button" onClick={stop}><Square aria-hidden="true" />{t("markdown.preview.stop")}</button>
-        </>}
-      </div>
-      {failure ? <p className="html-preview-error" role="alert">{t(
-        failure === "active-limit" ? "markdown.preview.activeLimit" : "markdown.preview.startupFailure",
-      )}</p> : null}
-      {mount ? <iframe
-        key={`${mount.digest}:${mount.generation}`}
-        ref={iframeRef}
-        title={title}
-        src={previewURL(descriptor.id, mount.digest)}
-        height={descriptor.height}
-        sandbox="allow-scripts"
-        referrerPolicy="no-referrer"
-        allow={iframeAllow}
-        loading="eager"
-        onLoad={() => iframeRef.current?.contentWindow?.postMessage({
-          version: 1,
-          type: "issue-spec-preview-init",
-          nonce: mount.nonce,
-          interactive_question_answers: answersEnabled,
-        }, "*")}
-      /> : null}
-    </div> : null}
-  </section>;
+  if (failed) return <p className="html-preview-error" role="alert">{t("markdown.preview.startupFailure")}</p>;
+  if (!digest) return null;
+  return <iframe
+    className="html-preview"
+    data-preview-id={descriptor.id}
+    title={title}
+    src={context.previewURL(descriptor.id, digest)}
+    height={descriptor.height}
+    sandbox="allow-scripts"
+    referrerPolicy="no-referrer"
+    allow={iframeAllow}
+    loading="eager"
+  />;
 });
 
 export { iframeAllow };

@@ -122,20 +122,21 @@ func TestMetadataValidationAndUTF8TitleLimit(t *testing.T) {
 	}
 }
 
-func TestPreviewCountLimitMakesEveryBlockInert(t *testing.T) {
+func TestPreviewCountDoesNotMakeValidBlocksInert(t *testing.T) {
 	var body strings.Builder
-	for i := 0; i < MaxPreviews+1; i++ {
+	const previewCount = 12
+	for i := 0; i < previewCount; i++ {
 		body.WriteString("```html-preview id=p")
 		body.WriteByte(byte('a' + i))
 		body.WriteString(" version=1\nsource\n```\n")
 	}
 	result := Parse(body.String())
-	if len(result.Descriptors) != MaxPreviews+1 {
+	if len(result.Descriptors) != previewCount {
 		t.Fatalf("descriptor count = %d", len(result.Descriptors))
 	}
 	for _, descriptor := range result.Descriptors {
-		if descriptor.Executable || !hasDiagnostic(descriptor, "preview_count_exceeded") {
-			t.Fatalf("descriptor did not fail count limit: %+v", descriptor)
+		if !descriptor.Executable || len(descriptor.Diagnostics) != 0 {
+			t.Fatalf("descriptor unexpectedly failed because of count: %+v", descriptor)
 		}
 	}
 }
