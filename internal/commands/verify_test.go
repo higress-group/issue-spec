@@ -215,6 +215,232 @@ func TestBuildMinimalFinalEvidenceIgnoresSupersededGenerationAndSelectsActiveBou
 	}
 }
 
+func TestBuildMinimalFinalEvidenceProjectsSharedRoleReceiptsFromIssuingAssignments(t *testing.T) {
+	fixture := newMultiCarrierRoleEvidenceFixture(t)
+	snapshot := fixture.snapshot()
+	if !snapshot.Index.Passed {
+		t.Fatalf("multi-carrier role evidence index failed: %+v", snapshot.Index)
+	}
+	for _, target := range fixture.targetProcessIDs {
+		seen := map[gates.FinalEvidenceKind]bool{}
+		for _, record := range snapshot.Records {
+			if record.ProcessID != target {
+				continue
+			}
+			seen[record.Kind] = true
+			switch record.Kind {
+			case gates.FinalEvidenceReview:
+				if record.AssignmentProcessID != fixture.reviewProcessID {
+					t.Fatalf("projected REVIEW changed assignment authority: %+v", record)
+				}
+			case gates.FinalEvidenceVerification, gates.FinalEvidenceTest:
+				if record.AssignmentProcessID != fixture.verifyProcessID {
+					t.Fatalf("projected VERIFY changed assignment authority: %+v", record)
+				}
+			}
+		}
+		for _, kind := range []gates.FinalEvidenceKind{gates.FinalEvidenceReview, gates.FinalEvidenceVerification, gates.FinalEvidenceTest} {
+			if !seen[kind] {
+				t.Fatalf("target %s lacks projected %s evidence: %+v", target, kind, snapshot.Records)
+			}
+		}
+	}
+}
+
+func TestBuildMinimalFinalEvidenceRoleAuthorityMismatchFailsClosedForReviewAndVerify(t *testing.T) {
+	for _, role := range []assignment.Role{assignment.RoleReview, assignment.RoleVerification} {
+		for name, mutate := range map[string]func(*multiCarrierRoleEvidenceFixture){
+			"wrong role": func(fixture *multiCarrierRoleEvidenceFixture) {
+				fixture.roleInput(role).ActiveAssignment.Role = assignment.RoleImplementation
+			},
+			"wrong digest": func(fixture *multiCarrierRoleEvidenceFixture) {
+				fixture.roleInput(role).ActiveAssignment.AssignmentDigest = strings.Repeat("f", 64)
+			},
+			"wrong generation": func(fixture *multiCarrierRoleEvidenceFixture) {
+				fixture.roleInput(role).ActiveAssignment.Generation++
+			},
+			"wrong subject": func(fixture *multiCarrierRoleEvidenceFixture) {
+				fixture.roleInput(role).ActiveAssignment.SubjectRevision = strings.Repeat("c", 40)
+			},
+			"duplicate authority": func(fixture *multiCarrierRoleEvidenceFixture) {
+				original := fixture.roleInput(role)
+				duplicate := *original
+				duplicate.Process = finalEvidenceRoleProcess(t, "PROCESS-929", role, fixture.specID)
+				active := *original.ActiveAssignment
+				active.ProcessID = duplicate.Process.Comment.ID
+				duplicate.ActiveAssignment = &active
+				if role == assignment.RoleReview {
+					duplicate.Reviews = append([]gates.ReviewEvidence(nil), original.Reviews...)
+					duplicate.Reviews[0].ProcessID = duplicate.Process.Comment.ID
+				} else {
+					duplicate.Verifications = append([]gates.VerificationEvidence(nil), original.Verifications...)
+					duplicate.Verifications[0].ProcessID = duplicate.Process.Comment.ID
+				}
+				fixture.inputs = append(fixture.inputs, duplicate)
+			},
+		} {
+			t.Run(string(role)+"/"+name, func(t *testing.T) {
+				fixture := newMultiCarrierRoleEvidenceFixture(t)
+				mutate(&fixture)
+				snapshot := fixture.snapshot()
+				for _, record := range snapshot.Records {
+					target := false
+					for _, processID := range fixture.targetProcessIDs {
+						target = target || record.ProcessID == processID
+					}
+					if !target {
+						continue
+					}
+					if role == assignment.RoleReview && record.Kind == gates.FinalEvidenceReview {
+						t.Fatalf("mismatched REVIEW authority entered target evidence: %+v", record)
+					}
+					if role == assignment.RoleVerification &&
+						(record.Kind == gates.FinalEvidenceVerification || record.Kind == gates.FinalEvidenceTest || record.Kind == gates.FinalEvidenceCheck) {
+						t.Fatalf("mismatched VERIFY authority entered target evidence: %+v", record)
+					}
+				}
+				if name != "wrong generation" && snapshot.Index.Passed {
+					t.Fatalf("same/future/duplicate %s authority did not invalidate canonical index: %+v", role, snapshot.Index)
+				}
+			})
+		}
+	}
+}
+
+type multiCarrierRoleEvidenceFixture struct {
+	t                *testing.T
+	subject          string
+	specID           string
+	specURL          string
+	reviewProcessID  string
+	verifyProcessID  string
+	targetProcessIDs []string
+	artifacts        []model.Artifact
+	inputs           []gates.ProcessEvidenceInput
+}
+
+func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFixture {
+	t.Helper()
+	fixture := multiCarrierRoleEvidenceFixture{t: t, subject: strings.Repeat("b", 40), specID: "SPEC-001",
+		specURL: "https://example.test/spec/1", reviewProcessID: "PROCESS-913", verifyProcessID: "PROCESS-914",
+		targetProcessIDs: []string{"PROCESS-911", "PROCESS-912"}}
+	targets := []model.Artifact{
+		finalEvidenceRoleProcess(t, fixture.targetProcessIDs[0], assignment.RoleImplementation, fixture.specID),
+		finalEvidenceRoleProcess(t, fixture.targetProcessIDs[1], assignment.RoleImplementation, fixture.specID),
+	}
+	reviewProcess := finalEvidenceRoleProcess(t, fixture.reviewProcessID, assignment.RoleReview, fixture.specID)
+	verifyProcess := finalEvidenceRoleProcess(t, fixture.verifyProcessID, assignment.RoleVerification, fixture.specID)
+
+	reviewAssignment := testReviewAssignment(t, fixture.subject)
+	reviewAssignment.ID, reviewAssignment.ProcessID = "assignment-review-shared-1", fixture.reviewProcessID
+	reviewReceipt := testSealedReviewReceiptForAssignment(t, reviewAssignment, nil)
+	reviewBody, err := renderSubmittedReview("REVIEW-913", fixture.reviewProcessID, reviewProcess.URL,
+		"https://example.test/pull/7", []string{fixture.specURL}, reviewReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range targets {
+		reviewBody, _, err = model.AddRelatedCommentLink(reviewBody, target.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	review := model.Artifact{URL: "https://example.test/review/913", Comment: model.ParseTypedComment(reviewBody)}
+
+	tests := []assignment.TestResult{{ID: "unit", Command: "go test ./internal/commands",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}
+	verifyAssignment := testVerificationAssignment(t, fixture.subject, tests, nil)
+	verifyAssignment.ID, verifyAssignment.ProcessID = "assignment-verify-shared-1", fixture.verifyProcessID
+	verifyReceipt := testSealedVerificationReceiptForAssignment(t, verifyAssignment, tests, nil)
+	verifyBody, err := renderSubmittedVerification("VERIFY-914", verifyProcess.URL, []string{fixture.specID},
+		verifyReceipt, nil, testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range targets {
+		verifyBody, _, err = model.AddRelatedCommentLink(verifyBody, target.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	verify := model.Artifact{URL: "https://example.test/verify/914", Comment: model.ParseTypedComment(verifyBody)}
+
+	activeSpecs := map[string]string{fixture.specID: fixture.specURL}
+	authors := map[string]map[string]bool{fixture.specID: {"implementation worker": true}}
+	for _, target := range targets {
+		fixture.inputs = append(fixture.inputs, gates.ProcessEvidenceInput{Process: target, ActiveSpecs: activeSpecs,
+			AuthorAgentsBySpec: authors, ActiveAssignment: &gates.ActiveAssignmentEvidence{ProcessID: target.Comment.ID,
+				AssignmentID: "assignment-" + target.Comment.ID, AssignmentDigest: strings.Repeat("a", 64), Generation: 1,
+				Role: assignment.RoleImplementation},
+			Reviews: []gates.ReviewEvidence{{ProcessID: target.Comment.ID, SpecID: fixture.specID, URL: review.URL,
+				Done: true, ReviewerAgent: "Independent Reviewer", SubjectRevision: fixture.subject, Trusted: true}},
+			Verifications: []gates.VerificationEvidence{{ProcessID: target.Comment.ID, SpecID: fixture.specID, URL: verify.URL,
+				Done: true, TestEvidence: true}},
+		})
+	}
+	reviewDigest, err := assignment.AssignmentDigest(reviewAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.inputs = append(fixture.inputs, gates.ProcessEvidenceInput{Process: reviewProcess, ActiveSpecs: activeSpecs,
+		AuthorAgentsBySpec: authors, ActiveAssignment: &gates.ActiveAssignmentEvidence{ProcessID: fixture.reviewProcessID,
+			AssignmentID: reviewAssignment.ID, AssignmentDigest: reviewDigest, Generation: 1,
+			Role: assignment.RoleReview, SubjectRevision: fixture.subject},
+		Reviews: []gates.ReviewEvidence{{ProcessID: fixture.reviewProcessID, SpecID: fixture.specID, URL: review.URL,
+			Done: true, ReviewerAgent: "Independent Reviewer", SubjectRevision: fixture.subject, Trusted: true}}})
+	verifyDigest, err := assignment.AssignmentDigest(verifyAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.inputs = append(fixture.inputs, gates.ProcessEvidenceInput{Process: verifyProcess, ActiveSpecs: activeSpecs,
+		AuthorAgentsBySpec: authors, ActiveAssignment: &gates.ActiveAssignmentEvidence{ProcessID: fixture.verifyProcessID,
+			AssignmentID: verifyAssignment.ID, AssignmentDigest: verifyDigest, Generation: 1,
+			Role: assignment.RoleVerification, SubjectRevision: fixture.subject,
+			RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/commands"}}},
+		Verifications: []gates.VerificationEvidence{{ProcessID: fixture.verifyProcessID, SpecID: fixture.specID,
+			URL: verify.URL, Done: true, TestEvidence: true}}})
+	fixture.artifacts = append(fixture.artifacts, targets...)
+	fixture.artifacts = append(fixture.artifacts, reviewProcess, verifyProcess, review, verify)
+	return fixture
+}
+
+func (fixture *multiCarrierRoleEvidenceFixture) roleInput(role assignment.Role) *gates.ProcessEvidenceInput {
+	processID := fixture.verifyProcessID
+	if role == assignment.RoleReview {
+		processID = fixture.reviewProcessID
+	}
+	for index := range fixture.inputs {
+		if fixture.inputs[index].Process.Comment.ID == processID {
+			return &fixture.inputs[index]
+		}
+	}
+	fixture.t.Fatalf("missing %s role input", role)
+	return nil
+}
+
+func (fixture multiCarrierRoleEvidenceFixture) snapshot() gates.FinalEvidenceSnapshot {
+	return buildMinimalFinalEvidence(fixture.artifacts, fixture.inputs, gates.FinalSubject{Required: true, Known: true,
+		Trusted: true, Kind: "pull_request", URL: "https://example.test/pull/7", Revision: fixture.subject,
+		Source: "github-pull-request-head:7"})
+}
+
+func finalEvidenceRoleProcess(t *testing.T, processID string, role assignment.Role, specID string) model.Artifact {
+	t.Helper()
+	class := model.ProcessExecutionChangeBearing
+	if role == assignment.RoleReview {
+		class = model.ProcessExecutionReview
+	} else if role == assignment.RoleVerification {
+		class = model.ProcessExecutionVerification
+	}
+	body, err := model.EnsureTypedBody("PROCESS", processID,
+		"## Process: role evidence\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- "+string(class)+
+			"\n\n### Covers\n\n- "+specID+"\n\n### Handoff\n\nN/A", model.BodyOptions{Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.Artifact{URL: "https://example.test/process/" + processID, Comment: model.ParseTypedComment(body)}
+}
+
 func TestVerificationReceiptBindingRejectsUntrustedLocalCompletion(t *testing.T) {
 	valid := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./...",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
