@@ -18,8 +18,8 @@
       "_session-DBWpYMYY.js"
     ]
   },
-  "_avatar-CnC9Exwz.js": {
-    "file": "assets/avatar-CnC9Exwz.js",
+  "_avatar-Cr1rxuCt.js": {
+    "file": "assets/avatar-Cr1rxuCt.js",
     "name": "avatar",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
@@ -463,19 +463,20 @@
     "file": "assets/init-D6jRqBbL.js",
     "name": "init"
   },
-  "_issue-editor-BE9l4yTz.css": {
-    "file": "assets/issue-editor-BE9l4yTz.css",
-    "src": "_issue-editor-BE9l4yTz.css"
+  "_issue-editor-BZrMCiUZ.css": {
+    "file": "assets/issue-editor-BZrMCiUZ.css",
+    "src": "_issue-editor-BZrMCiUZ.css"
   },
-  "_issue-editor-Cn1oFO7V.js": {
-    "file": "assets/issue-editor-Cn1oFO7V.js",
+  "_issue-editor-C-tUmbNb.js": {
+    "file": "assets/issue-editor-C-tUmbNb.js",
     "name": "issue-editor",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
       "_session-DBWpYMYY.js",
       "_preload-helper-Czpn1I53.js",
       "_chevron-right-CueVkL4Q.js",
-      "_avatar-CnC9Exwz.js",
+      "_avatar-Cr1rxuCt.js",
+      "_rotate-ccw-CYQdbwDE.js",
       "_repository-context-DO6G70wP.js",
       "_purify.es-sLXpNpJ5.js",
       "_label-chips-BcpJx2-o.js"
@@ -484,7 +485,7 @@
       "node_modules/mermaid/dist/mermaid.core.mjs"
     ],
     "css": [
-      "assets/issue-editor-BE9l4yTz.css"
+      "assets/issue-editor-BZrMCiUZ.css"
     ]
   },
   "_label-chips-BcpJx2-o.js": {
@@ -713,7 +714,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-BY_1YRp5.js",
+    "file": "assets/index-BeBRDHgL.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -730,7 +731,7 @@
       "_circle-dot-ByhnaIxK.js",
       "_git-branch-Bgr_DB-e.js",
       "_lock-keyhole-DWGUNdys.js",
-      "_avatar-CnC9Exwz.js",
+      "_avatar-Cr1rxuCt.js",
       "_search-BEPm00hA.js",
       "_clipboard-BXbN6TGa.js",
       "_workflow-Dqt-CxX_.js",
@@ -1710,7 +1711,7 @@
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-D9PIA5SC.js",
+    "file": "assets/create-page-BUyRBft0.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
@@ -1718,13 +1719,13 @@
       "_rolldown-runtime-QTnfLwEv.js",
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
-      "_issue-editor-Cn1oFO7V.js",
+      "_issue-editor-C-tUmbNb.js",
       "_repository-context-DO6G70wP.js",
       "_label-chips-BcpJx2-o.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-D2hBzHs2.js",
+    "file": "assets/detail-page-DSPUGHbl.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -1733,11 +1734,11 @@
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
       "_shield-alert-CNCyRhof.js",
-      "_issue-editor-Cn1oFO7V.js",
+      "_issue-editor-C-tUmbNb.js",
       "_circle-dot-ByhnaIxK.js",
       "_relationships-D51AoD0l.js",
       "_lock-keyhole-DWGUNdys.js",
-      "_avatar-CnC9Exwz.js",
+      "_avatar-Cr1rxuCt.js",
       "_rotate-ccw-CYQdbwDE.js",
       "_clipboard-BXbN6TGa.js",
       "_repository-context-DO6G70wP.js",
