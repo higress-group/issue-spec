@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -54,6 +54,31 @@ describe("Mermaid Markdown diagrams", () => {
     expect(svg).toContain("Safe label");
     expect(svg).not.toMatch(/<script|<foreignObject|<a\b|<img|onclick|onerror|href=/);
     expect(container.querySelector(".mermaid-diagram script,.mermaid-diagram foreignObject,.mermaid-diagram a")).toBeNull();
+  });
+
+  it("opens a keyboard-accessible enlarged viewer with bounded zoom controls", async () => {
+    mermaid.render.mockResolvedValue({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Inspect me</text></svg>',
+    });
+    renderApp(<MarkdownView source={"```mermaid\nflowchart LR\nA --> B\n```"} />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Open Mermaid diagram in enlarged view" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Mermaid diagram viewer" });
+    expect(dialog).toHaveAttribute("open");
+    const expanded = within(dialog).getByRole("img", { name: "Mermaid diagram" });
+    expect(decodedSvg(expanded)).toContain("Inspect me");
+    expect(expanded).toHaveStyle({ width: "100%" });
+
+    await user.click(within(dialog).getByRole("button", { name: "Zoom in" }));
+    expect(expanded).toHaveStyle({ width: "125%" });
+    expect(within(dialog).getByText("125%")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Reset zoom" }));
+    expect(expanded).toHaveStyle({ width: "100%" });
+
+    fireEvent(dialog, new Event("cancel", { bubbles: false, cancelable: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Mermaid diagram viewer" })).not.toBeInTheDocument());
   });
 
   it("falls back to the original source when parsing fails", async () => {

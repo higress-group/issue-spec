@@ -2,6 +2,7 @@ export const workflowResources = {
   en: {
     markdown: {
       completedTask: "Completed task", incompleteTask: "Incomplete task", codeBlock: "Code block", highlightedCode: "Highlighted code", mermaidDiagram: "Mermaid diagram", mermaidLoading: "Rendering Mermaid diagram…", mermaidError: "This Mermaid diagram could not be rendered. The source is shown instead.",
+      diagramViewer: { open: "Open Mermaid diagram in enlarged view", expand: "Enlarge", title: "Mermaid diagram viewer", controls: "Diagram zoom controls", canvas: "Scrollable enlarged Mermaid diagram", zoomOut: "Zoom out", zoomIn: "Zoom in", reset: "Reset zoom", close: "Close diagram viewer" },
       preview: {
         defaultTitle: "Interactive preview · {{id}}",
         reviewSurface: "Sandboxed review surface",
@@ -323,6 +324,7 @@ export const workflowResources = {
   "zh-CN": {
     markdown: {
       completedTask: "已完成任务", incompleteTask: "未完成任务", codeBlock: "代码块", highlightedCode: "高亮代码", mermaidDiagram: "Mermaid 图表", mermaidLoading: "正在渲染 Mermaid 图表…", mermaidError: "无法渲染此 Mermaid 图表，已改为显示源码。",
+      diagramViewer: { open: "在放大视图中打开 Mermaid 图表", expand: "放大查看", title: "Mermaid 图表查看器", controls: "图表缩放控制", canvas: "可滚动的放大 Mermaid 图表", zoomOut: "缩小", zoomIn: "放大", reset: "重置缩放", close: "关闭图表查看器" },
       preview: {
         defaultTitle: "交互式预览 · {{id}}",
         reviewSurface: "沙箱评审界面",
