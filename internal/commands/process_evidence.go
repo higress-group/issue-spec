@@ -18,6 +18,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/relationships"
 )
 
 var processTestEvidencePattern = regexp.MustCompile(`(?i)\btest(s|ing|ed)?\b`)
@@ -430,6 +431,7 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 	if external == nil && externalReview != nil {
 		external = &externalReview.Consumption
 	}
+	relationshipIndex, relationshipErr := relationships.BuildIndex(artifacts)
 	activeSpecs := map[string]string{}
 	inactiveSpecURLs := map[string]bool{}
 	taskURLs := map[string]bool{}
@@ -589,11 +591,20 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 				}
 				continue
 			}
-			if !artifactReferencesProcess(artifact, process) {
+			coversProcess := artifactReferencesProcess(artifact, process)
+			if relationshipErr == nil {
+				coversProcess = canonicalCoverageTarget(relationshipIndex,
+					relationships.ReviewCoversProcess, artifact.Comment.ID, process.Comment.ID)
+			}
+			if !coversProcess {
 				continue
 			}
 			for specID := range activeSpecs {
-				if artifactReferencesSpec(artifact, specID, activeSpecs[specID]) {
+				coversSpec := artifactReferencesSpec(artifact, specID, activeSpecs[specID])
+				if relationshipErr == nil {
+					coversSpec = canonicalCoverageTarget(relationshipIndex, relationships.ReviewCoversSpec, artifact.Comment.ID, specID)
+				}
+				if coversSpec {
 					revision, trusted, source := reviewArtifactRevision(artifact, prURL, review, input.External, process.Comment.ID, specID)
 					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID, URL: artifact.URL,
 						Done: true, ReviewerAgent: artifact.Comment.Agent, SubjectRevision: revision, Trusted: trusted, Source: source})
@@ -607,11 +618,20 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 			}
 		}
 		for _, artifact := range verifications {
-			if !artifactReferencesProcess(artifact, process) {
+			coversProcess := artifactReferencesProcess(artifact, process)
+			if relationshipErr == nil {
+				coversProcess = canonicalCoverageTarget(relationshipIndex,
+					relationships.VerifyCoversProcess, artifact.Comment.ID, process.Comment.ID)
+			}
+			if !coversProcess {
 				continue
 			}
 			for specID := range activeSpecs {
-				if artifactReferencesSpec(artifact, specID, activeSpecs[specID]) {
+				coversSpec := artifactReferencesSpec(artifact, specID, activeSpecs[specID])
+				if relationshipErr == nil {
+					coversSpec = canonicalCoverageTarget(relationshipIndex, relationships.VerifyCoversSpec, artifact.Comment.ID, specID)
+				}
+				if coversSpec {
 					input.Verifications = append(input.Verifications, gates.VerificationEvidence{ProcessID: process.Comment.ID,
 						SpecID: specID, URL: artifact.URL, Done: true, TestEvidence: processTestEvidencePattern.MatchString(artifact.Comment.Body), Source: "typed-verify"})
 				}
@@ -638,6 +658,15 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 	}
 	filterSharedVerificationIdentity(inputs, verifications, authorAgentsByProcessSpec, requiredRevision)
 	return inputs
+}
+
+func canonicalCoverageTarget(index relationships.Index, kind relationships.Kind, ownerID, targetID string) bool {
+	for _, edge := range index.Edges {
+		if edge.Kind == kind && edge.Owner.ID == ownerID && edge.Target.ID == targetID {
+			return true
+		}
+	}
+	return false
 }
 
 func activeAssignmentEvidence(process model.Artifact) *gates.ActiveAssignmentEvidence {

@@ -20,6 +20,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/relationships"
 	"github.com/higress-group/issue-spec/internal/templates"
 )
 
@@ -879,11 +880,16 @@ func stampConsumedEvidence(body string, consumption externalEvidenceConsumption)
 
 func buildFinalVerifyReport(artifacts []model.Artifact, _ string, opts finalVerifyOptions) (finalVerifyReport, error) {
 	useMinimalFinal := opts.FinalEvidenceObserved
+	gateArtifacts := artifactsForImplementGate(artifacts, opts.ImplementIssue)
+	relationshipIndex, relationshipErr := relationships.BuildIndex(gateArtifacts)
 	traceability := model.VerifyReport{OK: true}
 	if !useMinimalFinal {
 		traceability = model.VerifyTraceability(artifacts)
+		if relationshipErr == nil {
+			traceability = mergeVerifyReports(traceability,
+				model.VerifyTraceabilityWithRelationships(gateArtifacts, commandTraceabilityEdges(relationshipIndex), nil))
+		}
 	}
-	gateArtifacts := artifactsForImplementGate(artifacts, opts.ImplementIssue)
 	report := finalVerifyReport{
 		Traceability:      traceability,
 		SpecCoverage:      map[string]bool{},
@@ -979,6 +985,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, _ string, opts finalVeri
 		Target: target, Mode: gates.ModeAuthoritative, Artifacts: gateArtifacts,
 		Canonical:                gates.CanonicalFacts{Observed: true, Diagnostics: canonical},
 		Traceability:             gates.TraceabilityFacts{Observed: true, Report: traceability},
+		Relationships:            gates.RelationshipFacts{Observed: relationshipErr == nil, Index: relationshipIndex},
 		Remote:                   remote,
 		ProcessEvidence:          processEvidence,
 		FinalEvidence:            finalEvidence,

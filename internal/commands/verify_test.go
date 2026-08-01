@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,6 +23,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/relationships"
 	"github.com/higress-group/issue-spec/internal/templates"
 )
 
@@ -346,8 +348,56 @@ func TestBuildMinimalFinalEvidenceReviewTestCarrierTamperingFailsClosed(t *testi
 
 func TestBuildMinimalFinalEvidenceUsesV2IssuingProcessWithoutReviewBacklink(t *testing.T) {
 	fixture := newMultiCarrierRoleEvidenceFixture(t)
-	fixture.roleInput(assignment.RoleReview).Reviews = nil
+	var reviewURL string
+	for _, artifact := range fixture.artifacts {
+		if artifact.Comment.Type == "REVIEW" {
+			reviewURL = artifact.URL
+			break
+		}
+	}
+	for index := range fixture.artifacts {
+		artifact := &fixture.artifacts[index]
+		if artifact.Comment.Type != "PROCESS" && artifact.Comment.Type != "SPEC" {
+			continue
+		}
+		if artifact.Comment.Links == nil {
+			artifact.Comment.Links = map[string][]string{}
+		}
+		artifact.Comment.Links["Related Comments"] = append(artifact.Comment.Links["Related Comments"], reviewURL)
+	}
+	withBacklinks, err := relationships.BuildIndex(fixture.artifacts)
+	if err != nil || withBacklinks.Totals.LegacyBacklink == 0 {
+		t.Fatalf("fixture did not classify legacy reverse backlinks: index=%+v err=%v", withBacklinks, err)
+	}
+	discovered := buildProcessEvidenceInputs(fixture.artifacts, "", nil, reviewSyncReport{}, nil)
+	for index := range discovered {
+		for _, original := range fixture.inputs {
+			if original.Process.Comment.ID != discovered[index].Process.Comment.ID {
+				continue
+			}
+			discovered[index].ActiveAssignment = original.ActiveAssignment
+			discovered[index].AuthorAgentsBySpec = original.AuthorAgentsBySpec
+			break
+		}
+	}
+	fixture.inputs = discovered
+	wantSnapshot := fixture.snapshot()
+	for index := range fixture.artifacts {
+		artifact := &fixture.artifacts[index]
+		if artifact.Comment.Type == "PROCESS" || artifact.Comment.Type == "SPEC" {
+			artifact.Comment.Links["Related Comments"] = nil
+		}
+	}
+	withoutBacklinks, err := relationships.BuildIndex(fixture.artifacts)
+	if err != nil || withoutBacklinks.Totals.LegacyBacklink != 0 ||
+		withoutBacklinks.Totals.Canonical != withBacklinks.Totals.Canonical {
+		t.Fatalf("removing reverse backlinks changed canonical graph: before=%+v after=%+v err=%v",
+			withBacklinks.Totals, withoutBacklinks.Totals, err)
+	}
 	snapshot := fixture.snapshot()
+	if !reflect.DeepEqual(snapshot, wantSnapshot) {
+		t.Fatalf("reverse backlinks changed evidence selection:\nwant=%+v\n got=%+v", wantSnapshot, snapshot)
+	}
 	if !snapshot.Index.Passed {
 		t.Fatalf("v2 issuing PROCESS identity required a reverse backlink: %+v", snapshot.Index)
 	}
@@ -365,6 +415,32 @@ func TestBuildMinimalFinalEvidenceUsesV2IssuingProcessWithoutReviewBacklink(t *t
 		if !seen[processID] {
 			t.Fatalf("v2 REVIEW evidence was not projected to %s: %+v", processID, snapshot.Records)
 		}
+	}
+	var issuing, projected *gates.FinalEvidenceRecord
+	for index := range snapshot.Records {
+		record := &snapshot.Records[index]
+		if record.Kind != gates.FinalEvidenceTest || record.AssignmentRole != assignment.RoleReview {
+			continue
+		}
+		if record.ProcessID == fixture.reviewProcessID {
+			issuing = record
+		}
+		if record.ProcessID == fixture.targetProcessIDs[0] {
+			projected = record
+		}
+	}
+	if issuing == nil || projected == nil {
+		t.Fatalf("missing issuing/projected REVIEW test records: %+v", snapshot.Records)
+	}
+	wantProjected := *issuing
+	wantProjected.ProcessID = fixture.targetProcessIDs[0]
+	if !reflect.DeepEqual(*projected, wantProjected) {
+		t.Fatalf("relationship projection changed #394 evidence authority:\nwant=%+v\n got=%+v", wantProjected, *projected)
+	}
+	if projected.AssignmentRole != assignment.RoleReview ||
+		projected.AssignmentProcessID != fixture.reviewProcessID ||
+		projected.Source != "accepted-review-receipt:self-reported" {
+		t.Fatalf("explicit role/process/source authority drifted: %+v", *projected)
 	}
 }
 
@@ -555,7 +631,7 @@ type multiCarrierRoleEvidenceFixture struct {
 func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFixture {
 	t.Helper()
 	fixture := multiCarrierRoleEvidenceFixture{t: t, subject: strings.Repeat("b", 40), specID: "SPEC-001",
-		specURL: "https://example.test/spec/1", reviewProcessID: "PROCESS-913", verifyProcessID: "PROCESS-914",
+		specURL: "https://example.test/issues/381#issuecomment-1", reviewProcessID: "PROCESS-913", verifyProcessID: "PROCESS-914",
 		targetProcessIDs: []string{"PROCESS-911", "PROCESS-912"}}
 	targets := []model.Artifact{
 		finalEvidenceRoleProcess(t, fixture.targetProcessIDs[0], assignment.RoleImplementation, fixture.specID),
@@ -563,6 +639,12 @@ func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFi
 	}
 	reviewProcess := finalEvidenceRoleProcess(t, fixture.reviewProcessID, assignment.RoleReview, fixture.specID)
 	verifyProcess := finalEvidenceRoleProcess(t, fixture.verifyProcessID, assignment.RoleVerification, fixture.specID)
+	for index := range targets {
+		targets[index].Issue = 383
+		targets[index].URL = fmt.Sprintf("https://example.test/issues/383#issuecomment-%d", 911+index)
+	}
+	reviewProcess.Issue, reviewProcess.URL = 383, "https://example.test/issues/383#issuecomment-913"
+	verifyProcess.Issue, verifyProcess.URL = 383, "https://example.test/issues/383#issuecomment-914"
 
 	reviewSelector := assignment.TestSelector{ID: "review-durable",
 		Command: "issue-spec durable-spec check --repo o/r --proposal 381 --root . --json",
@@ -578,13 +660,18 @@ func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFi
 	if err != nil {
 		t.Fatal(err)
 	}
+	reviewBody += "\n\n### Covered PROCESSes\n\n- " + fixture.reviewProcessID
+	for _, target := range targets {
+		reviewBody += "\n- " + target.Comment.ID
+	}
+	reviewBody += "\n\n### Covered SPECs\n\n- " + fixture.specID + "\n"
 	for _, target := range targets {
 		reviewBody, _, err = model.AddRelatedCommentLink(reviewBody, target.URL)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	review := model.Artifact{URL: "https://example.test/review/913", Comment: model.ParseTypedComment(reviewBody)}
+	review := model.Artifact{Issue: 383, URL: "https://example.test/issues/383#issuecomment-1913", Comment: model.ParseTypedComment(reviewBody)}
 
 	tests := []assignment.TestResult{{ID: "unit", Command: "go test ./internal/commands",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}
@@ -596,13 +683,22 @@ func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFi
 	if err != nil {
 		t.Fatal(err)
 	}
+	verifyBody += "\n\n### Covered PROCESSes\n\n- " + fixture.verifyProcessID
+	for _, target := range targets {
+		verifyBody += "\n- " + target.Comment.ID
+	}
+	verifyBody += "\n\n### Covered SPECs\n\n- " + fixture.specID + "\n"
 	for _, target := range targets {
 		verifyBody, _, err = model.AddRelatedCommentLink(verifyBody, target.URL)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	verify := model.Artifact{URL: "https://example.test/verify/914", Comment: model.ParseTypedComment(verifyBody)}
+	verifyBody, _, err = model.AddRelatedCommentLink(verifyBody, fixture.specURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := model.Artifact{Issue: 383, URL: "https://example.test/issues/383#issuecomment-1914", Comment: model.ParseTypedComment(verifyBody)}
 
 	activeSpecs := map[string]string{fixture.specID: fixture.specURL}
 	authors := map[string]map[string]bool{fixture.specID: {"implementation worker": true}}
@@ -638,6 +734,8 @@ func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFi
 			RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/commands"}}},
 		Verifications: []gates.VerificationEvidence{{ProcessID: fixture.verifyProcessID, SpecID: fixture.specID,
 			URL: verify.URL, Done: true, TestEvidence: true}}})
+	fixture.artifacts = append(fixture.artifacts, model.Artifact{Issue: 381, URL: fixture.specURL,
+		Comment: model.TypedComment{Type: "SPEC", ID: fixture.specID, Status: "confirmed"}})
 	fixture.artifacts = append(fixture.artifacts, targets...)
 	fixture.artifacts = append(fixture.artifacts, reviewProcess, verifyProcess, review, verify)
 	return fixture

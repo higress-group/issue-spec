@@ -1,6 +1,7 @@
 package gates
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/finalization"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/relationships"
 )
 
 var (
@@ -484,11 +486,28 @@ func (e *evaluator) evaluateCanonical() {
 func (e *evaluator) evaluateTraceability() {
 	report := e.snapshot.Traceability.Report
 	if !e.snapshot.Traceability.Observed {
-		report = model.VerifyTraceability(e.snapshot.Artifacts)
+		if !e.snapshot.Relationships.Observed {
+			report = model.VerifyTraceability(e.snapshot.Artifacts)
+		} else {
+			var indexErr error
+			if e.snapshot.Relationships.Error != "" {
+				indexErr = errors.New(e.snapshot.Relationships.Error)
+			}
+			report = model.VerifyTraceabilityWithRelationships(e.snapshot.Artifacts,
+				traceabilityEdges(e.snapshot.Relationships.Index), indexErr)
+		}
 	}
 	for _, message := range report.Errors {
 		e.add(CodeTraceabilityInvalid, message, ArtifactRef{}, "invalid", "valid", "link")
 	}
+}
+
+func traceabilityEdges(index relationships.Index) []model.TraceabilityEdge {
+	result := make([]model.TraceabilityEdge, 0, len(index.Edges))
+	for _, edge := range index.Edges {
+		result = append(result, model.TraceabilityEdge{Kind: string(edge.Kind), OwnerID: edge.Owner.ID, TargetID: edge.Target.ID})
+	}
+	return result
 }
 
 func (e *evaluator) evaluateWorkflow() {

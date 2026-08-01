@@ -9,6 +9,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/finalization"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/relationships"
 )
 
 const (
@@ -63,6 +64,10 @@ func evaluateMinimalFinal(snapshot Snapshot) Report {
 func (e *evaluator) evaluateFinalPlanning() finalPlanning {
 	result := finalPlanning{specs: map[string]model.Artifact{}, tasks: map[string]model.Artifact{},
 		processes: map[string]model.Artifact{}, processSpecs: map[string][]string{}}
+	if e.snapshot.Relationships.Observed && e.snapshot.Relationships.Error != "" {
+		e.add(CodeFinalPlanningInvalid, "canonical relationship index: "+e.snapshot.Relationships.Error,
+			ArtifactRef{}, "invalid", "bounded canonical relationship index", "relationship-detail")
+	}
 	seen := map[string]model.Artifact{}
 	for _, artifact := range e.snapshot.Artifacts {
 		tc := artifact.Comment
@@ -127,7 +132,11 @@ func (e *evaluator) evaluateFinalPlanning() finalPlanning {
 				e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s has invalid or duplicate SPEC coverage %s", taskID, specID), artifactRef(task), specID, "one active SPEC", "comment generate", "--type", "TASK", "--id", taskID)
 				continue
 			}
-			if !linksIdentifyArtifact(task.Comment.Links["Related Comments"], spec) {
+			linked := linksIdentifyArtifact(task.Comment.Links["Related Comments"], spec)
+			if e.snapshot.Relationships.Observed {
+				linked = relationshipIndexHas(e.snapshot.Relationships.Index, relationships.TaskCoversSpec, taskID, specID)
+			}
+			if !linked {
 				e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s coverage for %s lacks its exact SPEC URL", taskID, specID),
 					artifactRef(task), "missing", spec.URL, "comment upsert", "--type", "TASK", "--id", taskID)
 				continue
@@ -142,7 +151,11 @@ func (e *evaluator) evaluateFinalPlanning() finalPlanning {
 			continue
 		}
 		parentID := parents[0]
-		if !linksIdentifyArtifact(process.Comment.Links["Related Comments"], result.tasks[parentID]) {
+		linked := linksIdentifyArtifact(process.Comment.Links["Related Comments"], result.tasks[parentID])
+		if e.snapshot.Relationships.Observed {
+			linked = relationshipIndexHas(e.snapshot.Relationships.Index, relationships.ProcessParentTask, processID, parentID)
+		}
+		if !linked {
 			e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s Parent TASK %s lacks its exact TASK URL", processID, parentID),
 				artifactRef(process), "missing", result.tasks[parentID].URL, "comment upsert", "--type", "PROCESS", "--id", processID)
 			continue
@@ -173,6 +186,15 @@ func (e *evaluator) evaluateFinalPlanning() finalPlanning {
 		sort.Strings(result.processSpecs[processID])
 	}
 	return result
+}
+
+func relationshipIndexHas(index relationships.Index, kind relationships.Kind, ownerID, targetID string) bool {
+	for _, edge := range index.Edges {
+		if edge.Kind == kind && edge.Owner.ID == ownerID && edge.Target.ID == targetID {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *evaluator) evaluateFinalSubject(planning finalPlanning) {

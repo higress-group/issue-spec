@@ -15,6 +15,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/relationships"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
@@ -32,6 +33,7 @@ type statusSummary struct {
 	Workflow          *workflow.Plan              `json:"workflow,omitempty"`
 	NextGates         []string                    `json:"next_gates"`
 	Gate              gates.Report                `json:"gate"`
+	Relationships     relationships.Index         `json:"relationships"`
 }
 
 func (a *app) runStatus(ctx context.Context, args []string) int {
@@ -118,7 +120,7 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		var output any = summary
 		if *summaryOut {
 			output = gates.ProjectCompactSummary(summary.Gate, summary.Counts, collection.Subject,
-				gates.Remediation{CommandFamily: "status", Arguments: compactDetailArguments(args)})
+				gates.Remediation{CommandFamily: "status", Arguments: compactDetailArguments(args)}, summary.Relationships)
 		}
 		if code := a.outputJSON(output); code != 0 {
 			return code
@@ -175,9 +177,16 @@ func (a *app) runVerifyLinks(ctx context.Context, args []string) int {
 		a.errorf("collect artifacts: %v\n", err)
 		return 1
 	}
+	index, indexErr := relationships.BuildIndex(artifacts)
 	report := model.VerifyTraceability(artifacts)
+	if indexErr == nil {
+		report = model.VerifyTraceabilityWithRelationships(artifacts, commandTraceabilityEdges(index), nil)
+	}
 	if *jsonOut {
-		if code := a.outputJSON(report); code != 0 {
+		if code := a.outputJSON(struct {
+			model.VerifyReport
+			Relationships relationships.Index `json:"relationships"`
+		}{VerifyReport: report, Relationships: index}); code != 0 {
 			return code
 		}
 		if !report.OK {
@@ -218,6 +227,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 	}
 	counts := artifactStatusCounts(artifacts)
 	gateArtifacts := artifactsForImplementGate(artifacts, implement)
+	relationshipIndex, relationshipErr := relationships.BuildIndex(gateArtifacts)
 	useMinimalFinal := target == gates.TargetFinal && collection.FinalEvidence.Observed
 	verify := map[string]string{}
 	blockingQuestions := 0
@@ -260,6 +270,10 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 	report := model.VerifyReport{OK: true}
 	if !useMinimalFinal {
 		report = model.VerifyTraceability(artifacts)
+		if relationshipErr == nil {
+			report = mergeVerifyReports(report,
+				model.VerifyTraceabilityWithRelationships(gateArtifacts, commandTraceabilityEdges(relationshipIndex), nil))
+		}
 	}
 	var diagnostics []metadataDiagnostic
 	workflowFacts := gates.WorkflowFacts{Required: true, Known: true, Valid: workflowErr == nil && !workflowPlan.HasErrors()}
@@ -284,6 +298,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		Answers:                  collection.Answers,
 		Canonical:                gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
 		Traceability:             gates.TraceabilityFacts{Observed: true, Report: report},
+		Relationships:            gates.RelationshipFacts{Observed: relationshipErr == nil, Index: relationshipIndex},
 		Workflow:                 workflowFacts,
 		Remote:                   collection.Remote,
 		ProcessEvidence:          processEvidence,
@@ -316,7 +331,39 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		Workflow:          workflowSummary,
 		NextGates:         nextGates,
 		Gate:              gateReport,
+		Relationships:     relationshipIndex,
 	}
+}
+
+func commandTraceabilityEdges(index relationships.Index) []model.TraceabilityEdge {
+	result := make([]model.TraceabilityEdge, 0, len(index.Edges))
+	for _, edge := range index.Edges {
+		result = append(result, model.TraceabilityEdge{Kind: string(edge.Kind), OwnerID: edge.Owner.ID, TargetID: edge.Target.ID})
+	}
+	return result
+}
+
+func mergeVerifyReports(values ...model.VerifyReport) model.VerifyReport {
+	result := model.VerifyReport{OK: true}
+	errorsSeen, warningsSeen := map[string]bool{}, map[string]bool{}
+	for _, value := range values {
+		for _, message := range value.Errors {
+			if !errorsSeen[message] {
+				errorsSeen[message] = true
+				result.Errors = append(result.Errors, message)
+			}
+		}
+		for _, message := range value.Warnings {
+			if !warningsSeen[message] {
+				warningsSeen[message] = true
+				result.Warnings = append(result.Warnings, message)
+			}
+		}
+	}
+	sort.Strings(result.Errors)
+	sort.Strings(result.Warnings)
+	result.OK = len(result.Errors) == 0
+	return result
 }
 
 // artifactsForImplementGate binds PROCESS selection and evidence authority to

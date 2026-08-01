@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+
+	"github.com/higress-group/issue-spec/internal/relationships"
 )
 
 const (
@@ -23,6 +25,7 @@ type CompactSummary struct {
 	Subject       *CompactSubject           `json:"subject,omitempty"`
 	Counts        map[string]map[string]int `json:"counts,omitempty"`
 	Blockers      []CompactBlockerGroup     `json:"blockers"`
+	Relationships relationships.Index       `json:"relationships"`
 }
 
 type CompactGate struct {
@@ -63,7 +66,8 @@ type CompactBlockerGroup struct {
 // ProjectCompactSummary groups only blocking diagnostics from the supplied
 // authoritative report. Counts and subject are routing metadata collected by
 // the caller; neither can alter OK.
-func ProjectCompactSummary(report Report, counts map[string]map[string]int, subject *CompactSubject, detail Remediation) CompactSummary {
+func ProjectCompactSummary(report Report, counts map[string]map[string]int, subject *CompactSubject, detail Remediation,
+	indexes ...relationships.Index) CompactSummary {
 	type groupKey struct {
 		Code    string
 		Family  string
@@ -135,11 +139,16 @@ func ProjectCompactSummary(report Report, counts map[string]map[string]int, subj
 		})
 	}
 
+	var relationshipIndex relationships.Index
+	if len(indexes) > 0 {
+		relationshipIndex = indexes[0]
+	}
 	return CompactSummary{
 		SchemaVersion: CompactSummarySchemaVersion,
 		OK:            report.Ready,
 		Gate:          CompactGate{Target: report.Target, Mode: report.Mode, PointInTime: report.PointInTime},
 		Subject:       cloneCompactSubject(subject), Counts: cloneCounts(counts), Blockers: blockers,
+		Relationships: relationshipIndex,
 	}
 }
 

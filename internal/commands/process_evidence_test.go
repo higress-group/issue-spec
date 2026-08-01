@@ -182,6 +182,41 @@ func TestArtifactReferencesRejectIDPrefixCollisions(t *testing.T) {
 	}
 }
 
+func TestBuildProcessEvidenceRequiresCanonicalReviewOwnerEdges(t *testing.T) {
+	spec := model.Artifact{Issue: 381, URL: "https://example.test/issues/381#issuecomment-1",
+		Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "confirmed",
+			Links: map[string][]string{}}}
+	process := processClassArtifact(t, "PROCESS-001", "review", "SPEC-001", "done")
+	process.Issue, process.URL = 383, "https://example.test/issues/383#issuecomment-2"
+	body, err := model.EnsureTypedBody("REVIEW", "REVIEW-001", "Reviewed PROCESS-001 for SPEC-001.",
+		model.BodyOptions{Agent: "Independent Reviewer", Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := model.Artifact{Issue: 383, URL: "https://example.test/issues/383#issuecomment-3",
+		Comment: model.ParseTypedComment(body)}
+	process.Comment.Links["Related Comments"] = []string{review.URL}
+	spec.Comment.Links["Related Comments"] = []string{review.URL}
+
+	inputs := buildProcessEvidenceInputs([]model.Artifact{spec, process, review}, "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 || len(inputs[0].Reviews) != 0 {
+		t.Fatalf("text IDs or reverse backlinks created REVIEW coverage: %+v", inputs)
+	}
+
+	body, err = model.EnsureTypedBody("REVIEW", "REVIEW-001",
+		"Reviewed exact owner coverage.\n\n### Covered PROCESSes\n\n- PROCESS-001\n\n### Covered SPECs\n\n- SPEC-001",
+		model.BodyOptions{Agent: "Independent Reviewer", Status: "done",
+			Links: map[string][]string{"Related Comments": {process.URL, spec.URL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.Comment = model.ParseTypedComment(body)
+	inputs = buildProcessEvidenceInputs([]model.Artifact{spec, process, review}, "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 || len(inputs[0].Reviews) != 1 || inputs[0].Reviews[0].SpecID != spec.Comment.ID {
+		t.Fatalf("canonical REVIEW owner coverage was not discovered: %+v", inputs)
+	}
+}
+
 func TestBuildProcessEvidenceMapsAuthoritativeBindingsToExactProcesses(t *testing.T) {
 	artifacts := []model.Artifact{
 		{URL: "https://example/spec-1", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
