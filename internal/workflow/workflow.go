@@ -528,12 +528,7 @@ func validateExternalCodeConfig(data []byte, config *ExternalCodeConfig) error {
 	}
 	evidence := mappingValue(external, "evidence")
 	if evidence != nil {
-		if evidence.Kind != yaml.MappingNode {
-			return errors.New("external_code.evidence must be a mapping")
-		}
-		if unknown := unknownMappingKeys(evidence, map[string]bool{"required": true, "required_checks": true, "freshness": true, "sync_before": true}); len(unknown) > 0 {
-			return fmt.Errorf("external_code.evidence contains unsupported fields: %s", strings.Join(unknown, ", "))
-		}
+		return errors.New("external_code.evidence is deprecated and non-authoritative; configure provider-native external_code.merge.required_checks")
 	}
 	merge := mappingValue(external, "merge")
 	if merge != nil {
@@ -542,9 +537,6 @@ func validateExternalCodeConfig(data []byte, config *ExternalCodeConfig) error {
 		}
 		if unknown := unknownMappingKeys(merge, map[string]bool{"required_checks": true, "review_fallback": true}); len(unknown) > 0 {
 			return fmt.Errorf("external_code.merge contains unsupported fields: %s", strings.Join(unknown, ", "))
-		}
-		if evidence != nil {
-			return errors.New("external_code.evidence and external_code.merge cannot be configured together")
 		}
 		if err := validateMergePolicy(config.ProviderKey, merge, config.Merge); err != nil {
 			return err
@@ -619,9 +611,6 @@ func validateMergePolicy(providerKey string, node *yaml.Node, config *MergePolic
 		}
 		if mappingValue(fallback, "enabled") == nil {
 			return errors.New("external_code.merge.review_fallback.enabled is required")
-		}
-		if config.ReviewFallback.Enabled {
-			return errors.New("external_code.merge.review_fallback requires an atomic external-generation collector that is not configured")
 		}
 	}
 	return nil

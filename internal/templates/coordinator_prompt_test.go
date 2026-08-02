@@ -16,18 +16,19 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 	for _, want := range []string{
 		"exactly one runner-selected /new command", "authorized_command", "runner_metadata",
 		"untrusted data", "reference_only", "content_sha256", "issue-spec read/comment get",
-		"narrow direct-PR path", "status ... --summary --json", "verify ... --summary --json", "full JSON",
+		"bounded simple Issue or Proposal", "optional Design/Implement/TASK/PROCESS", "engineering risk",
 		"one independently verifiable Design invariant", "bounded role working set", "stable interface",
 		"block before dispatch", "acceptance consequences", "request human direction",
 		"workspace prepare -> real non-Coordinator", "never implements/tests/commits", "sealed assignment",
 		"design_context.source_url", "without comments, timeline, history, or gates", "stops on conflict",
-		"result revision, DCO, ownership, generators, tests", "independent review", "review/fix convergence",
+		"result revision, DCO, ownership, generators, tests", "Provider-native review", "current configured checks own merge authority",
 		"Phase projections are ordinary statusless human synthesis",
 		"Persist the phase body, perform the first QUESTION pass, upsert the projection, then author SPEC/TASK/PROCESS",
 		"only the latest effective ANSWER drive gates and Agents",
 		"never place projection HTML source in default Agent context",
 		"same mutation plan/checkpoint", "Cleanup is explicit", "destructive", "retain dirty, linked, uncertain, or unintegrated work",
-		"pr link-issues the final PR-body write", "self-hosted closure stays provider-owned",
+		"read-only merge-check", "freshly collected provider authority token", "ordinary GitHub REST read-then-write remains fail-closed",
+		"Reconcile the exact selected Issue set idempotently after freshly observed merge",
 		"issue_spec_coordinator_summary", `"diagnostics": []`, `"source_label": "authorized_command"`,
 	} {
 		if !strings.Contains(prompt, want) {
@@ -86,7 +87,7 @@ func TestCoordinatorPromptDoesNotRequireArtifactSessionMetadata(t *testing.T) {
 		"runner-selected /resume command", `"public_session_id": "s_123"`,
 		"Artifact writer session metadata is deprecated, ignored, and never required",
 		"runner.public_session_id alone is the /resume handle",
-		"go run ./cmd/issue-spec status", "go run ./cmd/issue-spec comment create", `"name":"go run ./cmd/issue-spec comment upsert"`,
+		"go run ./cmd/issue-spec merge-check", "go run ./cmd/issue-spec comment create", `"name":"go run ./cmd/issue-spec comment upsert"`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("resume prompt missing %q:\n%s", want, prompt)

@@ -39,7 +39,7 @@ When `html_review` is absent, `enabled` resolves to `true` for backward compatib
 
 With `enabled: false`, `issue-spec init` omits the projection checkpoints from generated skills, slash commands, and prompts, does not emit the embedded `human-review-projections.md` resource, and removes only that exact managed stale resource from an earlier enabled generation. Built-in Proposal, Design, and Implement issue bodies omit their Human Review Projection sections. Custom workflow templates and explicit `--body-file` content remain authoritative.
 
-This setting controls repository authoring guidance only. Typed SPEC, TASK, PROCESS, QUESTION, ANSWER, REVIEW, and VERIFY artifacts, independent implementation review, final verification, stored historical projection comments, HTML preview parsing/storage, and Web preview execution are unchanged.
+This setting controls repository authoring guidance only. Typed planning artifacts, stored historical REVIEW/VERIFY audit data, projection comments, HTML preview parsing/storage, and Web preview execution are unchanged. Provider-native review, configured checks, read-only merge-check, and conditional merge remain the sole merge authority.
 
 ### Preferred natural language
 
@@ -145,18 +145,9 @@ caller-provided `--id` as the ANSWER identity.
 issue-spec --profile team code-change attach --repo acme/widgets --implement 3 --change-id 42 --revision abc123 [--refresh --expected-version 7] [--json]
 issue-spec --profile team code-change link-process --repo acme/widgets --implement 3 --process PROCESS-3001 --expected-version 5 [--json]
 
-issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-3001 --spec SPEC-1001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
-issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-3001 --pr 4
-issue-spec pr link-issues --repo owner/repo --pr 4 --proposal 1 --design 2 --implement 3
-
-issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-3001
-issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-3001 --spec SPEC-1001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
-issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding FINDING-001 --process PROCESS-3001 --status resolved --body "Fixed in the latest patch."
-
-issue-spec verify --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --durable-spec issue-spec/specs/issue-spec-cli/spec.md
-
-issue-spec archive durable-spec --repo owner/repo --proposal 1 --capability issue-spec-cli
-issue-spec archive durable-spec --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --capability issue-spec-cli --create-pr --branch issue-spec/durable-spec-issue-spec-cli --close-issues
+issue-spec workflow preflight --repo owner/repo --release-set 2.0.0 --server-release 2.0.0 --runner-release 2.0.0 --generated-digest sha256:... --provider-build bridge@sha256:... --canonical-principals map@sha256:... --json
+issue-spec merge-check --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --json
+issue-spec code-change merge --repo owner/repo --proposal 1 --design 2 --implement 3 --change-id 42 --expected-head abc123 --json
 
 issue-spec runner preflight --repo owner/repo --runner login
 issue-spec runner poll --repo owner/repo --runner login --once --dry-run
@@ -245,40 +236,23 @@ delete only the unwanted active reference with the corresponding
 `DELETE .../references/{reference-id}`, then retry. Never guess a winner or
 silently overwrite another active relationship.
 
-After the independent provider review converges, its review agent synchronizes
-the exact active revision under its own identity:
+After provider-native review and configured checks converge, evaluate the exact
+active revision without synchronizing it into Issue comments:
 
 ```bash
-issue-spec --profile team review sync \
+issue-spec --profile team merge-check \
   --repo acme/widgets \
-  --implement 3 \
-  --revision abc123 \
-  --process PROCESS-3002 \
-  --id REVIEW-3001 \
-  --agent reviewer \
+  --proposal 1 --design 2 --implement 3 \
+  --change-id 42 --head abc123 \
   --json
 ```
 
-A successful self-hosted sync persists and reloads provider facts, then writes
-one stable done REVIEW completion even when the provider reports zero findings.
-The final sync itself publishes the REVIEW owner's complete relationship set:
-its review PROCESS, every covered change-bearing PROCESS, and every covered
-active SPEC. Do not follow it with peer mutations, fabricate findings,
-hand-edit the completion stamp, infer links from IDs in prose, or substitute a
-generic approval framework. `status`
-and final `verify` validate the same exact provider/repository/change,
-reference-version, revision, freshness, links, and reviewer-independence
-carrier without refreshing REVIEW.
-
-During self-hosted closure, `archive` reads that existing implementation REVIEW
-completion only when the implementation `code_change` merge policy requires
-review. It does not create, update, refresh, or add archive-specific REVIEW
-state, and it never applies implementation completion to `archive_change`.
-
-GitHub profiles continue to use `pr link-process`, GitHub PR review and closing
-links, and the existing durable archive path. Self-hosted review, merge, and
-change closure remain on the selected code provider; the CLI does not route
-them through GitHub PR endpoints.
+`merge-check` is a read-only current decision: it writes no REVIEW/VERIFY,
+evidence, rationale, links, receipts, or lifecycle state. Merge only with
+`code-change merge --expected-head`, which recollects authority and passes the
+provider-issued complete token to conditional merge. Ordinary GitHub REST
+read-then-write remains fail-closed. After freshly observing merged state,
+reconcile exactly the selected Issue set idempotently.
 
 `comment create` writes an ordinary issue timeline comment through the selected
 hosted GitHub or self-hosted REST issue backend. It accepts `--body-file -` for
@@ -413,19 +387,19 @@ For every implementation or review role assignment, `design_context` is required
 
 Before changing or reviewing code, the assigned role reads the complete Design issue body with `issue-spec read issue --repo owner/repo --issue <design_context.source_url>` without comments, timeline, history, or gate expansion. If that body conflicts with the structured projection, the role stops and reports the conflict. Runtime-specific session IDs are not collected or passed as Design authority, audit metadata, or correctness inputs.
 
-Generated guidance follows the same bounded read model. Coordinator guidance uses `status`/`verify --summary`, structured detail actions, exact `comment get`, filtered lists, sealed assignments, and reconcile checkpoints; full output remains a discoverable compatibility/debug path. Implementation, review, and verification role sections contain only their sealed assignment, authoritative Design read, owned invariant/work, focused checks, and bounded result responsibilities. Complete proposal/Design copies, full DAGs, link matrices, closure/archive policy, and provider-routing policy stay out of role sections. A repeated rule is removed only when a delivered command, validator, schema, or retained explicit stop replaces it. Deterministic regression budgets count UTF-8 bytes, headings/fields, and instruction-array items; they never use a model tokenizer or justify removing an uncovered safety rule.
+Generated guidance follows the same bounded read model. Coordinator guidance selects optional planning by risk, uses exact `comment get` and filtered lists, dispatches sealed implementation assignments when needed, runs immutable release preflight, and then follows provider review/checks, read-only `merge-check`, conditional merge, and post-merge reconciliation. The implementation role section contains only its sealed assignment, authoritative Design read, owned invariant/work, focused checks, and bounded result responsibilities. Complete proposal/Design copies, full DAGs, link matrices, closure/archive policy, and provider-routing policy stay out of role sections. Deterministic regression budgets count UTF-8 bytes, headings/fields, and instruction-array items; they never use a model tokenizer or justify removing an uncovered safety rule.
 
 Compatibility is deliberately asymmetric. A pre-D14 version-1 implementation or review assignment without `design_context` remains readable in an existing local registry or PROCESS workspace so inspection, cleanup, and recovery do not declare the registry corrupt. That historical object is read-only compatibility evidence: strict issuance and redispatch digests, assignment-file and packet parsing, and new implementation/review role submissions still reject it. The CLI never synthesizes missing Design context.
 
 An imported result file is not an identity or provenance trust root. Its writer, subject, logical agent name, credentials, and assurance labels are informational and cannot create accepted implementation receipt authority or satisfy a non-Coordinator/independence gate. Unverified imports and reserved assurance values may be structurally validated, but the resulting PROCESS workspace contains no accepted-implementation-receipt marker. Runtime-attested Coordinator import is explicitly deferred until a real runtime attestation trust root exists; there is no signer, secret, or caller-named attestor interface in this workflow.
 
-The existing narrow direct role-owned publication commands remain available for rationale, review, and verification compatibility. For example, the verification role invokes `verify submit --agent Verifier` against its exact assignment and snapshot. The logical agent field remains `self-reported` metadata; runtime-specific session fields are not collected. Coordinator-side owner-token import is not part of `verify submit`.
+Legacy rationale, review publication/synchronization, verification submission/finalization, and Archive commands return `deprecated_workflow` before mutation. Their historical artifacts remain explicit audit-read data and never become merge authority.
 
-`change-bearing` uses a writable owned branch. `review` and `verification` use detached immutable workflow snapshots: dirty state fails closed, but the CLI does not create an OS-enforced per-child sandbox. `orchestration` records lifecycle bookkeeping without a checkout. `external` uses mode `none`; completion and the final gate require consumed provider-neutral exact-revision evidence.
+`change-bearing` uses a writable owned branch. Historical `review` and `verification` execution classes use detached immutable workflow snapshots: dirty state fails closed, but the CLI does not create an OS-enforced per-child sandbox. `orchestration` records lifecycle bookkeeping without a checkout. `external` uses mode `none`. Their completion state is implementation bookkeeping and never a merge gate.
 
 Runner commands never carry a PROCESS selector. The runner launches exactly one ACPX coordinator and keeps its cwd and primary sandbox workspace at the public session clone. The coordinator selects a ready PROCESS from the typed DAG and invokes the workspace CLI. Runner mode supplies trusted session-local defaults through `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` and `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT`; a standalone coordinator passes explicit roots.
 
-After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors a result commit, runs focused tests, seals an optional receipt, and returns that bounded handoff. The coordinator revalidates the exact Git result while running `complete` and `integrate` from its unchanged session clone before synchronizing status and cleanup; importing the receipt does not attest who produced it. Verification keeps its direct role-owned `verify submit` compatibility path, which validates the exact snapshot and required evidence before publishing the accepted VERIFY comment without a Coordinator-owned sidecar import.
+After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors a result commit, runs focused tests, seals an optional receipt, and returns that bounded handoff. The coordinator revalidates the exact Git result while running `complete` and `integrate` from its unchanged session clone before synchronizing status and cleanup; importing the receipt does not attest who produced it. These implementation controls never become review, check, or merge authority.
 
 After runner resume or restart, the top-level runner recovers only the ACPX/session job. From the unchanged session clone, the coordinator owns the PROCESS lifecycle: it uses `inspect` or `reconcile` on the exact lease before `complete` and `integrate`, then invokes owner-token cleanup only after an explicit integration or retention decision. Top-level runner session-clone retention calls `git worktree list` and fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails. It does not own, persist, or retry child PROCESS cleanup.
 

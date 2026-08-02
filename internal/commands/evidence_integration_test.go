@@ -115,9 +115,12 @@ func TestExternalGateSynchronizesPersistsReloadsThenEvaluates(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(root, "issue-spec", "config.yaml"), []byte(`external_code:
   provider_key: code.example
-  evidence:
-    sync_before: [verify, runner]
-    required_checks: [unit]
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:unit
+        owner: app:7
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -169,13 +172,10 @@ func TestExternalGateSynchronizesPersistsReloadsThenEvaluates(t *testing.T) {
 	runnerIdentity, err := (&runnerEvidencePreGate{app: app, profile: profile}).BeforeDispatch(t.Context(), jobs.EvidencePreGateRequest{
 		Repo: "acme/widgets", IssueNumber: 9, WorkflowRoot: root, CredentialFile: credential,
 	})
-	if err != nil || runnerIdentity.Skipped || runnerIdentity.ProviderKey != result.Consumption.ProviderKey ||
-		runnerIdentity.ExternalRepository != result.Consumption.ExternalRepository || runnerIdentity.ChangeID != result.Consumption.ChangeID ||
-		runnerIdentity.SubjectRevision != result.Consumption.SubjectRevision ||
-		strings.Join(runnerIdentity.EvidenceIDs, ",") != strings.Join(result.Consumption.EvidenceIDs, ",") {
-		t.Fatalf("runner identity=%+v interactive=%+v err=%v", runnerIdentity, result.Consumption, err)
+	if err != nil || !runnerIdentity.Skipped {
+		t.Fatalf("runner must skip the retired synchronization gate: identity=%+v err=%v", runnerIdentity, err)
 	}
-	if strings.Join(calls, ",") != "operator,persist,ledger,operator,persist,ledger" {
+	if strings.Join(calls, ",") != "operator,persist,ledger" {
 		t.Fatalf("interactive/runner orchestration calls=%v", calls)
 	}
 	calls = nil
@@ -290,11 +290,12 @@ func TestExternalReviewAndVerifyProjectCompletionPolicyAndAllowZeroFindings(t *t
 	}
 	if err := os.WriteFile(filepath.Join(root, "issue-spec", "config.yaml"), []byte(`external_code:
   provider_key: code.example
-  evidence:
-    required: [review, check]
-    freshness:
-      review: 2h
-      check: 3h
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:unit
+        owner: app:7
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}

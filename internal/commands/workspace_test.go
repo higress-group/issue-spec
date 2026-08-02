@@ -1695,8 +1695,12 @@ rules:
     instruction: This must not enter verifier guidance.
 external_code:
   provider_key: code.example
-  evidence:
-    required_checks: [route-owner-policy]
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:route-owner-policy
+        owner: app:7
 durable_specs:
   mode: repository
 `,

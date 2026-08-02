@@ -1,15 +1,15 @@
 ---
 name: "Issue Spec: Apply"
-description: "Implement PROCESS comments for an issue-spec change and keep implementation-change traceability synchronized."
+description: "Implement an optional PROCESS while preserving bounded workspace and handoff safety."
 category: "Workflow"
 tags: ["workflow", "issue-spec"]
 ---
 
 # Issue Spec Apply
 
-Coordinator: persist the Implement issue, perform its first QUESTION discovery/create pass, then complete PROCESS planning. Issue bodies and typed artifacts remain authoritative.
+Coordinator: use Implement, TASK, and PROCESS only when coordination, isolation, or delegation risk selects them. Persist the Implement issue, perform its first QUESTION pass, then complete PROCESS planning. Issue bodies and typed planning artifacts remain authoritative planning state.
 
-Complete DAG planning, workspace lifecycle, integration, relationships, review, recovery, and final evidence by following the backend-appropriate routing in issue-spec-workflow. For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator implementation worker with the Implementation Role Packet below; this is required regardless of node size, file count, or serial versus parallel scheduling, and the coordinator never implements, tests, or commits that PROCESS inline or uses workspace_management: independent as an escape hatch. A compatible real worker may execute successive serial or repair nodes; for each assignment give that worker only the parent TASK context plus the predecessor handoff, never the coordinator's accumulated context. Non-change-bearing orchestration and the narrow direct one-file PR path without a PROCESS DAG retain their existing policies. Run the authoritative final sync by following issue-spec-review; the REVIEW producer publishes its complete relationship set in that single owner write. Never follow the obsolete instruction "After that sync, explicitly link the REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC". Follow issue-spec-workflow for the backend-appropriate rationale command. Each owning worker authors its own rationale under that worker's --agent. Do not copy that policy into a worker packet.
+For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator worker with the packet below. Preserve exact base, ownership, DCO, tests, generators, dependency order, managed worktree isolation, and bounded handoff. These controls are implementation safety only: they do not create review, verification, rationale, receipt, coverage, or finalization authority, and merge-check never reads their lifecycle.
 
 ## Implementation Role Packet
 

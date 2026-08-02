@@ -92,4 +92,50 @@ grep -Fq 'macos-15' "$workflow"
 grep -Fq 'windows-2025' "$workflow"
 grep -Fq 'needs: [package, native-installer]' "$workflow"
 
+workflow_english="$root/docs/workflow.md"
+workflow_chinese="$root/docs/workflow.zh-CN.md"
+for document in "$workflow_english" "$workflow_chinese"; do
+  for marker in \
+    'minimal-merge-authority/v1' \
+    'issue-spec workflow preflight' \
+    '--generated-digest' \
+    'issue-spec merge-check' \
+    'issue-spec code-change merge' \
+    'post-merge-idempotent' \
+    'provider-authority-token' \
+    'deprecated_workflow'; do
+    grep -Fq -- "$marker" "$document" || {
+      echo "workflow cutover document missing $marker: $document" >&2
+      exit 1
+    }
+  done
+done
+
+release_manifest="$root/.agents/skills/issue-spec-workflow/release.json"
+test -s "$release_manifest" || { echo "missing generated workflow release manifest" >&2; exit 1; }
+grep -Fq '"schema": "issue-spec.generated-workflow/v1"' "$release_manifest"
+grep -Fq '"content_digest": "sha256:' "$release_manifest"
+
+for retired in \
+  "$root/.agents/skills/issue-spec-review/SKILL.md" \
+  "$root/.agents/skills/issue-spec-verify/SKILL.md" \
+  "$root/.claude/commands/issue-spec/review.md" \
+  "$root/.claude/commands/issue-spec/verify.md"; do
+  test ! -e "$retired" || { echo "retired generated authority asset exists: $retired" >&2; exit 1; }
+done
+
+generated_assets="$root/.agents/skills/issue-spec-workflow/SKILL.md
+$root/.agents/skills/issue-spec-apply/SKILL.md
+$root/.agents/skills/issue-spec-propose/SKILL.md
+$root/.claude/commands/issue-spec/apply.md
+$root/.claude/commands/issue-spec/propose.md"
+if grep -En 'issue-spec (review sync|verify submit|code-change rationale)' $generated_assets; then
+  echo "active generated workflow retains a retired authority command" >&2
+  exit 1
+fi
+if grep -REn --include='*.md' 'issue-spec (review (submit|sync)|verify (submit|final)|code-change rationale|finalize)' "$root/docs"; then
+  echo "operator documentation retains an active retired authority command" >&2
+  exit 1
+fi
+
 echo "Requirements onboarding acceptance evidence is complete and self-consistent."

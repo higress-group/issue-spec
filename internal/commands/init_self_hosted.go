@@ -661,6 +661,9 @@ func writeAtomicJSON(path string, value any, mode os.FileMode) error {
 }
 
 func writeExternalCodeWorkflowConfig(root string, provider workflow.ProviderPlan) error {
+	if err := validateMinimalProviderPlan(provider); err != nil {
+		return err
+	}
 	path := filepath.Join(root, "issue-spec", "config.yaml")
 	config := map[string]any{}
 	if raw, err := os.ReadFile(path); err == nil {
@@ -691,29 +694,8 @@ func writeExternalCodeWorkflowConfig(root string, provider workflow.ProviderPlan
 		}
 	}
 	external["provider_key"] = provider.ProviderKey
-
-	evidence := map[string]any{}
-	evidenceConfigured := false
-	if existing, ok := external["evidence"]; ok {
-		evidenceConfigured = true
-		var mappingOK bool
-		evidence, mappingOK = existing.(map[string]any)
-		if !mappingOK {
-			return fmt.Errorf("existing %s external_code.evidence must be a mapping", filepath.ToSlash(path))
-		}
-	}
-	required := make([]string, 0, len(provider.RecommendedEvidence))
-	for _, kind := range provider.RecommendedEvidence {
-		required = append(required, string(kind))
-	}
-	if _, ok := evidence["required"]; !ok && len(required) > 0 {
-		evidence["required"] = required
-	}
-	if _, ok := evidence["sync_before"]; !ok && provider.EvidenceSnapshot {
-		evidence["sync_before"] = []string{"verify"}
-	}
-	if evidenceConfigured || len(evidence) > 0 {
-		external["evidence"] = evidence
+	if _, legacy := external["evidence"]; legacy {
+		return fmt.Errorf("existing %s external_code.evidence is deprecated; remove it and configure provider-native external_code.merge.required_checks", filepath.ToSlash(path))
 	}
 	config["external_code"] = external
 	raw, err := yaml.Marshal(config)

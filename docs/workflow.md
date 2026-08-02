@@ -1,265 +1,103 @@
-# issue-spec workflow guide
+# Minimal provider-bound workflow
 
-**English | [简体中文](workflow.zh-CN.md)**
+Issue-spec has one delivery model: select a bounded Issue contract, satisfy current provider checks and provider review at one exact code subject, inspect readiness without writes, merge through a provider-issued complete authority token, then reconcile Issue closure after the provider reports the change merged.
 
-This guide collects the detailed workflow walkthrough, the coordination model,
-and the GitHub-mode setup that the [README](../README.md) intentionally keeps
-short.
+Planning artifacts are optional. They help people make decisions and isolate implementation, but their status, links, receipts, rationale, and history never change merge readiness.
 
-## See it in action
+## Select the contract by risk
 
-```text
-You: /issue-spec:propose add-dark-mode
-AI:  Created proposal issue #101
-     Added SPEC comments for theme behavior and persistence
-     Added QUESTION comments for unresolved UX decisions
+- Use a simple Issue for a bounded change whose product and design risk does not require a Proposal. File count is not the criterion.
+- Use a Proposal when requirements need explicit confirmation. Add a Design only for design risk and an Implement/TASK/PROCESS plan only for coordination, delegation, or workspace-isolation risk.
+- Exactly one simple Issue or Proposal is the root. Design and Implement may appear only with a Proposal.
 
-Human: answers QUESTION-101001 on Issue #101's page (or in a comment).
-AI:    Recorded the ANSWER and updated the relevant SPEC comments.
+SPEC, QUESTION, TASK, and PROCESS comments remain canonical issue-native planning artifacts. Repository durable projection materializes confirmed behavior in `issue-spec/specs/**` on the implementation branch. Durable-spec, DCO, CLA, security, and business policy are ordinary configured checks.
 
-You: /issue-spec:apply
-AI:  Created design issue #102 and implement issue #103
-     Split work into PROCESS nodes:
-     - PROCESS-103001: theme state and storage
-     - PROCESS-103002: UI toggle
-     - PROCESS-103003: tests and verification
-     Published TASK and PROCESS owner relationships
+## Configure stable merge inputs
 
-Worker: opens PR #120
-AI:     Added PR rationale comments on changed lines, each linked to SPEC and PROCESS.
+Repository configuration selects an operator-registered provider and stable provider-native check identities:
 
-You: /issue-spec:review
-AI:  Synced PR review comments, checks, and findings into REVIEW comments.
-     P1 finding assigned to PROCESS-103002.
-
-Worker: fixes the finding
-AI:     Replied to the original PR review thread and marked the finding resolved.
-
-You: /issue-spec:verify
-AI:  Traceability OK
-     Blocking questions: 0
-     P0/P1 findings: 0
-     PR checks: passing
-     Durable spec draft covers all SPEC comments
-
-You: /issue-spec:archive
-AI:  After implementation merge, opened a separate durable-spec PR.
+```yaml
+external_code:
+  provider_key: code.example
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:42/context:unit
+        owner: app:42
+        display_name: unit
+    review_fallback:
+      enabled: false
 ```
 
-## Workflow model
+A bare display name is not an identity. The old `external_code.evidence` keys are rejected; they are not mapped into the new model.
 
-Each substantial change uses three issue classes.
+## Preflight one immutable release set
 
-| Issue | Purpose | Typed comments |
-| --- | --- | --- |
-| Proposal | what and why | `SPEC`, `QUESTION` |
-| Design | how and acceptance strategy | `TASK`, `QUESTION` |
-| Implement | multi-agent execution, review, verify | `PROCESS`, `QUESTION`, `REVIEW`, `VERIFY` |
+Before Runner dispatch or merge, quiesce mutations and validate the same pinned CLI, Server, Runner, generated assets, and provider bridge:
 
-Traceability is read as a graph, but each relationship has exactly one writer:
-
-```text
-TASK owner -> SPEC coverage
-PROCESS owner -> parent TASK and PROCESS dependencies
-REVIEW owner -> review/change PROCESS coverage and active SPEC coverage
-VERIFY owner -> verification PROCESS and active SPEC coverage
+```sh
+issue-spec workflow preflight \
+  --repo owner/repo \
+  --release-set 2.0.0 \
+  --server-release 2.0.0 \
+  --runner-release 2.0.0 \
+  --generated-manifest .agents/skills/issue-spec-workflow/release.json \
+  --generated-digest sha256:... \
+  --provider-generation minimal-merge-authority/v1 \
+  --provider-build code-example@sha256:... \
+  --canonical-principals operator-map@sha256:... \
+  --review-mode provider_native \
+  --reconciliation-mode post-merge-idempotent \
+  --enforcement-mode provider-authority-token \
+  --external-authority-mode disabled \
+  --json
 ```
 
-Owner commands resolve and validate the complete canonical target set before a
-single owner write. They never update peers merely to add reverse navigation.
+Preflight is read-only. It validates `issue-spec.code-provider/v1`, semantic generation `minimal-merge-authority/v1`, the immutable bridge build, `evidence.review-decision`, `evidence.authoritative-check-conclusion`, `change.merge-conditional`, generated-asset release/digest, configured key/owner pairs, canonical-principal mapping identity, review mode, reconciliation mode, and complete authority-token enforcement. Missing, unknown, or mixed identities fail before authority is consumed or anything mutates.
 
-Before the implementation PR merges, `pr link-issues` writes closing links into
-the implementation PR body so the provider closes the PR-associated proposal,
-design, and implement issues at merge time. After merge,
-`archive durable-spec --create-pr --close-issues` opens a separate PR that
-writes the long-lived behavior contract into the repository and idempotently
-closes any still-open active issues.
+## Review and checks stay provider-owned
 
-Use `--capability` as a stable capability directory rather than the original
-change name. Before finalizing the archive PR, inspect existing related durable
-specs and treat the generated durable spec as a draft to merge, revise, or
-regroup by durable functional modules while preserving Source SPEC links for
-traceability.
+The provider returns one policy-complete exact-subject review snapshot. Reviewer independence compares trusted canonical principals against the complete opener, author, coauthor, and committer set. Current changes-requested decisions, unresolved required conversations, and open P0/P1 findings block. At least one qualifying approval must be independent.
 
-## Active change state lives in issues
+For every configured check, the provider chooses exactly one current conclusion for the opaque key, owner, exact subject, and provider configuration generation. Historical attempts and same-name checks from another owner are audit data only. Only `success` passes.
 
-Active change artifacts are stored in issues instead of repository files:
+Issue-native review fallback is disabled by default. It is eligible only when the provider explicitly requires it, repository policy enables it, identities map through an operator-owned canonical source, and conditional merge atomically validates the external-authority generation.
 
-- proposal issue: proposal body plus `SPEC` and `QUESTION` comments
-- design issue: design body plus `TASK` and `QUESTION` comments
-- implement issue: implementation DAG plus `PROCESS`, `REVIEW`, and `VERIFY` comments
+## Read-only readiness
 
-Issue bodies are the current editable proposal/design/implementation artifacts,
-not placeholder shells. Use `--body-file` when creating them and
-`issue-spec issue update --body-file --summary` when discussion changes the
-body, so humans can review the latest content and the audit trail in the same
-issue.
+For a simple Issue:
 
-Generated issue titles use the human-readable `Proposal: <subject>`,
-`Design: <subject>`, and `Implement: <subject>` family. With `--body-file`, the
-subject is derived from the first Markdown H1 when possible, while the change
-name remains preserved in the issue marker and metadata. Use
-`issue create --title` only for an explicit user-requested custom title.
-
-This keeps the repository focused on current code and durable specs: draft,
-superseded, or abandoned change specs never show up in `grep`, code search, or
-an agent's later repository reads. Draft change history remains reviewable in
-the issue tracker, with comment threads, edits, links, and human approval
-points.
-
-Human-in-the-loop decisions are first-class:
-
-- blocking questions are `QUESTION` comments with structured choice models
-- each confirmed choice is an immutable, append-only `ANSWER` comment
-- accepted assumptions are recorded in issue history
-- review findings are PR line comments with owners and linked specs
-- verification evidence is stored in `VERIFY` comments
-
-## Native multi-agent DAG coordination
-
-`issue-spec` treats implementation and review as a native multi-agent workflow.
-Work is split into small `TASK` and `PROCESS` units, linked back to the
-relevant `SPEC` comments, PR work, and review evidence.
-
-The goal is to keep each model invocation inside its effective reasoning zone:
-narrow scope, clear context, explicit ownership, focused tests, and small
-review surfaces.
-
-The implement issue records the DAG:
-
-- worker owner and review agent owner
-- branch/worktree or PR node
-- dependencies
-- owned files and scope
-- linked TASK/SPEC comments
-- status, blockers, and verification evidence
-
-For non-trivial changes, the DAG should include dedicated review PROCESS nodes,
-not only implementation PROCESS nodes. A coordinator may run multiple review
-agents in parallel when their review scopes are independent, such as CLI/API
-behavior, workflow documentation, tests, compatibility, or security-sensitive
-surfaces. Small changes may be implemented and reviewed by the coordinator
-directly, but the implement or verify record should state that the task was
-intentionally kept serial.
-
-Coordinator execution follows a ready-node loop:
-
-- select PROCESS nodes whose dependencies are done and whose write/review scopes do not overlap
-- dispatch independent worker or review agents in parallel when that reduces context size without creating integration risk
-- integrate completed worker outputs by dependency order and add PR rationale for the changed lines
-- route P0/P1 review findings back to the owner PROCESS before final verification
-- mark review PROCESS nodes done only after their review evidence is recorded and blocking findings are resolved
-
-The CLI does not act as a scheduler that launches agents automatically. It
-provides the shared state, links, and gates that let a coordinator safely split
-work across multiple agents without losing traceability.
-
-## PR-native review flow
-
-Review and verification connect directly to PR review comments:
-
-- `pr rationale` records why a worker changed a specific PR diff line and links it to a `SPEC` and `PROCESS`
-- `review finding` creates actionable PR line findings with severity, owner process, and linked spec context
-- `review reply` lets the worker close the original review thread after a fix
-- `review sync` summarizes rationale comments, findings, resolved findings, PR checks, and review status back into `REVIEW` comments
-
-This gives humans a better review experience: findings are attached to the
-exact code line, while issue comments preserve assignment, workflow state, and
-spec context.
-
-Final verification checks unresolved blocking questions, traceability, P0/P1
-findings, PR rationale coverage, PR checks, and durable spec coverage before
-archive.
-
-## Safe workflow gates and proportional evidence
-
-Use `status --gate proposal|design|implement|final|archive --json` to forecast
-the next boundary, `comment transition` with an observed version or digest for
-a single safe mutation, and `workflow reconcile --plan ... --checkpoint ...
---json` for resumable dependency-ordered batches. Run `doctor agent
---operation ... --json` before delegated workspace or worker allocation.
-PROCESS nodes declare one of five execution classes so change-bearing, review,
-verification, orchestration, and external work use truthful evidence carriers
-instead of all requiring arbitrary line rationale.
-
-See [Workflow safety, reconciliation, and PROCESS evidence](workflow-safety.md)
-for the commands, atomicity boundary, strict credential policy, resume
-behavior, and complete evidence matrix.
-
-## Finding related changes
-
-Before proposing a change, search the issue backend for the historical trail
-it should build on:
-
-```bash
-issue-spec search issues --repo owner/repo --query "schema allowlist" \
-  --source change --stage design --state all --limit 10
+```sh
+issue-spec merge-check --repo owner/repo --issue 41 --pr 87 --json
 ```
 
-`--source change` groups matches by their related change (self-hosted backend),
-and `--stage proposal|design|implement` narrows results to one phase. On the
-self-hosted Web UI the same search groups issue and comment matches under each
-related change.
+For an optional phase plan:
 
-## Agent skills and slash commands
-
-`issue-spec init` generates agent workflow artifacts for a project:
-
-```bash
-issue-spec init --repo owner/repo --tools codex,claude --delivery both
+```sh
+issue-spec merge-check --repo owner/repo \
+  --proposal 41 --design 42 --implement 43 \
+  --change-id change-87 --head <exact-head> --json
 ```
 
-- Skills are written once to `.agents/skills/issue-spec-*`, including the generated `issue-spec-github` support skill for adjacent GitHub CLI operations that issue-spec does not wrap directly.
-- When Claude is selected, `.claude/skills` is a relative symlink to `../.agents/skills`, so Codex and Claude consume the same repository skill files.
-- Init safely migrates an existing `.claude/skills` directory only when it contains issue-spec-managed skills or byte-identical copies of canonical skills. It stops without replacing user-owned conflicts.
-- Claude slash commands are written to `.claude/commands/issue-spec/*.md`, invoked like `/issue-spec:propose`.
-- Codex slash prompts are written to `${CODEX_HOME:-~/.codex}/prompts/issue-spec-*.md` for compatibility with Codex custom prompts. Codex custom prompts are deprecated by current Codex docs; prefer skills for shared workflows.
-- `--delivery skills` writes only skills; `--delivery commands` writes only slash commands.
+`merge-check` performs zero writes. It does not execute checks or read TASK/PROCESS lifecycle, REVIEW/VERIFY comments, role receipts, rationale, relationship coverage, finalization, Archive state, or pre-merge closing links. Its decision and snapshot digest are diagnostic output, not reusable proof.
 
-If `--tools` is omitted, init detects existing `.agents` or `.claude`
-directories and refreshes those workflows. Use `--tools none` to initialize
-only `.issue-spec/config.json` and optional labels.
+Candidate CLI dogfood must remain on this read-only command until the exact-head check set and provider-native review authority are proven.
 
-## GitHub mode setup
+## Conditional merge and reconciliation
 
-`issue-spec` runs the same workflow directly against github.com or GitHub
-Enterprise. It expects GitHub CLI to be installed and authenticated on the
-current machine, and uses the same account and host that `gh auth status`
-reports:
-
-```bash
-gh auth login
-gh auth status
-issue-spec auth status --json
+```sh
+issue-spec code-change merge --repo owner/repo \
+  --proposal 41 --design 42 --implement 43 \
+  --change-id change-87 --expected-head <exact-head> --json
 ```
 
-For GitHub Enterprise, log in with GitHub CLI first, then pass the same host to
-issue-spec commands:
+The merge command recollects a fresh snapshot, reevaluates the same pure predicate, and asks the provider to atomically validate the opaque authority token plus expected head. Expected-head CAS alone is insufficient because review, policy, findings, conversations, and checks can drift at the same head. Ordinary GitHub REST read-then-write is non-atomic and remains fail-closed unless an operator bridge proves complete provider-native enforcement.
 
-```bash
-gh auth login --hostname ghe.example.com
-issue-spec auth status --hostname ghe.example.com --json
-```
+After freshly observing merged state, issue-spec reconciles exactly the selected Issue set idempotently. Reconciliation failure cannot undo or make the code merge ambiguous; retry bookkeeping separately.
 
-`issue-spec auth status`, `init`, and normal workflow commands do not print
-token values. `issue-spec auth token --plain` prints the current `gh` token
-only when explicitly requested.
+## Deprecated boundary
 
-`archive durable-spec --create-pr` still uses local `git` for fetch, worktree,
-commit, and push. GitHub API reads and PR creation use the same authenticated
-`gh` account.
+Legacy review synchronization/completion, verification submission/final verification, rationale-as-evidence, evidence-only PROCESS completion, finalization, closure verification, and Archive gates return `deprecated_workflow` before local, Issue, relationship, evidence, or provider mutation. Historical artifacts remain available through explicit audit reads only.
 
-On GitHub, every typed artifact stays readable Markdown. The two self-hosted
-review surfaces that GitHub does not execute are the sandboxed `html-preview`
-review projections and the interactive QUESTION answer panel; on GitHub their
-source remains reviewable as plain Markdown and answers are recorded through
-the CLI instead.
-
-## Relationship to OpenSpec
-
-`issue-spec` is inspired by [OpenSpec](https://github.com/Fission-AI/OpenSpec)
-and keeps its spec-first authoring habits: proposal -> specs -> design ->
-tasks -> review -> verify -> archive, with durable specs archived in the
-repository. The main adaptation is where active state lives (issues and typed
-comments instead of working files) and how humans review it (rendered review
-projections, PR line findings, and structured QUESTION/ANSWER decisions).
+Upgrade and rollback are both complete-set switches: quiesce dispatch and merge, install the pinned binaries, bridge, generated assets, and configuration, validate preflight, then resume. Never run mixed generated assets or translate new facts into old REVIEW/VERIFY authority.

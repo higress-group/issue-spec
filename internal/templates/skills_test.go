@@ -11,22 +11,23 @@ import (
 
 func TestIssueSpecSkillAndCommandTemplates(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
-	if got, want := len(skills), 6; got != want {
+	if got, want := len(skills), 4; got != want {
 		t.Fatalf("skills = %d, want %d", got, want)
 	}
 	if !strings.Contains(skills[0].Content, `generatedBy: "issue-spec"`) {
 		t.Fatalf("skill missing generatedBy:\n%s", skills[0].Content)
 	}
 	commands := IssueSpecCommandContents("owner/repo")
-	if got, want := len(commands), 4; got != want {
+	if got, want := len(commands), 2; got != want {
 		t.Fatalf("commands = %d, want %d", got, want)
 	}
 	if commands[0].ID != "propose" || !strings.Contains(commands[0].Body, "owner/repo") {
 		t.Fatalf("unexpected first command: %+v", commands[0])
 	}
 	for _, skill := range skills {
-		if skill.Name == "issue-spec-archive" || strings.Contains(skill.Content, "Issue Spec Archive") {
-			t.Fatalf("normal generated skills still expose Archive: %s", skill.Name)
+		if skill.Name == "issue-spec-archive" || skill.Name == "issue-spec-review" || skill.Name == "issue-spec-verify" ||
+			strings.Contains(skill.Content, "Issue Spec Archive") {
+			t.Fatalf("normal generated skills still expose retired gates: %s", skill.Name)
 		}
 	}
 	for _, command := range commands {
@@ -74,7 +75,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	workflow := skillContent(t, skills, "issue-spec-workflow")
-	for _, want := range []string{"first QUESTION discovery/create pass, then author the next typed child set", "SPEC for Proposal, TASK for Design, PROCESS for Implement", "independent review"} {
+	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "provider-native review"} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("disabled workflow lost typed obligation %q:\n%s", want, workflow)
 		}
@@ -86,7 +87,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	apply := skillContent(t, skills, "issue-spec-apply")
-	for _, want := range []string{"complete PROCESS planning", "real non-Coordinator implementation worker", "independent review"} {
+	for _, want := range []string{"complete PROCESS planning", "real non-Coordinator worker", "Coordinator acceptance"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("disabled apply skill lost implementation obligation %q:\n%s", want, apply)
 		}
@@ -104,18 +105,15 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
 	workflow := skillContent(t, IssueSpecSkills("owner/repo"), "issue-spec-workflow")
 	wants := []string{
-		"status --repo owner/repo", "--summary --json", "structured detail action", "full --json",
-		"comment get", "active/status/history filters", "narrow direct-PR fast path",
+		"auth status --json", "workflow validate --repo owner/repo", "bounded simple Issue", "engineering risk",
 		"<TYPE>-<issue><three-digit sequence>", "QUESTION-1001", "QUESTION-44001",
 		"do not add another type digit or search the whole repository", "never renumber a legacy ID",
 		"one independently verifiable Design invariant", "bounded context and working set", "stable interface",
-		"stop the Implement transition as blocked", "acceptance consequences", "request human direction",
-		"workspace prepare -> real non-Coordinator", "never implements/tests/commits", "sealed assignment",
-		"design_context.source_url", "without comments, timeline, history, or gates", "stops on any conflict",
-		"Exact revision, ownership, DCO, required tests", "independent review", "review/fix convergence",
-		"same plan digest and checkpoint", "Cleanup is explicit", "destructive", "retain uncertain or unintegrated work",
-		"verify --summary --json", "authoritative full final verify", "pr link-issues is the final PR-body write",
-		"durable-spec preview/apply", "issue-spec/durable-spec", "issue close-change",
+		"stable check keys/owners", "canonical-principal mapping source", "minimal-merge-authority/v1",
+		"provider-native review", "outside the complete opener/author/coauthor/committer set",
+		"read-only `issue-spec merge-check", "never runs checks or writes comments", "code-change merge",
+		"provider-issued complete authority token", "Ordinary GitHub REST read-then-write is non-atomic",
+		"reconcile exactly the selected Issue set idempotently", "Deprecated review sync/submit completion",
 	}
 	for _, want := range wants {
 		if !strings.Contains(workflow, want) {
@@ -150,22 +148,6 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 				"An amendment invalidates the receipt", "Coordinator acceptance"},
 			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
-		{
-			name: "issue-spec-review",
-			required: []string{"sealed review assignment", "exact subject revision", "immutable snapshot/diff",
-				"design_context.read_mode=complete-issue-body", "read the complete Design", "Stop on conflict",
-				`{"verdict":"approve","findings":[]}`, "issue-spec role complete", "runs every sealed test",
-				"atomically self-validates v1 evidence", "Coordinator review submission/sync",
-				"single REVIEW owner comment", "Do not run peer mutation commands after publication"},
-			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
-		},
-		{
-			name: "issue-spec-verify",
-			required: []string{"sealed verification assignment", "exact immutable subject revision", "required test commands/check selectors",
-				`{"summary":"..."}`, "issue-spec role complete", "runs every sealed test", "derives check selectors",
-				"Coordinator acceptance blockers", "Do not collect or pass runtime session IDs"},
-			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
-		},
 	}
 	for _, tc := range cases {
 		content := skillContent(t, skills, tc.name)
@@ -185,6 +167,13 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 			}
 		}
 	}
+	for _, retired := range []string{"issue-spec-review", "issue-spec-verify", "issue-spec-archive"} {
+		for _, skill := range skills {
+			if skill.Name == retired {
+				t.Fatalf("retired authority skill %q was generated", retired)
+			}
+		}
+	}
 }
 
 func TestRoleCompleteGuidanceCompactsFormerManualEvidenceRecipe(t *testing.T) {
@@ -197,20 +186,6 @@ func TestRoleCompleteGuidanceCompactsFormerManualEvidenceRecipe(t *testing.T) {
 4. Implement the owned invariant, run the assigned generators exactly, and run focused verification. If the assignment cannot fit a bounded end-to-end working set, stop with the concrete stable-interface split options and acceptance consequences.
 5. For each focused test with a result-revision binding, first produce the exact final DCO result commit, resolve the sealed declarative selector against that commit, run the resulting command, and record both assigned_selector and resolved_revision with the executed command and outcome. Any amendment changes the result revision, invalidates the earlier test evidence, and requires resolution and execution again. Literal selectors retain their exact command identity.
 6. Manually construct the complete receipt schema from assignment identity, Git revision, changed paths, selectors, outcomes, assurance, decisions, risks, rationale, and provenance. For every literal selector copy the exact command. For every bound selector copy assigned_selector, resolved_revision, and the expanded command. Set route=role-owned, assurance=self-reported, writer and subject to the role agent, and the manual source. Canonically sort changed paths, decisions, risks, and tests, omit receipt_digest, hash the canonical JSON, restore receipt_digest, and avoid framing changes. Re-open the output and manually compare assignment id, digest, generation, role, base, result revision, tests, receipt id, and receipt digest. Return the result commit, changed paths, generator outputs, focused tests, decisions, risks, and bounded handoff/result receipt.`,
-		"issue-spec-review": `## Review Role Packet
-1. Accept only the sealed review assignment for the exact subject revision, immutable snapshot/diff, code authors, invariant, scenarios, scope, checks, result schema, and design_context.
-2. Read the complete Design and stop on conflict.
-3. Resolve every subject-revision-bound test, run it, and record assigned_selector plus resolved_revision. Preserve literal selectors byte-for-byte.
-4. Review the invariant end to end at the exact revision and report complete actionable findings or an explicit no-finding verdict.
-5. Manually construct the full review receipt with assignment digest and generation, subject revision, every exact test result, writer/subject provenance, verdict, and findings. For each bound test copy assigned_selector and resolved_revision; for each finding copy its stable id, SPEC, owner PROCESS, path, side, line, severity, and message. Set route=role-owned, assurance=self-reported, writer and subject to the independent reviewer, and the manual review source. Canonically sort findings and tests, omit receipt_digest, hash canonical JSON, restore it, and ensure editor whitespace never changes identity. Re-open the file and manually compare receipt identity, digest, role, generation, subject revision, tests, verdict, findings, and provenance.
-6. Check that approve has no findings and changes-requested has at least one complete finding. Re-check the exact revision after fixes, reconstruct and rehash all evidence after any subject change, and submit only the bounded review receipt/sync result.`,
-		"issue-spec-verify": `## Verification Role Packet
-1. Accept only the sealed verification assignment for the exact immutable subject revision, scenarios, required tests/check selectors, and result schema.
-2. Resolve every subject-revision-bound test and record assigned_selector plus resolved_revision. Preserve literal selectors byte-for-byte.
-3. Run only required tests and keep local self-reported results distinct from provider outcomes.
-4. Manually construct the complete VERIFY receipt with assignment identity, subject, tests, check selectors, summary, writer/subject provenance, and assurance. Canonically sort selectors and tests, omit receipt_digest, hash canonical JSON, restore it, and preserve exact newline framing.
-5. For each test copy its ID, exact command, passed outcome, and self-reported assurance. For each bound selector also copy the complete assigned selector and exact resolved revision. Copy provider/name check selector identity but never claim a provider conclusion. Set route=role-owned, assurance=self-reported, writer and subject to the real verifier, and source to the manual verification route. Validate the schema, role payload exclusivity, exact assignment generation, exact subject revision, selector ordering, and digest after writing the file.
-6. Return only the bounded VERIFY receipt and failures; never invent provider evidence, create REVIEW, infer links, or replace independent review.`,
 	}
 	for name, old := range former {
 		content := rolePacketOnly(skillContent(t, skills, name))
@@ -256,8 +231,6 @@ func TestGeneratedGuidanceDeterministicSizeBudgets(t *testing.T) {
 		"issue-spec-workflow": {maxBytes: 10000, maxHeadings: 8, maxItems: 40},
 		"issue-spec-propose":  {maxBytes: 5000, maxHeadings: 4, maxItems: 16},
 		"issue-spec-apply":    {maxBytes: 5500, maxHeadings: 5, maxItems: 12},
-		"issue-spec-review":   {maxBytes: 5000, maxHeadings: 5, maxItems: 12},
-		"issue-spec-verify":   {maxBytes: 4000, maxHeadings: 5, maxItems: 10},
 	}
 	for _, skill := range IssueSpecSkills("owner/repo") {
 		limit, ok := budgets[skill.Name]
@@ -362,33 +335,20 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 
 	apply := skillContent(t, skills, "issue-spec-apply")
 	assertTextOrder(t, apply,
-		"persist the Implement issue",
-		"perform its first QUESTION discovery/create pass",
+		"Persist the Implement issue",
+		"perform its first QUESTION pass",
 		"upsert the ordinary statusless `implement-execution-brief`",
 		"before completing PROCESS planning")
 	for _, want := range []string{
-		"opens with a concrete acceptance case",
-		"human-visible outcome",
-		"PROCESS sequence carries it from trigger to verification",
-		"current DAG, state counts, critical path, safe parallelism",
-		"roles, per-node SPEC/scenario coverage",
-		"shared touchpoints, blockers, tests, generators",
-		"Estimates never define workflow semantics",
-		"Issue bodies and typed artifacts remain authoritative",
-		"projection source stays outside default Agent context",
+		"Issue bodies and typed planning artifacts remain authoritative planning state",
 		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",
 		"generate a coverage-complete `projection.md` from current authoritative inputs",
 		"never emit only the increment since the Design",
-		"tests, generators, and independent review/verify obligations",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply guidance missing %q:\n%s", want, apply)
 		}
 	}
-	assertTextOrder(t, apply,
-		"concrete acceptance case",
-		"PROCESS sequence",
-		"current DAG")
 }
 
 func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {

@@ -27,19 +27,15 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/9#issuec
 
 ### Requirement: proxy GitHub API operations through gh
 
-Issue-spec MUST support a GitHub backend that proxies existing GitHub API operations through the local GitHub CLI.
+Issue-spec MUST support GitHub issue, comment, exact-head check, review-decision, finding, conversation, and file operations through the gh backend with the same normalized provider-policy semantics as the REST backend, and MUST NOT preserve review-sync, VERIFY, rationale-gate, or legacy carrier semantics.
 
-#### Scenario: issue and comment operations
+#### Scenario: gh and REST expose the same current authority
 
-- **WHEN** issue-spec uses the gh backend for issue/comment operations
-- **THEN** create/update/list behavior MUST match the existing direct REST backend outputs used by issue-spec commands.
+- **WHEN** merge-check uses either GitHub backend for the same exact pull-request head
+- **THEN** both return equivalent authoritative check conclusions, review policy state, findings, and conversations without creating workflow evidence
 
-#### Scenario: PR review operations
-
-- **WHEN** issue-spec uses the gh backend for PR rationale, review findings, replies, checks, and file listings
-- **THEN** the backend MUST preserve current traceability and review sync semantics.
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/9#issuecomment-4850077657
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764761
 
 ### Requirement: debuggable backend selection
 

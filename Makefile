@@ -3,7 +3,7 @@ NPM ?= npm
 DIST_DIR ?= dist
 IMAGE ?= issue-spec-server:dev
 
-.PHONY: generate-web verify-generated verify-docs verify-requirements-acceptance docs-self-hosted-screenshots build-server test-server release-server release-cli verify-release docker-server backup-smoke test-fast test-git-contract test-full test-baseline
+.PHONY: generate-web verify-generated verify-docs verify-requirements-acceptance verify-workflow-cutover candidate-cli-dogfood docs-self-hosted-screenshots build-server test-server release-server release-cli verify-release docker-server backup-smoke test-fast test-git-contract test-full test-baseline
 
 # test-fast runs the deterministic, Git-free command orchestration tier and
 # asserts its wall time against testdata/test-baseline.json.
@@ -40,6 +40,16 @@ verify-requirements-acceptance:
 	$(GO) test ./internal/commands -run '^TestRequirementsAcceptance'
 	$(GO) test ./internal/server/api/github/issues -run '^TestPublicContributorIssueCompatibility$$'
 	./hack/requirements-acceptance/verify.sh
+
+# verify-workflow-cutover checks the single generated authority model, strict
+# release preflight, and bilingual operator contract.
+verify-workflow-cutover:
+	$(GO) test ./internal/workflow ./internal/templates ./internal/commands
+	./hack/requirements-acceptance/verify.sh
+
+# Candidate builds dogfood only read-only readiness and release preflight.
+candidate-cli-dogfood:
+	$(GO) test ./internal/commands -run '^(TestMergeCheckSuccessAndFailurePerformZeroWrites|TestWorkflowPreflight)$$'
 
 docs-self-hosted-screenshots:
 	./hack/update-self-hosted-doc-screenshots.sh

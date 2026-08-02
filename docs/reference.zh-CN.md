@@ -39,7 +39,7 @@ html_review:
 
 使用 `enabled: false` 时，`issue-spec init` 会从生成的 skills、slash commands 与 prompts 中省略 projection 检查点，不生成内嵌的 `human-review-projections.md` 资源，并且只移除先前启用生成所留下的这个精确托管资源。内置 Proposal、Design 与 Implement issue 正文也会省略 Human Review Projection 章节。自定义工作流模板和显式 `--body-file` 内容仍具有权威性。
 
-该设置只控制仓库的创作指引。类型化 SPEC、TASK、PROCESS、QUESTION、ANSWER、REVIEW 与 VERIFY 产物、独立实现 review、最终验证、已存储的历史 projection 评论、HTML preview 解析与存储，以及 Web preview 执行均保持不变。
+该设置只控制仓库的创作指引。类型化规划制品、已存储的历史 REVIEW/VERIFY 审计数据、projection 评论、HTML preview 解析与存储以及 Web preview 执行均保持不变。提供方原生评审、已配置检查、只读 merge-check 与条件合并仍是唯一合并权威。
 
 ### 偏好的自然语言
 
@@ -143,18 +143,9 @@ QUESTION，并且只提交当前摘要以及所选选项 ID 或自定义文本�
 issue-spec --profile team code-change attach --repo acme/widgets --implement 3 --change-id 42 --revision abc123 [--refresh --expected-version 7] [--json]
 issue-spec --profile team code-change link-process --repo acme/widgets --implement 3 --process PROCESS-3001 --expected-version 5 [--json]
 
-issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-3001 --spec SPEC-1001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
-issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-3001 --pr 4
-issue-spec pr link-issues --repo owner/repo --pr 4 --proposal 1 --design 2 --implement 3
-
-issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-3001
-issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-3001 --spec SPEC-1001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
-issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding FINDING-001 --process PROCESS-3001 --status resolved --body "Fixed in the latest patch."
-
-issue-spec verify --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --durable-spec issue-spec/specs/issue-spec-cli/spec.md
-
-issue-spec archive durable-spec --repo owner/repo --proposal 1 --capability issue-spec-cli
-issue-spec archive durable-spec --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --capability issue-spec-cli --create-pr --branch issue-spec/durable-spec-issue-spec-cli --close-issues
+issue-spec workflow preflight --repo owner/repo --release-set 2.0.0 --server-release 2.0.0 --runner-release 2.0.0 --generated-digest sha256:... --provider-build bridge@sha256:... --canonical-principals map@sha256:... --json
+issue-spec merge-check --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --json
+issue-spec code-change merge --repo owner/repo --proposal 1 --design 2 --implement 3 --change-id 42 --expected-head abc123 --json
 
 issue-spec runner preflight --repo owner/repo --runner login
 issue-spec runner poll --repo owner/repo --runner login --once --dry-run
@@ -232,37 +223,20 @@ issue-spec --profile team code-change link-process \
 `DELETE .../references/{reference-id}` 只删除不需要的 Active Reference，然后重试。
 禁止猜测胜出项或静默覆盖另一个 Active Relationship。
 
-独立的 Provider Review 收敛后，由 Review Agent 使用自身身份同步精确的 Active
-Revision：
+Provider 原生评审与已配置检查收敛后，以零同步方式评估精确 Active Revision：
 
 ```bash
-issue-spec --profile team review sync \
+issue-spec --profile team merge-check \
   --repo acme/widgets \
-  --implement 3 \
-  --revision abc123 \
-  --process PROCESS-3002 \
-  --id REVIEW-3001 \
-  --agent reviewer \
+  --proposal 1 --design 2 --implement 3 \
+  --change-id 42 --head abc123 \
   --json
 ```
 
-self-hosted Sync 成功时会先持久化并重新读取 Provider Fact，再写入一个稳定的 Done
-REVIEW Completion；即使 Provider 返回零 Finding，该 Completion 仍然有效。最终 Sync
-本身会在 REVIEW 所有者评论上发布完整关系集：它的 Review PROCESS、每个覆盖到的
-Change-bearing PROCESS 以及每个覆盖到的 Active SPEC。不要随后修改对端。禁止伪造
-Finding、手工编辑 Completion Stamp、从正文中的 ID 推断链接，或用通用 Approval Framework 替代证据。
-`status` 与最终 `verify` 使用同一个 Validator 检查精确的 Provider、Repository、
-Change、Reference Version、Revision、Freshness、链接和 Reviewer Independence，且都不
-刷新 REVIEW。
-
-self-hosted 关闭流程中，只有 Implementation `code_change` 的 Merge Policy 要求 Review
-时，`archive` 才会读取已有的 Implementation REVIEW Completion。它不会创建、更新或
-刷新 REVIEW，不会添加 Archive 专属 Review 状态，也绝不会把 Implementation
-Completion 应用于 `archive_change`。
-
-GitHub Profile 继续使用 `pr link-process`、GitHub PR Review/Closing Link 与现有 Durable
-Archive 路径。self-hosted 的 Review、Merge 与代码变更关闭仍由所选 Code Provider
-负责；CLI 不会把它们路由到 GitHub PR Endpoint。
+`merge-check` 只是只读的当前判定：不会写 REVIEW/VERIFY、证据、理由、链接、回执或
+生命周期状态。只能使用 `code-change merge --expected-head` 合并；该命令重新采集
+权威，并把提供方签发的完整令牌交给条件合并。普通 GitHub REST 的先读后写保持失败
+关闭。新鲜观察到已合并状态后，再幂等协调精确选择的 Issue 集合。
 
 `comment create` 通过当前选择的托管 GitHub 或自托管 REST issue backend 写入普通
 issue 时间线评论。它支持 `--body-file -` 从 stdin 读取，并可通过 `--json` 仅返回
@@ -391,19 +365,19 @@ issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process P
 
 修改或评审代码前，被分配的角色必须执行 `issue-spec read issue --repo owner/repo --issue <design_context.source_url>`，只读取完整 Design issue body，不扩展 comments、timeline、history 或 gate。若 Design 正文与结构化 projection 冲突，角色必须停止并报告冲突。CLI 不收集或传递 runtime-specific session ID，也不把它作为 Design authority、audit metadata 或 correctness input。
 
-生成的 guidance 使用相同的有界读取模型。Coordinator guidance 使用 `status`/`verify --summary`、结构化 detail action、精确 `comment get`、显式过滤列表、sealed assignment 与 reconcile checkpoint；full output 仍是可发现的兼容与调试路径。implementation、review、verification 角色段只包含各自的 sealed assignment、权威 Design 读取、所拥有的不变量/工作、focused check 与 bounded result 职责；完整 proposal/Design 副本、全量 DAG、link matrix、closure/archive policy 和 provider-routing policy 不进入角色段。只有在已交付 command、validator、schema 或保留的显式 stop 替代后，才能删除重复规则。确定性回归预算统计 UTF-8 bytes、heading/field 与 instruction-array item，绝不使用模型 tokenizer，也不能用 size 目标为删除未覆盖的安全规则辩护。
+生成的 guidance 使用相同的有界读取模型。Coordinator 按风险选择可选规划，使用精确 `comment get` 与显式过滤列表，按需分派 sealed implementation assignment，执行不可变发布预检，然后依次使用提供方评审/检查、只读 `merge-check`、条件合并和合并后协调。implementation 角色段只包含 sealed assignment、权威 Design 读取、所拥有的不变量/工作、focused check 与 bounded result 职责；完整 proposal/Design 副本、全量 DAG、link matrix、closure/archive policy 和 provider-routing policy 不进入角色段。确定性回归预算统计 UTF-8 bytes、heading/field 与 instruction-array item，绝不使用模型 tokenizer，也不能用 size 目标为删除未覆盖的安全规则辩护。
 
 兼容性边界是显式且非对称的。已有 local registry 或 PROCESS workspace 中，D14 之前缺少 `design_context` 的 version-1 implementation/review assignment 仍可读取，使 inspect、cleanup 与 recovery 不会把整个 registry 判为 corrupt。该历史对象只是只读兼容证据：严格的 issuance/redispatch digest、assignment-file/packet 解析，以及新的 implementation/review 角色提交仍会拒绝它。CLI 绝不会合成缺失的 Design context。
 
 导入的 result file 不是身份或 provenance 信任根。其 writer、subject、逻辑 agent 名称、credential 与 assurance label 都只是信息，不能创建 accepted implementation receipt authority，也不能满足非 Coordinator/独立性 gate。unverified import 与保留的 assurance 值可以通过结构校验，但得到的 PROCESS workspace 不包含 accepted-implementation-receipt marker。runtime-attested Coordinator import 明确推迟到存在真实 runtime attestation 信任根之后；本流程不引入 signer、secret 或由调用方命名的 attestor interface。
 
-现有的窄范围直接 role-owned publication 命令继续为 rationale、review 与 verification 提供兼容路径。例如 verification 角色针对精确 assignment 与 snapshot 调用 `verify submit --agent Verifier`。逻辑 agent 字段仍是 `self-reported` metadata；CLI 不收集 runtime-specific session 字段。`verify submit` 不包含 Coordinator 侧的 owner-token import。
+旧的理由、评审发布/同步、验证提交/finalization 与 Archive 命令会在任何写入前返回 `deprecated_workflow`。历史制品仅供显式审计读取，绝不会成为合并权威。
 
-`change-bearing` 使用可写的独占分支；`review` 与 `verification` 使用 detached immutable workflow snapshot，dirty 状态会 fail closed，但 CLI 不会为每个 child 创建 OS 强制的独立 sandbox；`orchestration` 只记录生命周期账本，不创建 checkout。`external` 使用 mode `none`；完成该 PROCESS 并通过 final gate 需要已消费的 provider-neutral exact-revision evidence。
+`change-bearing` 使用可写的独占分支；历史 `review` 与 `verification` execution class 使用 detached immutable workflow snapshot，dirty 状态会 fail closed，但 CLI 不会为每个 child 创建 OS 强制的独立 sandbox；`orchestration` 只记录生命周期账本，不创建 checkout；`external` 使用 mode `none`。这些完成状态只是实现记账，绝不会成为合并门禁。
 
 runner 命令不携带 PROCESS selector。runner 只启动一个 ACPX coordinator，并让它的 cwd 与主 sandbox workspace 始终保持在 public session clone。coordinator 从 typed DAG 选择 ready PROCESS，再调用 workspace CLI。runner 模式通过 `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` 和 `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT` 提供可信的 session-local 默认值；standalone coordinator 则显式传入 roots。
 
-`prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制分发工作，并传入精确 worktree 路径作为 cwd，同时传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。该 child 不是另一个 ACPX session；它共享 coordinator 的 runner 外层 sandbox，自行生成 result commit、执行 focused tests、seal 可选 receipt，并返回这个有界 handoff。coordinator 从未改变的 session clone 执行 `complete` 与 `integrate` 时重新校验精确 Git 结果，再同步状态并 cleanup；导入 receipt 并不能证明是谁生成了它。verification 保留直接 role-owned `verify submit` 兼容路径，在发布 accepted VERIFY 评论前校验精确 snapshot 与 required evidence，不再使用 Coordinator-owned sidecar import。
+`prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制分发工作，并传入精确 worktree 路径作为 cwd，同时传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。该 child 不是另一个 ACPX session；它共享 coordinator 的 runner 外层 sandbox，自行生成 result commit、执行 focused tests、seal 可选 receipt，并返回这个有界 handoff。coordinator 从未改变的 session clone 执行 `complete` 与 `integrate` 时重新校验精确 Git 结果，再同步状态并 cleanup；导入 receipt 并不能证明是谁生成了它。这些实现控制绝不会成为评审、检查或合并权威。
 
 runner resume 或 restart 后，top-level runner 只恢复 ACPX/session job。PROCESS 生命周期由 coordinator 所有：它从未改变的 session clone 对精确 lease 执行 `inspect` 或 `reconcile`，再执行 `complete` 与 `integrate`，并且只在显式完成 integration 或 retention 决策后调用 owner-token cleanup。top-level runner 的 session-clone retention 会调用 `git worktree list`；当 runner metadata 为 dirty 或 uncertain、存在 linked worktree，或 git worktree inspection 失败时都会 fail closed 并保留 clone。它不拥有、持久化或重试 child PROCESS cleanup。
 

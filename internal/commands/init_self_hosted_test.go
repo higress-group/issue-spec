@@ -14,21 +14,29 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
+func minimalProviderPlanForTest(key string) workflow.ProviderPlan {
+	return workflow.ProviderPlan{ProviderKey: key, DisplayName: "Example Code", CodeChangeLabel: "change",
+		SemanticGeneration: codereview.MergeAuthorityGeneration, ProviderBuildIdentity: "bridge@sha256:0123456789abcdef",
+		Capabilities: codereview.RequiredMergeAuthorityCapabilities(), ReviewDecision: true,
+		AuthoritativeCheckConclusion: true, MergeConditional: true}
+}
+
 func TestGeneratedExternalCodeWorkflowDoesNotPreGateFirstRunnerDispatch(t *testing.T) {
 	root := t.TempDir()
-	provider := workflow.ProviderPlan{ProviderKey: "code.example", EvidenceSnapshot: true}
+	provider := minimalProviderPlanForTest("code.example")
 	if err := writeExternalCodeWorkflowConfig(root, provider); err != nil {
 		t.Fatal(err)
 	}
 
 	config := readTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"))
-	if !strings.Contains(config, "- verify") || strings.Contains(config, "- runner") {
-		t.Fatalf("generated evidence synchronization policy =\n%s", config)
+	if !strings.Contains(config, "provider_key: code.example") || strings.Contains(config, "evidence:") {
+		t.Fatalf("generated provider-bound policy =\n%s", config)
 	}
 
 	// A first /new dispatch has no code-change reference yet. The generated
@@ -46,7 +54,7 @@ func TestGeneratedExternalCodeWorkflowDoesNotPreGateFirstRunnerDispatch(t *testi
 	}
 }
 
-func TestExternalCodeWorkflowConfigDefaultsMissingSyncWithoutOverwritingEvidence(t *testing.T) {
+func TestExternalCodeWorkflowConfigRejectsLegacyEvidenceWithoutOverwrite(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "issue-spec", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -62,24 +70,17 @@ func TestExternalCodeWorkflowConfigDefaultsMissingSyncWithoutOverwritingEvidence
 		t.Fatal(err)
 	}
 
-	provider := workflow.ProviderPlan{ProviderKey: "code.example", EvidenceSnapshot: true}
-	if err := writeExternalCodeWorkflowConfig(root, provider); err != nil {
-		t.Fatal(err)
+	before := readTestFile(t, path)
+	err := writeExternalCodeWorkflowConfig(root, minimalProviderPlanForTest("code.example"))
+	if err == nil || !strings.Contains(err.Error(), "deprecated") {
+		t.Fatalf("legacy evidence error = %v", err)
 	}
-	plan, err := workflow.Resolve(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	evidence := plan.Config.ExternalCode.Evidence
-	if !evidence.SynchronizesBefore("verify") || evidence.SynchronizesBefore("runner") {
-		t.Fatalf("generated sync timing = %+v", evidence.SyncBefore)
-	}
-	if len(evidence.RequiredChecks) != 1 || evidence.RequiredChecks[0] != "unit" || evidence.Freshness["check"] != "1h" {
-		t.Fatalf("existing evidence policy was not preserved: %+v", evidence)
+	if after := readTestFile(t, path); after != before {
+		t.Fatalf("legacy evidence config changed on failure:\n%s", after)
 	}
 }
 
-func TestExternalCodeWorkflowConfigRerunPreservesExplicitRunnerAndEvidencePolicy(t *testing.T) {
+func TestExternalCodeWorkflowConfigRerunPreservesMergePolicy(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "issue-spec", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -89,18 +90,17 @@ func TestExternalCodeWorkflowConfigRerunPreservesExplicitRunnerAndEvidencePolicy
   note: preserved
 external_code:
   provider_key: code.example
-  evidence:
-    required: [review]
-    required_checks: [unit, dco]
-    freshness:
-      review: 24h
-      check: 1h
-    sync_before: [verify, runner]
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:unit
+        owner: app:7
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	provider := workflow.ProviderPlan{ProviderKey: "code.example", EvidenceSnapshot: true}
+	provider := minimalProviderPlanForTest("code.example")
 	if err := writeExternalCodeWorkflowConfig(root, provider); err != nil {
 		t.Fatal(err)
 	}
@@ -120,14 +120,9 @@ external_code:
 	if plan.Config.ExternalCode.ProviderKey != "code.example" {
 		t.Fatalf("provider key = %q", plan.Config.ExternalCode.ProviderKey)
 	}
-	evidence := plan.Config.ExternalCode.Evidence
-	if !evidence.SynchronizesBefore("verify") || !evidence.SynchronizesBefore("runner") {
-		t.Fatalf("explicit sync timing was not preserved: %+v", evidence.SyncBefore)
-	}
-	if len(evidence.Required) != 1 || evidence.Required[0] != "review" ||
-		len(evidence.RequiredChecks) != 2 || evidence.RequiredChecks[0] != "unit" || evidence.RequiredChecks[1] != "dco" ||
-		evidence.Freshness["review"] != "24h" || evidence.Freshness["check"] != "1h" {
-		t.Fatalf("existing evidence policy was not preserved: %+v", evidence)
+	providerKey, checks, err := plan.MergeAuthorityConfiguration()
+	if err != nil || providerKey != "code.example" || len(checks) != 1 || checks[0].Key != "app:7/context:unit" {
+		t.Fatalf("existing merge policy was not preserved: provider=%q checks=%+v err=%v", providerKey, checks, err)
 	}
 	if !strings.Contains(afterSecondRun, "note: preserved") {
 		t.Fatalf("existing workflow config was not preserved:\n%s", afterSecondRun)
@@ -144,7 +139,7 @@ func TestExternalCodeWorkflowConfigRejectsProviderReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := writeExternalCodeWorkflowConfig(root, workflow.ProviderPlan{ProviderKey: "second.example", EvidenceSnapshot: true})
+	err := writeExternalCodeWorkflowConfig(root, minimalProviderPlanForTest("second.example"))
 	if err == nil || !strings.Contains(err.Error(), "selects external code provider") {
 		t.Fatalf("provider replacement error = %v", err)
 	}
@@ -250,7 +245,9 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 				"transport": map[string]any{"mode": "loopback-http", "secure": false},
 				"providers": []map[string]any{{"provider_key": "aone", "display_name": "Aone Code",
 					"remote_authorities": []string{"gitlab.alibaba-inc.com"}, "code_change_label": "Merge request",
-					"capabilities":         []string{"change.comment", "evidence.snapshot"},
+					"semantic_generation": "minimal-merge-authority/v1", "provider_build_identity": "aone-bridge@sha256:0123456789abcdef",
+					"capabilities": []string{"change.comment", "evidence.snapshot", "evidence.review-decision",
+						"evidence.authoritative-check-conclusion", "change.merge-conditional"},
 					"recommended_evidence": []string{"review", "check"}}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/user":
 			w.Header().Set("X-OAuth-Scopes", "repo, admin:repo, evidence:write")
@@ -335,7 +332,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 			if !strings.Contains(out.String(), test.marker) || strings.Contains(out.String(), "local-source/local-checkout") {
 				t.Fatalf("plan did not report the resolved global prompt preview: %s", out.String())
 			}
-			for _, command := range []string{"propose", "apply", "review", "verify"} {
+			for _, command := range []string{"propose", "apply"} {
 				path := filepath.Join(previewDir, "issue-spec-"+command+".md")
 				if !strings.Contains(out.String(), path) {
 					t.Fatalf("plan output missing absolute global prompt path %q: %s", path, out.String())
@@ -518,13 +515,13 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		}
 	}
 	workflowConfig := readTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"))
-	for _, want := range []string{"sync_before:", "- verify"} {
+	for _, want := range []string{"external_code:", "provider_key: aone"} {
 		if !strings.Contains(workflowConfig, want) {
 			t.Fatalf("workflow config missing %q:\n%s", want, workflowConfig)
 		}
 	}
-	if strings.Contains(workflowConfig, "- runner") {
-		t.Fatalf("workflow config must leave runner synchronization opt-in:\n%s", workflowConfig)
+	if strings.Contains(workflowConfig, "evidence:") {
+		t.Fatalf("workflow config must not emit the retired evidence gate:\n%s", workflowConfig)
 	}
 	workflowSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "SKILL.md"))
 	if !strings.Contains(workflowSkill, "browser-e2e/httpbin") || strings.Contains(workflowSkill, "local-source/local-checkout") {
@@ -577,7 +574,7 @@ import json, sys
 request = json.load(sys.stdin)
 response = {"protocol": request["protocol"], "request_id": request["request_id"]}
 if request["action"] == "capabilities":
-    response["capabilities"] = {"protocol_version": request["protocol"], "values": ["change.comment", "evidence.snapshot"]}
+    response["capabilities"] = {"protocol_version": request["protocol"], "semantic_generation": "minimal-merge-authority/v1", "provider_build_identity": "aone-bridge@sha256:0123456789abcdef", "values": ["change.comment", "evidence.snapshot", "evidence.review-decision", "evidence.authoritative-check-conclusion", "change.merge-conditional"]}
 else:
     response["error"] = {"code": "unsupported", "message": "unsupported in init test"}
 json.dump(response, sys.stdout)
@@ -586,7 +583,7 @@ json.dump(response, sys.stdout)
 		t.Fatal(err)
 	}
 	registry := filepath.Join(root, "providers.json")
-	body := fmt.Sprintf(`{"version":1,"providers":{"aone":{"path":%q,"description":{"provider_key":"aone","display_name":"Aone Code","remote_authorities":["gitlab.alibaba-inc.com"],"code_change_label":"Merge request","capabilities":["change.comment","evidence.snapshot"],"recommended_evidence":["review","check"]}}}}`, bridge)
+	body := fmt.Sprintf(`{"version":1,"providers":{"aone":{"path":%q,"description":{"provider_key":"aone","display_name":"Aone Code","remote_authorities":["gitlab.alibaba-inc.com"],"code_change_label":"Merge request","semantic_generation":"minimal-merge-authority/v1","provider_build_identity":"aone-bridge@sha256:0123456789abcdef","capabilities":["change.comment","evidence.snapshot","evidence.review-decision","evidence.authoritative-check-conclusion","change.merge-conditional"],"recommended_evidence":["review","check"]}}}}`, bridge)
 	if err := os.WriteFile(registry, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

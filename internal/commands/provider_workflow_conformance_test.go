@@ -186,7 +186,8 @@ func TestSelfHostedAttachLinkContinuesThroughProviderNeutralGates(t *testing.T) 
 	}
 }
 
-func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
+func TestLegacyGeneratedWorkflowAssetsDescribedSameBackendSplit(t *testing.T) {
+	t.Skip("legacy review/verify generated authority was removed at the minimal-authority cutover")
 	root := t.TempDir()
 	if _, err := writeWorkflowArtifacts(root, "owner/repo", "codex,claude", "both"); err != nil {
 		t.Fatal(err)
@@ -298,6 +299,62 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 	}
 }
 
+func TestGeneratedWorkflowAssetsDescribeMinimalProviderAuthority(t *testing.T) {
+	root := t.TempDir()
+	if _, err := writeWorkflowArtifacts(root, "owner/repo", "codex,claude", "both"); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{
+		".agents/skills/issue-spec-review/SKILL.md", ".agents/skills/issue-spec-verify/SKILL.md",
+		".agents/skills/issue-spec-archive/SKILL.md", ".claude/commands/issue-spec/review.md",
+		".claude/commands/issue-spec/verify.md", ".claude/commands/issue-spec/archive.md",
+	} {
+		if _, err := os.Stat(filepath.Join(root, relative)); !os.IsNotExist(err) {
+			t.Fatalf("retired generated authority asset %q exists: %v", relative, err)
+		}
+	}
+	workflowSkill := readTestFile(t, filepath.Join(root, ".agents/skills/issue-spec-workflow/SKILL.md"))
+	applyCommand := readTestFile(t, filepath.Join(root, ".claude/commands/issue-spec/apply.md"))
+	proposeCommand := readTestFile(t, filepath.Join(root, ".claude/commands/issue-spec/propose.md"))
+	for _, want := range []string{
+		"bounded simple Issue or optional Proposal", "minimal-merge-authority/v1", "provider-native review",
+		"read-only `issue-spec merge-check", "provider-issued complete authority token",
+		"Ordinary GitHub REST read-then-write is non-atomic", "reconcile exactly the selected Issue set idempotently",
+		"Deprecated review sync/submit completion", "Historical artifacts remain available only through explicit audit reads",
+	} {
+		if !strings.Contains(workflowSkill, want) {
+			t.Fatalf("minimal workflow guidance missing %q:\n%s", want, workflowSkill)
+		}
+	}
+	for name, content := range map[string]string{"workflow": workflowSkill, "apply": applyCommand, "propose": proposeCommand} {
+		for _, forbidden := range []string{"issue-spec review sync --repo", "issue-spec verify submit", "code-change rationale --repo", "authoritative final verify"} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("generated %s retains retired merge gate %q:\n%s", name, forbidden, content)
+			}
+		}
+	}
+
+	providerRoot := t.TempDir()
+	provider := minimalProviderPlanForTest("code.example")
+	if _, err := writeWorkflowArtifactsWithProvider(providerRoot, "owner/repo", "codex", "skills", provider); err != nil {
+		t.Fatal(err)
+	}
+	providerSkill := readTestFile(t, filepath.Join(providerRoot, ".agents/skills/issue-spec-code-provider/SKILL.md"))
+	assertTextOrderInCommandTest(t, providerSkill, "Run release preflight", "provider-native policy-complete review", "issue-spec merge-check", "issue-spec code-change merge", "Freshly observe merged state")
+}
+
+func assertTextOrderInCommandTest(t *testing.T, content string, values ...string) {
+	t.Helper()
+	position := 0
+	for _, value := range values {
+		index := strings.Index(content[position:], value)
+		if index < 0 {
+			t.Fatalf("content missing ordered value %q after byte %d:\n%s", value, position, content)
+		}
+		position += index + len(value)
+	}
+}
+
 func TestProviderBridgeContractRequiresStableCurrentHeadSnapshot(t *testing.T) {
 	raw, err := os.ReadFile("../../docs/self-hosting/bridges/code-provider-v1.md")
 	if err != nil {
@@ -324,7 +381,7 @@ func TestProviderBridgeContractRequiresStableCurrentHeadSnapshot(t *testing.T) {
 	}
 }
 
-func TestOpenSpecStyleVerifierPacketSealsGuidanceSelectorsAndReceipt(t *testing.T) {
+func TestOpenSpecStyleVerifierPacketDoesNotAbsorbMergeAuthority(t *testing.T) {
 	root := t.TempDir()
 	writeWorkflowTestFile(t, filepath.Join(root, "openspec", "config.yaml"), `
 schema: route-workflow
@@ -338,8 +395,12 @@ rules:
     instruction: This must not enter verifier packets.
 external_code:
   provider_key: code.example
-  evidence:
-    required_checks: [route-owner-policy]
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:route-owner-policy
+        owner: app:7
 `)
 	writeWorkflowTestFile(t, filepath.Join(root, "openspec", "schemas", "route-workflow", "schema.yaml"), `
 artifacts:
@@ -360,7 +421,7 @@ artifacts:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(packet.RequiredTests) != 1 || len(packet.RequiredChecks) != 1 {
+	if len(packet.RequiredTests) != 1 || len(packet.RequiredChecks) != 0 {
 		t.Fatalf("verifier packet selectors = tests=%+v checks=%+v", packet.RequiredTests, packet.RequiredChecks)
 	}
 	if packet.Guidance == nil || strings.Contains(string(packet.Guidance.RulesVerify), "proposal") ||
@@ -404,7 +465,7 @@ artifacts:
 		Role: assignment.RoleVerification, ResultSchemaVersion: assignment.ReceiptSchemaVersion, SubjectRevision: subject,
 		Tests:        []assignment.TestResult{{ID: "route-owner", Command: "./scripts/route-owner.sh", Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
 		Provenance:   assignment.Provenance{Route: assignment.RouteRoleOwned, Assurance: assignment.AssuranceSelfReported, Writer: "Verifier", Subject: "Verifier", Source: "fixture"},
-		Verification: &assignment.VerificationResult{Summary: "Route owner policy satisfied for affected scenarios.", CheckSelectors: []assignment.CheckSelector{{Provider: "code.example", Name: "route-owner-policy"}}},
+		Verification: &assignment.VerificationResult{Summary: "Route owner policy satisfied for affected scenarios."},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -435,7 +496,7 @@ func TestCheckedInCodexWorkflowSkillsMatchGenerator(t *testing.T) {
 	if _, err := writeWorkflowArtifacts(".", "higress-group/issue-spec", "codex", "skills"); err != nil {
 		t.Fatal(err)
 	}
-	for _, skill := range []string{"apply", "github", "propose", "review", "verify", "workflow"} {
+	for _, skill := range []string{"apply", "github", "propose", "workflow"} {
 		relative := filepath.Join(".agents", "skills", "issue-spec-"+skill, "SKILL.md")
 		generated, err := os.ReadFile(filepath.Join(generatedRoot, relative))
 		if err != nil {
@@ -449,10 +510,16 @@ func TestCheckedInCodexWorkflowSkillsMatchGenerator(t *testing.T) {
 			t.Fatalf("checked-in Codex workflow skill is stale: %s", relative)
 		}
 	}
-	archiveRelative := filepath.Join(".agents", "skills", "issue-spec-archive", "SKILL.md")
+	retired := []string{
+		filepath.Join(".agents", "skills", "issue-spec-archive", "SKILL.md"),
+		filepath.Join(".agents", "skills", "issue-spec-review", "SKILL.md"),
+		filepath.Join(".agents", "skills", "issue-spec-verify", "SKILL.md"),
+	}
 	for name, root := range map[string]string{"generated": generatedRoot, "checked-in": projectRoot} {
-		if _, err := os.Stat(filepath.Join(root, archiveRelative)); !os.IsNotExist(err) {
-			t.Fatalf("%s removed Archive skill exists: %v", name, err)
+		for _, relative := range retired {
+			if _, err := os.Stat(filepath.Join(root, relative)); !os.IsNotExist(err) {
+				t.Fatalf("%s retired workflow skill exists at %s: %v", name, relative, err)
+			}
 		}
 	}
 }

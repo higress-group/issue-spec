@@ -716,18 +716,10 @@ func TestExternalReviewSyncRejectsAcceptedMalformedAndDuplicateAuthorityWithoutW
 	}
 }
 
-func TestGeneratedReviewSkillSeparatesSubmitAndSyncPublicationPaths(t *testing.T) {
-	var content string
+func TestGeneratedWorkflowOmitsReviewAuthoritySkill(t *testing.T) {
 	for _, skill := range templates.IssueSpecSkills("o/r") {
 		if skill.Name == "issue-spec-review" {
-			content = skill.Content
-			break
-		}
-	}
-	for _, want := range []string{"alternative publication paths for a REVIEW ID", "choose exactly one",
-		"sync must refuse a REVIEW ID that already carries that authority"} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("generated review skill does not separate submit and sync publication: missing %q in %q", want, content)
+			t.Fatalf("retired review authority skill was generated: %s", skill.Content)
 		}
 	}
 }

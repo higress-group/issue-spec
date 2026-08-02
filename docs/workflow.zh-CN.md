@@ -1,193 +1,103 @@
-# issue-spec 工作流指南
+# 最小化、绑定代码提供方的工作流
 
-**[English](workflow.md) | 简体中文**
+Issue-spec 只有一种交付模型：先选择一个有界的 Issue 契约，在同一个精确代码版本上满足当前提供方检查与提供方评审，以零写入方式查看就绪性，再使用提供方签发的完整权威令牌执行条件合并，最后在提供方确认已合并后协调关闭 Issue。
 
-本指南收录了 [README](../README.zh-CN.md) 有意保持精炼而省略的完整工作流演示、协调模型与 GitHub 模式配置细节。
+规划制品是可选的。它们帮助团队决策、拆分和隔离实现，但其状态、链接、回执、理由与历史都不会改变合并就绪性。
 
-## 实际效果一览
+## 按工程风险选择契约
 
-```text
-You: /issue-spec:propose add-dark-mode
-AI:  Created proposal issue #101
-     Added SPEC comments for theme behavior and persistence
-     Added QUESTION comments for unresolved UX decisions
+- 对无需 Proposal 承载产品与设计风险的有界变更使用普通 Issue；文件数量不是选择标准。
+- 需要明确确认需求时使用 Proposal；只有存在设计风险时才增加 Design，只有存在协调、委派或工作区隔离风险时才增加 Implement/TASK/PROCESS。
+- 根契约必须且只能是普通 Issue 或 Proposal；Design 与 Implement 只能附着在 Proposal 路径上。
 
-Human: 在 Issue #101 页面上直接回答 QUESTION-101001（或以评论回复）。
-AI:    记录 ANSWER 并更新相关 SPEC 评论。
+SPEC、QUESTION、TASK 与 PROCESS 评论仍是规范的议题原生规划制品。仓库持久化投影在实现分支的 `issue-spec/specs/**` 中落地已确认行为。durable-spec、DCO、CLA、安全与业务策略都是普通的已配置检查。
 
-You: /issue-spec:apply
-AI:  Created design issue #102 and implement issue #103
-     Split work into PROCESS nodes:
-     - PROCESS-103001: theme state and storage
-     - PROCESS-103002: UI toggle
-     - PROCESS-103003: tests and verification
-     发布 TASK 与 PROCESS 所有者关系
+## 配置稳定的合并输入
 
-Worker: opens PR #120
-AI:     Added PR rationale comments on changed lines, each linked to SPEC and PROCESS.
+仓库配置选择运维方注册的提供方，并声明稳定的提供方原生检查身份：
 
-You: /issue-spec:review
-AI:  Synced PR review comments, checks, and findings into REVIEW comments.
-     P1 finding assigned to PROCESS-103002.
-
-Worker: fixes the finding
-AI:     Replied to the original PR review thread and marked the finding resolved.
-
-You: /issue-spec:verify
-AI:  Traceability OK
-     Blocking questions: 0
-     P0/P1 findings: 0
-     PR checks: passing
-     Durable spec draft covers all SPEC comments
-
-You: /issue-spec:archive
-AI:  After implementation merge, opened a separate durable-spec PR.
+```yaml
+external_code:
+  provider_key: code.example
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:42/context:unit
+        owner: app:42
+        display_name: unit
+    review_fallback:
+      enabled: false
 ```
 
-## 工作流模型
+仅有展示名称不能充当检查身份。旧的 `external_code.evidence` 配置会被拒绝，不会自动映射到新模型。
 
-每个实质性的变更使用三种 issue 类别。
+## 预检一个不可变发布集合
 
-| Issue | 用途 | 类型化评论 |
-| --- | --- | --- |
-| Proposal | 做什么与为什么 | `SPEC`、`QUESTION` |
-| Design | 怎么做与验收策略 | `TASK`、`QUESTION` |
-| Implement | 多 agent 执行、review、verify | `PROCESS`、`QUESTION`、`REVIEW`、`VERIFY` |
+Runner 分派或合并前，先停止相关写入，并验证 CLI、Server、Runner、生成制品与提供方桥接器属于同一个固定发布集合：
 
-可追溯性按图读取，但每条关系只有一个写入者：
-
-```text
-TASK 所有者 -> SPEC 覆盖范围
-PROCESS 所有者 -> 父 TASK 与 PROCESS 依赖
-REVIEW 所有者 -> Review/变更 PROCESS 与活动 SPEC 覆盖范围
-VERIFY 所有者 -> Verification PROCESS 与活动 SPEC 覆盖范围
+```sh
+issue-spec workflow preflight \
+  --repo owner/repo \
+  --release-set 2.0.0 \
+  --server-release 2.0.0 \
+  --runner-release 2.0.0 \
+  --generated-manifest .agents/skills/issue-spec-workflow/release.json \
+  --generated-digest sha256:... \
+  --provider-generation minimal-merge-authority/v1 \
+  --provider-build code-example@sha256:... \
+  --canonical-principals operator-map@sha256:... \
+  --review-mode provider_native \
+  --reconciliation-mode post-merge-idempotent \
+  --enforcement-mode provider-authority-token \
+  --external-authority-mode disabled \
+  --json
 ```
 
-所有者命令先解析并校验完整的规范目标集，再执行一次所有者写入；不会仅为反向导航而更新对端。
+预检只读。它会验证 `issue-spec.code-provider/v1`、语义代际 `minimal-merge-authority/v1`、不可变桥接构建身份、`evidence.review-decision`、`evidence.authoritative-check-conclusion`、`change.merge-conditional`、生成制品发布与摘要、检查 key/owner、规范主体映射来源、评审模式、协调模式以及完整权威令牌的执行方式。任何缺失、未知或混合身份都会在读取可用权威或发生写入前失败。
 
-在实现 PR 合并之前，`pr link-issues` 会把关闭链接写入实现 PR 正文，这样代码托管平台会在合并时关闭与该 PR 关联的 proposal、design 与 implement issue。合并之后，`archive durable-spec --create-pr --close-issues` 会开一个单独的 PR，把长期行为契约写入仓库，并幂等地关闭任何仍处于打开状态的活跃 issue。
+## 评审与检查归提供方所有
 
-使用 `--capability` 作为稳定的能力（capability）目录，而不是原始变更名。在最终确定 archive PR 之前，检查现有的相关长期 spec，并把生成的长期 spec 当作草稿来合并、修订，或按长期功能模块重新分组，同时保留 Source SPEC 链接以维持可追溯性。
+提供方返回一个策略完整、绑定精确版本的评审快照。独立性通过受信规范主体，与完整的发起人、作者、共同作者和提交者集合比较。当前 changes-requested、未解决的必需会话以及开放的 P0/P1 发现都会阻塞；至少一个有效批准者必须独立。
 
-## 进行中的变更状态存放在 issue 里
+对于每个已配置检查，提供方只选择一个绑定不透明 key、owner、精确版本及提供方配置代际的当前结论。历史尝试和来自其他 owner 的同名检查仅供审计。只有 `success` 通过。
 
-活跃变更产物存放在 issue 中，而不是仓库文件里：
+议题原生评审回退默认关闭。只有提供方明确要求、仓库策略显式启用、身份通过运维方管理的规范映射解析，并且条件合并能原子验证外部权威代际时才可使用。
 
-- proposal issue：proposal 正文，加上 `SPEC` 与 `QUESTION` 评论
-- design issue：design 正文，加上 `TASK` 与 `QUESTION` 评论
-- implement issue：实现 DAG，加上 `PROCESS`、`REVIEW` 与 `VERIFY` 评论
+## 零写入就绪检查
 
-issue 正文是当前可编辑的 proposal/design/implementation 产物，而非占位空壳。创建时使用 `--body-file`，当讨论改变了正文时使用 `issue-spec issue update --body-file --summary`，这样人们就能在同一个 issue 里审阅最新内容与审计轨迹。
+普通 Issue 路径：
 
-生成的 issue 标题使用人类可读的 `Proposal: <subject>`、`Design: <subject>` 与 `Implement: <subject>` 家族。使用 `--body-file` 时，subject 会尽可能从第一个 Markdown H1 派生，同时变更名仍保留在 issue marker 与元数据中。仅在用户明确要求自定义标题时才使用 `issue create --title`。
-
-这让仓库聚焦于当前代码与长期留存的 spec：草稿、被取代或被放弃的变更 spec 不会出现在 `grep`、代码搜索或 agent 之后的仓库读取中。草稿变更历史仍可在 issue 跟踪器中审阅，包含评论线程、编辑、链接与人工审批点。
-
-人在环（human-in-the-loop）决策是一等公民：
-
-- 阻塞性问题是带结构化选项模型（choice model）的 `QUESTION` 评论
-- 每次确认的选择都是一条不可变、只追加的 `ANSWER` 评论
-- 被接受的假设记录在 issue 历史中
-- review 发现是带 owner 与关联 spec 的 PR 行评论
-- 验证证据存储在 `VERIFY` 评论中
-
-## 原生的多 agent DAG 协调
-
-`issue-spec` 把实现与 review 当作原生的多 agent 工作流来处理。工作被拆分为小的 `TASK` 与 `PROCESS` 单元，并回链到相关的 `SPEC` 评论、PR 工作与 review 证据。
-
-目标是让每次 model 调用都保持在其有效的推理区间内：范围窄、上下文清晰、所有权明确、测试聚焦、review 面小。
-
-implement issue 记录该 DAG：
-
-- worker owner 与 review agent owner
-- branch/worktree 或 PR 节点
-- 依赖
-- 拥有的文件与范围
-- 关联的 TASK/SPEC 评论
-- 状态、阻塞项与验证证据
-
-对于非平凡的变更，DAG 应包含专门的 review PROCESS 节点，而不仅仅是实现 PROCESS 节点。当各 review 范围相互独立时（例如 CLI/API 行为、工作流文档、测试、兼容性或安全敏感面），协调器可以并行运行多个 review agent。小改动可以由协调器直接实现并 review，但 implement 或 verify 记录应说明该任务是有意保持串行的。
-
-协调器执行遵循一个「就绪节点」循环：
-
-- 选择那些依赖已完成、且写/审范围互不重叠的 PROCESS 节点
-- 当能在不制造集成风险的前提下减小上下文时，并行分发相互独立的 worker 或 review agent
-- 按依赖顺序集成已完成的 worker 输出，并为改动的行添加 PR rationale
-- 在最终验证之前，把 P0/P1 review 发现路由回其 owner PROCESS
-- 仅在 review 证据已记录且阻塞性发现已解决后，才把 review PROCESS 节点标记为 done
-
-CLI 不充当自动拉起 agent 的调度器。它提供共享状态、链接与关卡（gate），让协调器能够安全地把工作拆分到多个 agent 之间，而不丢失可追溯性。
-
-## PR 原生的 review 流程
-
-review 与 verify 直接连接到 PR review 评论：
-
-- `pr rationale` 记录 worker 为何改动某条具体 PR diff 行，并把它链接到某个 `SPEC` 与 `PROCESS`
-- `review finding` 创建可操作的 PR 行发现，带严重级别、owner process 与关联的 spec 上下文
-- `review reply` 让 worker 在修复后关闭原始 review 线程
-- `review sync` 把 rationale 评论、发现、已解决发现、PR 检查与 review 状态汇总回 `REVIEW` 评论
-
-这给了人更好的 review 体验：发现被附在确切的代码行上，而 issue 评论则保留了分配、工作流状态与 spec 上下文。
-
-最终验证会在 archive 之前检查：未解决的阻塞性问题、可追溯性、P0/P1 发现、PR rationale 覆盖、PR 检查以及长期 spec 覆盖。
-
-## 安全工作流关卡与分级证据
-
-使用 `status --gate proposal|design|implement|final|archive --json` 预判下一关；使用带已观察 version 或 digest 的 `comment transition` 安全修改单个产物；使用 `workflow reconcile --plan ... --checkpoint ... --json` 执行可恢复、按依赖排序的批处理。在分配 delegated workspace 或 worker 之前，先运行 `doctor agent --operation ... --json`。PROCESS 显式声明五种 execution class，让 change-bearing、review、verification、orchestration 与 external 工作分别使用真实的证据载体，而不是一律伪造行级 rationale。
-
-命令、原子性边界、严格凭据策略、恢复行为与完整证据矩阵见 [Workflow safety, reconciliation, and PROCESS evidence](workflow-safety.md)。
-
-## 查找关联变更
-
-在提出新变更之前，先检索 issue 后端里它应该参考的历史轨迹：
-
-```bash
-issue-spec search issues --repo owner/repo --query "schema allowlist" \
-  --source change --stage design --state all --limit 10
+```sh
+issue-spec merge-check --repo owner/repo --issue 41 --pr 87 --json
 ```
 
-`--source change` 会把命中结果按关联变更分组（自托管后端），`--stage proposal|design|implement` 可把结果收窄到某一阶段。在自托管 Web UI 上，同样的检索会把 issue 与评论命中归组到各自的关联变更下。
+可选阶段规划路径：
 
-## Agent Skills 与 Slash 命令
-
-`issue-spec init` 可以为一个项目生成 agent 工作流产物：
-
-```bash
-issue-spec init --repo owner/repo --tools codex,claude --delivery both
+```sh
+issue-spec merge-check --repo owner/repo \
+  --proposal 41 --design 42 --implement 43 \
+  --change-id change-87 --head <exact-head> --json
 ```
 
-- Skills 只写入一次 `.agents/skills/issue-spec-*`，其中也包含用于处理 issue-spec 未直接封装的相邻 GitHub CLI 操作的 `issue-spec-github` 支持 skill。
-- 选择 Claude 时，`.claude/skills` 会成为指向 `../.agents/skills` 的相对软链，让 Codex 与 Claude 使用同一份仓库 skill 文件。
-- 只有当已有 `.claude/skills` 仅包含 issue-spec 管理的 skill 或与 canonical skill 字节一致的副本时，init 才会安全迁移；遇到用户自定义冲突会停止而不替换。
-- Claude slash 命令写入 `.claude/commands/issue-spec/*.md`，以 `/issue-spec:propose` 的方式调用。
-- Codex slash prompts 写入 `${CODEX_HOME:-~/.codex}/prompts/issue-spec-*.md`，以兼容 Codex 自定义 prompt。当前 Codex 文档已弃用 Codex 自定义 prompt；对于共享工作流，优先使用 skills。
-- `--delivery skills` 只写 skills；`--delivery commands` 只写 slash 命令。
+`merge-check` 执行零写入。它不会运行检查，也不会读取 TASK/PROCESS 生命周期、REVIEW/VERIFY 评论、角色回执、理由、关系覆盖、finalization、Archive 状态或合并前关闭链接。决策与快照摘要只是诊断输出，不能复用为证明。
 
-若省略 `--tools`，init 会检测已存在的 `.agents` 或 `.claude` 目录并刷新这些工作流。使用 `--tools none` 只初始化 `.issue-spec/config.json` 与可选的标签（labels）。
+候选 CLI 的 dogfood 必须保持只读，直到完整精确版本检查集合与提供方原生评审权威都得到证明。
 
-## GitHub 模式配置
+## 条件合并与事后协调
 
-`issue-spec` 可以直接对着 github.com 或 GitHub Enterprise 运行同一套工作流。它要求本机已安装并认证 GitHub CLI，并使用 `gh auth status` 所报告的同一账号与 host：
-
-```bash
-gh auth login
-gh auth status
-issue-spec auth status --json
+```sh
+issue-spec code-change merge --repo owner/repo \
+  --proposal 41 --design 42 --implement 43 \
+  --change-id change-87 --expected-head <exact-head> --json
 ```
 
-对于 GitHub Enterprise，先用 GitHub CLI 登录，然后把相同的 host 传给 issue-spec 命令：
+合并命令会重新采集最新快照、再次执行同一个纯判定，并要求提供方原子验证不透明权威令牌与预期 head。仅有 head CAS 不够，因为评审、策略、发现、会话与检查可以在相同 head 上漂移。普通 GitHub REST 的“先读后写”并不原子；除非运维方桥接器证明完整的提供方原生保护，否则必须保持失败关闭。
 
-```bash
-gh auth login --hostname ghe.example.com
-issue-spec auth status --hostname ghe.example.com --json
-```
+新鲜观察到已合并状态后，issue-spec 会幂等协调精确选择的 Issue 集合。协调失败不能撤销代码合并，也不能让合并状态变得含糊；应独立重试这项记账工作。
 
-`issue-spec auth status`、`init` 以及常规工作流命令都不会打印 token 值。只有在显式请求时，`issue-spec auth token --plain` 才会打印当前的 `gh` token。
+## 弃用边界
 
-`archive durable-spec --create-pr` 仍然使用本地 `git` 来进行 fetch、worktree、commit 与 push。GitHub API 的读取和 PR 创建则使用同一个已认证的 `gh` 账号。
+旧的评审同步/完成、验证提交/最终验证、作为证据的理由、仅证据 PROCESS 完成、finalization、关闭验证与 Archive 门禁都会在本地、Issue、关系、证据或提供方发生任何写入前返回 `deprecated_workflow`。历史制品只能通过显式审计读取。
 
-在 GitHub 上，所有类型化产物都保持为可读的 Markdown。GitHub 不会执行的只有两个自托管评审界面：沙箱化的 `html-preview` 评审投影，以及交互式 QUESTION 答题面板；在 GitHub 上它们的源码仍可作为普通 Markdown 审阅，答案则改由 CLI 记录。
-
-## 与 OpenSpec 的关系
-
-`issue-spec` 受 [OpenSpec](https://github.com/Fission-AI/OpenSpec) 启发，保留了其 spec 优先的编写习惯：proposal -> specs -> design -> tasks -> review -> verify -> archive，长期 spec 归档在仓库中。主要的适配在于活跃状态的存放位置（issue 与类型化评论，而非工作文件），以及人类的审阅方式（渲染出的评审投影、PR 行级发现、结构化的 QUESTION/ANSWER 决策）。
+升级和回滚都是完整集合切换：停止分派与合并，安装固定的二进制、桥接器、生成制品与配置，通过预检后再恢复。不要运行混合生成制品，也不要把新事实翻译成旧 REVIEW/VERIFY 权威。

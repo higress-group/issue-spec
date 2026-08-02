@@ -19,75 +19,27 @@ Proposal Issues:
 
 ### Requirement: PROCESS execution classes determine coordinator-to-child workspace isolation
 
-The implement coordinator MUST retain its integration checkout as the coordinator execution root, MUST allocate a unique writable Git worktree and branch to every delegated managed change-bearing PROCESS executed by a native child agent, MUST execute a coordinator-authored inline independent change-bearing PROCESS directly in the integration checkout without allocating a PROCESS worktree, MUST allow an external or human independent executor to retain its own self-managed workspace without forcing it into the coordinator checkout, MUST give review and verification child agents an immutable revision snapshot, and MUST avoid allocating a writable checkout to orchestration-only work that does not need repository files.
+When optional delegated change-bearing PROCESS execution is selected, the coordinator MUST isolate writable workers by worktree, preserve external or human self-managed workspaces, and avoid allocating writable workspaces to read-only orchestration; review decisions and merge-check MUST consume the provider exact subject without REVIEW or VERIFY PROCESS workspaces.
 
-#### Scenario: Parallel change-bearing child agents are physically separated
+#### Scenario: optional workers remain isolated
 
-- **WHEN** two delegated managed change-bearing PROCESS nodes are eligible to run in parallel from the same integrated base revision
-- **THEN** the coordinator MUST assign different writable worktree paths and different branches to their native child agents while retaining the disjoint write-ownership gate
+- **WHEN** two delegated implementation PROCESS nodes may execute concurrently
+- **THEN** they receive distinct writable worktrees and ownership enforcement while review and merge use provider exact-head reads
 
-#### Scenario: Serial successor receives a fresh child workspace
-
-- **WHEN** delegated managed PROCESS-B depends on completed change-bearing PROCESS-A
-- **THEN** the coordinator MUST prepare a new PROCESS-B worktree from the revision where PROCESS-A was integrated and MUST NOT reuse PROCESS-A's dirty or worker-local checkout
-
-#### Scenario: Inline serial successor retains a PROCESS boundary
-
-- **WHEN** inline independent PROCESS-B depends on completed PROCESS-A
-- **THEN** the coordinator MUST execute PROCESS-B in the integration checkout without preparing or reusing a child worktree and MUST retain distinct PROCESS state plus the bounded handoff from PROCESS-A
-
-#### Scenario: External or human independent execution remains self-managed
-
-- **WHEN** a change-bearing PROCESS declares `workspace_management: independent` and an external or human executor owns its workspace
-- **THEN** the coordinator MUST NOT allocate a managed PROCESS worktree or require the executor to use the coordinator integration checkout, while the PROCESS MUST still provide commit, test and applicable handoff evidence before independent review and final rationale
-
-#### Scenario: Review child evaluates an immutable revision
-
-- **WHEN** a review or verification PROCESS begins
-- **THEN** the coordinator MUST assign its native child agent a detached or otherwise immutable snapshot of the exact integration or pull-request revision under evaluation
-
-#### Scenario: Coordinator does not consume a worker workspace
-
-- **WHEN** the coordinator prepares or dispatches a delegated managed PROCESS in the change-bearing, review, or verification class
-- **THEN** the coordinator MUST keep its own cwd and integration checkout unchanged and MUST pass the allocated workspace identity to the native child-agent execution instead
-
-#### Scenario: Orchestration needs no writable checkout
-
-- **WHEN** a PROCESS only schedules native child agents, updates gates, or links issue-native artifacts
-- **THEN** the coordinator MAY execute it without allocating a writable Git worktree
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/175#issuecomment-4951798104
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
 
 ### Requirement: Coordinator integration is revision-bound and dependency-ordered
 
-The coordinator MUST own the integration checkout, MUST prepare each delegated managed worker from an explicit base revision, MUST integrate delegated worker commits in PROCESS dependency order, and MUST permit a delegated managed change-bearing PROCESS to become done only after its commit is integrated and required integration checks pass. For a coordinator-authored inline independent change-bearing PROCESS, the coordinator MAY author the commit directly in the integration checkout, but MUST first preserve the PROCESS's declared write ownership, commit, test evidence and applicable serial handoff boundary, MUST next route the reviewable code through mandatory independent review and fix convergence, and MUST only then add final rationale under the code author's identity before final verification. An external or human independent executor follows the same evidence and review-to-rationale ordering from its own self-managed workspace.
+For optional delegated implementation, the coordinator MUST integrate owned commits from explicit base revisions in dependency order and MUST require configured integration checks before accepting the code result, but MUST NOT require a review PROCESS, final rationale, role receipt, or final-verification lifecycle to complete workspace integration.
 
-#### Scenario: Worker returns a bounded commit
+#### Scenario: safe integration does not create merge authority
 
-- **WHEN** a delegated managed change-bearing worker completes its assigned implementation
-- **THEN** it SHALL return a signed-off commit SHA, test evidence and handoff summary and SHALL NOT require the coordinator to recover changes from a shared dirty directory
+- **WHEN** a delegated worker returns an owned DCO commit and configured integration checks pass
+- **THEN** the coordinator may complete integration while provider checks and review independently determine merge readiness
 
-#### Scenario: Local commit is not yet done evidence
-
-- **WHEN** a delegated managed worker has committed successfully but the coordinator has not integrated that commit
-- **THEN** the PROCESS MUST remain non-done and status MUST distinguish worker-complete from integrated
-
-#### Scenario: Inline independent completion has no integration phase
-
-- **WHEN** the coordinator completes an inline independent change-bearing PROCESS in the integration checkout
-- **THEN** the coordinator MUST NOT run workspace complete or integrate for that PROCESS, MUST first record its commit, tests and, when it is a serial predecessor, its bounded handoff, MUST next route its active SPEC to an independent review agent and converge any fixes, and MUST only afterward record final rationale under the code author's identity
-
-#### Scenario: Dependency changed after dispatch planning
-
-- **WHEN** the intended base revision no longer contains the integrated results required by the PROCESS dependencies
-- **THEN** workspace preparation or integration MUST fail as stale and require a new base or explicit reconciliation
-
-#### Scenario: Parallel commits conflict during integration
-
-- **WHEN** two independently valid worker commits cannot be applied cleanly to the integration branch
-- **THEN** the coordinator MUST keep the affected PROCESS nodes non-done and route the conflict to a declared integration or repair PROCESS
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/175#issuecomment-4951798445
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
 
 ### Requirement: Workspace and commit scope enforce declared write ownership
 
@@ -148,39 +100,15 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/175#issu
 
 ### Requirement: Runner preserves the coordinator boundary for delegated and inline PROCESS execution
 
-A runner-managed ACPX coordinator MUST remain bound to its session integration checkout for its full session, MUST use the same issue-spec workspace lifecycle commands as a non-runner coordinator for delegated managed PROCESS nodes, MUST delegate those managed nodes through the agent runtime's native child-agent mechanism, MAY execute inline independent nodes directly in the session integration checkout without prepare/child/complete/integrate, and MUST NOT create a nested ACPX session or rebind the coordinator ACPX cwd or sandbox root to a PROCESS worktree.
+For optional PROCESS execution, a Runner coordinator MUST remain at its session integration checkout, MUST use managed workspaces and native children for delegated nodes, MAY execute genuinely inline independent nodes at the integration checkout, MUST preserve ownership and bounded handoff, and MUST NOT create REVIEW or VERIFY PROCESS workspaces, mandatory rationale, or evidence lifecycle state.
 
-#### Scenario: Runner coordinator starts and resumes at the integration root
+#### Scenario: runner integration boundary survives workflow simplification
 
-- **WHEN** the runner creates or resumes the coordinator ACPX session
-- **THEN** the ACPX cwd MUST remain the session clone that owns coordinator integration regardless of which PROCESS the coordinator plans or delegates
+- **WHEN** a Runner executes optional delegated or inline implementation work
+- **THEN** its coordinator root, child worktrees, integration, ownership, and handoff remain isolated while provider review and merge-check run outside PROCESS lifecycle
 
-#### Scenario: Coordinator delegates a change-bearing PROCESS
-
-- **WHEN** the runner-managed coordinator selects an eligible delegated managed change-bearing PROCESS
-- **THEN** the coordinator MUST prepare its managed worktree through issue-spec and MUST pass the exact worktree identity to a native child agent without starting or resuming another ACPX coordinator record
-
-#### Scenario: Native child returns a bounded handoff
-
-- **WHEN** the native child agent finishes its assigned delegated managed PROCESS
-- **THEN** it MUST return the result commit, tests and handoff through the agent runtime collaboration channel and the coordinator MUST run complete and integrate before the PROCESS becomes done
-
-#### Scenario: Runner coordinator executes an inline independent PROCESS
-
-- **WHEN** the runner-managed coordinator selects an eligible inline independent change-bearing PROCESS
-- **THEN** the coordinator MUST implement, test and commit it in the session integration checkout, MUST NOT prepare a PROCESS worktree or dispatch a coding child or run complete/integrate, MUST preserve its distinct PROCESS state and, when it is a serial predecessor, its bounded handoff, MUST next route every active SPEC with a valid change-bearing carrier to an independent review PROCESS owned by an agent other than the code author and converge any fixes, and MUST only afterward record final rationale under the code author's identity
-
-#### Scenario: Exact PROCESS targeting cannot mutate coordinator execution
-
-- **WHEN** a runner command, stored job or recovery path carries an exact PROCESS identity
-- **THEN** the runner MUST reject or ignore any interpretation that would replace the top-level coordinator ACPX cwd or sandbox workspace with the PROCESS worktree
-
-#### Scenario: Native children share a session security boundary
-
-- **WHEN** multiple delegated managed native child agents run under one coordinator ACPX sandbox
-- **THEN** issue-spec MUST guarantee distinct Git worktrees, branches, leases and commit-scope enforcement but MUST NOT claim a per-child operating-system sandbox unless the underlying agent runtime explicitly provides one
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/175#issuecomment-4956889860
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
 
 ### Requirement: Managed workspace preparation rejects ambiguous directory ownership before allocation
 

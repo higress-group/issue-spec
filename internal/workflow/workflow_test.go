@@ -219,7 +219,7 @@ func TestResolveAcceptsLegacyScalarContext(t *testing.T) {
 	}
 }
 
-func TestOpenSpecStyleProjectProducesDeclarativeVerifierPacket(t *testing.T) {
+func TestOpenSpecStyleProjectKeepsDeclarativeVerifierPacketAsCompatibilityData(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "openspec", "config.yaml"), `
 schema: business-workflow
@@ -234,8 +234,12 @@ rules:
     - Unrelated proposal-only guidance.
 external_code:
   provider_key: code.example
-  evidence:
-    required_checks: [route-owner-policy]
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:route-owner-policy
+        owner: app:7
 `)
 	writeFile(t, filepath.Join(root, "openspec", "schemas", "business-workflow", "schema.yaml"), `
 artifacts:
@@ -274,8 +278,8 @@ artifacts:
 	if len(packet.RequiredTests) != 0 {
 		t.Fatalf("rules.verify prose became executable tests: %+v", packet.RequiredTests)
 	}
-	if len(packet.RequiredChecks) != 1 || packet.RequiredChecks[0].Provider != "code.example" || packet.RequiredChecks[0].Name != "route-owner-policy" {
-		t.Fatalf("provider check selectors = %+v", packet.RequiredChecks)
+	if len(packet.RequiredChecks) != 0 {
+		t.Fatalf("deprecated verifier packet must not project merge authority: %+v", packet.RequiredChecks)
 	}
 }
 
@@ -347,7 +351,7 @@ artifacts:
 	}
 }
 
-func TestExternalCodeConfigAllowsOnlyProviderSelectionAndEvidencePolicy(t *testing.T) {
+func TestExternalCodeConfigRejectsLegacyEvidencePolicy(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), `
 external_code:
@@ -361,14 +365,8 @@ external_code:
       check: 1h
 `)
 	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
-	if err != nil {
-		t.Fatalf("Resolve returned error: %v diagnostics=%+v", err, plan.Diagnostics)
-	}
-	if plan.Config.ExternalCode == nil || plan.Config.ExternalCode.ProviderKey != "code.example" ||
-		len(plan.Config.ExternalCode.Evidence.RequiredChecks) != 2 ||
-		!plan.Config.ExternalCode.Evidence.SynchronizesBefore("verify") ||
-		!plan.Config.ExternalCode.Evidence.SynchronizesBefore("RUNNER") {
-		t.Fatalf("external code config = %+v", plan.Config.ExternalCode)
+	if err == nil || !hasDiagnostic(plan.Diagnostics, "invalid_config") || !strings.Contains(err.Error(), "deprecated and non-authoritative") {
+		t.Fatalf("legacy evidence must fail closed: plan=%+v err=%v", plan, err)
 	}
 }
 
@@ -385,7 +383,7 @@ external_code:
         owner: app:7
         display_name: unit
     review_fallback:
-      enabled: false
+      enabled: true
 `)
 	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
 	if err != nil {
@@ -398,7 +396,7 @@ external_code:
 	}
 }
 
-func TestExternalCodeMergeRejectsBareNamesMixedLegacyAndEnabledFallback(t *testing.T) {
+func TestExternalCodeMergeRejectsBareNamesAndMixedLegacyPolicy(t *testing.T) {
 	configs := map[string]string{
 		"bare-name": `external_code:
   provider_key: code.example
@@ -418,17 +416,6 @@ func TestExternalCodeMergeRejectsBareNamesMixedLegacyAndEnabledFallback(t *testi
         provider: code.example
         key: app:7/context:unit
         owner: app:7
-`,
-		"unbound-fallback": `external_code:
-  provider_key: code.example
-  merge:
-    required_checks:
-      - source: provider
-        provider: code.example
-        key: app:7/context:unit
-        owner: app:7
-    review_fallback:
-      enabled: true
 `,
 	}
 	for name, raw := range configs {

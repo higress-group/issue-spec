@@ -27,16 +27,16 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(result.SkillFiles), 6; got != want {
+	if got, want := len(result.SkillFiles), 4; got != want {
 		t.Fatalf("skill file count = %d, want %d", got, want)
 	}
-	if got, want := len(result.SkillResourceFiles), 1; got != want {
+	if got, want := len(result.SkillResourceFiles), 2; got != want {
 		t.Fatalf("skill resource file count = %d, want %d", got, want)
 	}
 	if got, want := strings.Join(result.SkillLinks, ","), ".claude/skills -> ../.agents/skills"; got != want {
 		t.Fatalf("skill links = %q, want %q", got, want)
 	}
-	if got, want := len(result.CommandFiles), 4; got != want {
+	if got, want := len(result.CommandFiles), 2; got != want {
 		t.Fatalf("command file count = %d, want %d", got, want)
 	}
 	if got := strings.Join(result.CommandsSkipped, ","); got != "codex" {
@@ -60,9 +60,9 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 
 	workflowSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "SKILL.md"))
 	for _, want := range []string{
-		"native GitHub CLI support",
-		"ISSUE_SPEC_GITHUB_BACKEND=gh",
-		`ISSUE_SPEC_TOKEN="$(gh auth token)"`,
+		"provider-native review",
+		"read-only `issue-spec merge-check",
+		"provider-issued complete authority token",
 	} {
 		if !strings.Contains(workflowSkill, want) {
 			t.Fatalf("workflow skill missing %q:\n%s", want, workflowSkill)
@@ -100,7 +100,7 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 		"Ordinary issue discussion writes",
 		"issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json",
 		"selected issue backend owns the write",
-		"issue-spec owns the proposal, design, implement",
+		"issue-spec owns optional planning, durable projection, read-only merge-check",
 	} {
 		if !strings.Contains(githubSkill, want) {
 			t.Fatalf("github skill missing %q:\n%s", want, githubSkill)
@@ -132,19 +132,12 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 
 	for _, relative := range []string{
 		filepath.Join(".agents", "skills", "issue-spec-review", "SKILL.md"),
-		filepath.Join(".claude", "skills", "issue-spec-review", "SKILL.md"),
+		filepath.Join(".agents", "skills", "issue-spec-verify", "SKILL.md"),
 		filepath.Join(".claude", "commands", "issue-spec", "review.md"),
+		filepath.Join(".claude", "commands", "issue-spec", "verify.md"),
 	} {
-		path := filepath.Join(root, relative)
-		reviewGuidance := readTestFile(t, path)
-		for _, want := range []string{
-			"--from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n>",
-			"--from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n>",
-			"Run these commands after the final review sync",
-		} {
-			if !strings.Contains(reviewGuidance, want) {
-				t.Fatalf("generated review guidance %s missing %q:\n%s", path, want, reviewGuidance)
-			}
+		if _, err := os.Stat(filepath.Join(root, relative)); !os.IsNotExist(err) {
+			t.Fatalf("retired generated authority asset exists: %s err=%v", relative, err)
 		}
 	}
 
@@ -340,13 +333,13 @@ func TestWorkflowNoticeIsBackendNeutralAndOwnedArtifactsAreCurrent(t *testing.T)
 	if _, err := writeWorkflowArtifacts(root, "higress-group/issue-spec", "codex,claude", "both"); err != nil {
 		t.Fatal(err)
 	}
-	paths := make([]string, 0, 14)
-	for _, skill := range []string{"apply", "propose", "review", "verify", "workflow"} {
+	paths := make([]string, 0, 8)
+	for _, skill := range []string{"apply", "propose", "workflow"} {
 		paths = append(paths,
 			filepath.Join(".agents", "skills", "issue-spec-"+skill, "SKILL.md"),
 			filepath.Join(".claude", "skills", "issue-spec-"+skill, "SKILL.md"))
 	}
-	for _, command := range []string{"apply", "propose", "review", "verify"} {
+	for _, command := range []string{"apply", "propose"} {
 		paths = append(paths, filepath.Join(".claude", "commands", "issue-spec", command+".md"))
 	}
 	for _, relative := range paths {
@@ -393,21 +386,17 @@ func TestCheckedInWorkflowArtifactsExactlyMatchGenerator(t *testing.T) {
 			filepath.Join(".agents", "skills", "issue-spec-apply", "SKILL.md"),
 			filepath.Join(".agents", "skills", "issue-spec-github", "SKILL.md"),
 			filepath.Join(".agents", "skills", "issue-spec-propose", "SKILL.md"),
-			filepath.Join(".agents", "skills", "issue-spec-review", "SKILL.md"),
-			filepath.Join(".agents", "skills", "issue-spec-verify", "SKILL.md"),
 			filepath.Join(".agents", "skills", "issue-spec-workflow", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-workflow", "release.json"),
 			filepath.Join(".claude", "skills", "issue-spec-apply", "SKILL.md"),
 			filepath.Join(".claude", "skills", "issue-spec-github", "SKILL.md"),
 			filepath.Join(".claude", "skills", "issue-spec-propose", "SKILL.md"),
-			filepath.Join(".claude", "skills", "issue-spec-review", "SKILL.md"),
-			filepath.Join(".claude", "skills", "issue-spec-verify", "SKILL.md"),
 			filepath.Join(".claude", "skills", "issue-spec-workflow", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-workflow", "release.json"),
 		},
 		[]string{
 			filepath.Join(".claude", "commands", "issue-spec", "apply.md"),
 			filepath.Join(".claude", "commands", "issue-spec", "propose.md"),
-			filepath.Join(".claude", "commands", "issue-spec", "review.md"),
-			filepath.Join(".claude", "commands", "issue-spec", "verify.md"),
 		}...,
 	) {
 		generated, err := os.ReadFile(filepath.Join(generatedRoot, relative))
@@ -426,6 +415,16 @@ func TestCheckedInWorkflowArtifactsExactlyMatchGenerator(t *testing.T) {
 		path := filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "references", "human-review-projections.md")
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("%s disabled workflow retains projection reference, err=%v", name, err)
+		}
+		for _, retired := range []string{
+			filepath.Join(".agents", "skills", "issue-spec-review", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-verify", "SKILL.md"),
+			filepath.Join(".claude", "commands", "issue-spec", "review.md"),
+			filepath.Join(".claude", "commands", "issue-spec", "verify.md"),
+		} {
+			if _, err := os.Stat(filepath.Join(root, retired)); !os.IsNotExist(err) {
+				t.Fatalf("%s retains retired workflow authority %s: %v", name, retired, err)
+			}
 		}
 	}
 }
@@ -473,7 +472,7 @@ func TestInstallGlobalCodexPromptsUsesExplicitDirectoryAndSharedTemplates(t *tes
 	}, &result); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(result.GlobalPromptFiles), 4; got != want {
+	if got, want := len(result.GlobalPromptFiles), 2; got != want {
 		t.Fatalf("global prompt file count = %d, want %d", got, want)
 	}
 	for _, path := range result.GlobalPromptFiles {
@@ -501,7 +500,7 @@ func TestInstallGlobalCodexPromptsDryRunReportsPathsWithoutWrites(t *testing.T) 
 	}, &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.GlobalPromptsDryRun || len(result.GlobalPromptFiles) != 4 || result.WorkflowSource == "" {
+	if !result.GlobalPromptsDryRun || len(result.GlobalPromptFiles) != 2 || result.WorkflowSource == "" {
 		t.Fatalf("unexpected global prompt dry-run result: %+v", result)
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
@@ -594,9 +593,10 @@ func TestResolveWorkflowToolsRejectsInvalidTool(t *testing.T) {
 
 func TestWriteWorkflowArtifactsWithProviderFollowsCapabilityMatrix(t *testing.T) {
 	root := t.TempDir()
-	provider := workflow.ProviderPlan{ProviderKey: "aone", DisplayName: "Aone Code",
-		CodeChangeLabel: "Merge request", ChangeComment: true, EvidenceSnapshot: true,
-		Capabilities: []codereview.Capability{codereview.CapabilityChangeComment, codereview.CapabilityEvidenceSnapshot}}
+	provider := minimalProviderPlanForTest("aone")
+	provider.DisplayName, provider.CodeChangeLabel = "Aone Code", "Merge request"
+	provider.ChangeComment, provider.EvidenceSnapshot = true, true
+	provider.Capabilities = append(provider.Capabilities, codereview.CapabilityChangeComment, codereview.CapabilityEvidenceSnapshot)
 	result, err := writeWorkflowArtifactsWithProvider(root, "browser-e2e/httpbin", "codex", "skills", provider)
 	if err != nil {
 		t.Fatal(err)
@@ -606,11 +606,11 @@ func TestWriteWorkflowArtifactsWithProviderFollowsCapabilityMatrix(t *testing.T)
 	}
 	generated := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-code-provider", "SKILL.md"))
 	for _, want := range []string{
-		"Provider-neutral Code Workflow",
-		"`change.create`: unavailable",
-		"`change.comment`: available",
-		"`evidence.snapshot`: available",
-		"policy and evidence contracts, not implied issue-spec CLI commands",
+		"Provider-bound Merge Workflow",
+		"minimal-merge-authority/v1",
+		"provider-native policy-complete review",
+		"read-only current decision",
+		"provider atomically validates its complete token",
 		"Project/work-item tracker authority is independent",
 	} {
 		if !strings.Contains(generated, want) {
