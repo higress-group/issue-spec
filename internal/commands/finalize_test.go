@@ -241,6 +241,79 @@ func TestFinalizeSevenEdgePreviewApplyWritesOnlyHistoricalOwners(t *testing.T) {
 	if backend.writes != writesAfterFirstApply || retry.Reconcile.Updated != 0 || retry.Reconcile.Unchanged != len(historical) {
 		t.Fatalf("checkpoint retry wrote again: writes=%d result=%+v", backend.writes, retry.Reconcile)
 	}
+
+	exactOwnerBody := ""
+	for _, operation := range first.Reconcile.Operations {
+		if operation.Target.ID == "PROCESS-001" {
+			exactOwnerBody = operation.Desired.Body
+			break
+		}
+	}
+	if exactOwnerBody == "" {
+		t.Fatal("missing exact PROCESS-001 owner postimage")
+	}
+	setOwnerBody := func(body string) {
+		t.Helper()
+		for issue, comments := range backend.comments {
+			for index := range comments {
+				if model.ParseTypedComment(comments[index].Body).ID != "PROCESS-001" {
+					continue
+				}
+				comments[index].Body = body
+				backend.comments[issue] = comments
+				return
+			}
+		}
+		t.Fatal("missing PROCESS-001 owner fixture")
+	}
+	assertPeersStable := func() {
+		t.Helper()
+		for _, comments := range backend.comments {
+			for _, comment := range comments {
+				typed := model.ParseTypedComment(comment.Body)
+				if before, stable := stableBodies[typed.ID]; stable && comment.Body != before {
+					t.Fatalf("peer %s changed while owner postimage drifted: before=%q after=%q", typed.ID, before, comment.Body)
+				}
+			}
+		}
+	}
+	expectPostimageDrift := func(name, body string) {
+		t.Helper()
+		setOwnerBody(body)
+		writesBefore := backend.writes
+		application.out, application.err = &bytes.Buffer{}, &bytes.Buffer{}
+		code := application.runFinalizeApply(t.Context(), []string{"--plan", filepath.Join(directory, "plan-1.json"),
+			"--checkpoint", filepath.Join(directory, "checkpoint.json"), "--allow-nonatomic", "--json"})
+		if code != 1 || !strings.Contains(application.err.(*bytes.Buffer).String(), "postcondition drifted") ||
+			application.out.(*bytes.Buffer).Len() != 0 {
+			t.Fatalf("%s drift did not fail closed: code=%d stdout=%s stderr=%s", name, code,
+				application.out.(*bytes.Buffer).String(), application.err.(*bytes.Buffer).String())
+		}
+		if backend.writes != writesBefore {
+			t.Fatalf("%s drift triggered a write: before=%d after=%d", name, writesBefore, backend.writes)
+		}
+		assertPeersStable()
+		setOwnerBody(exactOwnerBody)
+	}
+
+	statusDrift := strings.Replace(exactOwnerBody, "Status: superseded", "Status: in-progress", 1)
+	headerDrift := strings.Replace(exactOwnerBody, "Scope: test", "Scope: unrelated-drift", 1)
+	linkDrift, changed, err := model.AddRelatedCommentLink(exactOwnerBody, "https://github.com/o/r/issues/3#issuecomment-999")
+	if err != nil || !changed {
+		t.Fatalf("build link drift: changed=%t err=%v", changed, err)
+	}
+	logicalDrift := strings.TrimRight(exactOwnerBody, "\n") + "\n\nunrelated logical drift\n"
+	for name, body := range map[string]string{
+		"status-only": statusDrift,
+		"header-only": headerDrift,
+		"link-only":   linkDrift,
+		"logical":     logicalDrift,
+	} {
+		if body == exactOwnerBody {
+			t.Fatalf("%s fixture did not change the owner body", name)
+		}
+		expectPostimageDrift(name, body)
+	}
 }
 
 func TestFinalizePreviewAndApplyBindSharedGateToExactImplementIssue(t *testing.T) {
