@@ -103,28 +103,35 @@ type AcceptedReceiptAuthority struct {
 	AssignmentDigest string          `json:"assignment_digest,omitempty"`
 }
 
-var acceptedReceiptMarkers = map[assignment.Role]struct{ start, end, token string }{
+var acceptedReceiptMarkers = map[assignment.Role]struct {
+	starts []string
+	end    string
+	token  string
+}{
 	assignment.RoleImplementation: {
-		start: "<!-- issue-spec:accepted-implementation-receipt version=1 -->",
-		end:   "<!-- /issue-spec:accepted-implementation-receipt -->",
-		token: "issue-spec:accepted-implementation-receipt",
+		starts: []string{"<!-- issue-spec:accepted-implementation-receipt version=1 -->"},
+		end:    "<!-- /issue-spec:accepted-implementation-receipt -->",
+		token:  "issue-spec:accepted-implementation-receipt",
 	},
 	assignment.RoleReview: {
-		start: "<!-- issue-spec:accepted-review-receipt version=1 -->",
+		starts: []string{
+			"<!-- issue-spec:accepted-review-receipt version=1 -->",
+			"<!-- issue-spec:accepted-review-receipt version=2 -->",
+		},
 		end:   "<!-- /issue-spec:accepted-review-receipt -->",
 		token: "issue-spec:accepted-review-receipt",
 	},
 	assignment.RoleVerification: {
-		start: "<!-- issue-spec:accepted-verification-receipt version=1 -->",
-		end:   "<!-- /issue-spec:accepted-verification-receipt -->",
-		token: "issue-spec:accepted-verification-receipt",
+		starts: []string{"<!-- issue-spec:accepted-verification-receipt version=1 -->"},
+		end:    "<!-- /issue-spec:accepted-verification-receipt -->",
+		token:  "issue-spec:accepted-verification-receipt",
 	},
 }
 
 // ObserveAcceptedReceiptAuthority reads only the common immutable identity
 // fields from one role-specific compact marker. It does not accept a receipt
-// or interpret any role result content. Implementation marker framing is
-// supported now so projections fail closed until its carrier writer exists.
+// or interpret any role result content. Review versions 1 and 2 are the only
+// dual-version marker set; the other role marker contracts remain version 1.
 func ObserveAcceptedReceiptAuthority(body string, role assignment.Role) (AcceptedReceiptAuthority, bool, error) {
 	marker, ok := acceptedReceiptMarkers[role]
 	if !ok {
@@ -134,15 +141,22 @@ func ObserveAcceptedReceiptAuthority(body string, role assignment.Role) (Accepte
 	if !strings.Contains(body, marker.token) {
 		return AcceptedReceiptAuthority{}, false, nil
 	}
-	if strings.Count(body, marker.start) != 1 || strings.Count(body, marker.end) != 1 ||
-		strings.Count(body, marker.token) != 2 {
-		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt must contain exactly one version-1 marker pair")
+	startMarker, startCount := "", 0
+	for _, candidate := range marker.starts {
+		count := strings.Count(body, candidate)
+		startCount += count
+		if count == 1 {
+			startMarker = candidate
+		}
 	}
-	start, end := strings.Index(body, marker.start), strings.Index(body, marker.end)
+	if startCount != 1 || strings.Count(body, marker.end) != 1 || strings.Count(body, marker.token) != 2 {
+		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt must contain exactly one recognized marker pair")
+	}
+	start, end := strings.Index(body, startMarker), strings.Index(body, marker.end)
 	if end <= start {
 		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt marker order is invalid")
 	}
-	rawBlock := body[start+len(marker.start) : end]
+	rawBlock := body[start+len(startMarker) : end]
 	if len(rawBlock) < 3 || rawBlock[0] != '\n' || rawBlock[len(rawBlock)-1] != '\n' {
 		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt payload framing is invalid")
 	}

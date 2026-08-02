@@ -282,8 +282,13 @@ func (e *evaluator) evaluateFinalEvidence(planning finalPlanning) {
 		}
 		for _, specID := range planning.processSpecs[processID] {
 			for _, required := range process.Comment.Assignment.RequiredTests {
-				if !evidenceNamed(indexed[evidenceKey{processID, specID, FinalEvidenceTest}], required.ID) {
-					e.add(CodeFinalRequiredTestMissing, fmt.Sprintf("%s/%s is missing successful assigned test %s", processID, specID, required.ID), artifactRef(process), "missing or failed", required.ID, "verify submit")
+				matched, sameID := matchingRequiredTestEvidence(indexed[evidenceKey{processID, specID, FinalEvidenceTest}], required, revision)
+				if !matched {
+					current := "missing or failed"
+					if sameID {
+						current = "stable selector mismatch"
+					}
+					e.add(CodeFinalRequiredTestMissing, fmt.Sprintf("%s/%s is missing successful assigned test %s", processID, specID, required.ID), artifactRef(process), current, "exact selector "+required.ID, "verify submit")
 				}
 			}
 			for _, required := range process.Comment.Assignment.RequiredChecks {
@@ -307,23 +312,12 @@ func (e *evaluator) evaluateFinalEvidence(planning finalPlanning) {
 
 func validateFinalEvidenceAssignment(record FinalEvidenceRecord, inputs map[string]ProcessEvidenceInput,
 	expectedRevision string, activeReceipts map[string]string) error {
-	if record.Kind == FinalEvidenceTest {
-		if record.TestAuthorityRole != assignment.RoleReview && record.TestAuthorityRole != assignment.RoleVerification {
-			return fmt.Errorf("test evidence has invalid authority role %q", record.TestAuthorityRole)
-		}
-		prefix := "accepted-verification-receipt:"
-		if record.TestAuthorityRole == assignment.RoleReview {
-			prefix = "accepted-review-receipt:"
-		}
-		if !strings.HasPrefix(record.Source, prefix) {
-			return fmt.Errorf("%s test evidence has incompatible source %q", record.TestAuthorityRole, record.Source)
-		}
-	} else if record.TestAuthorityRole != "" {
-		return errors.New("non-test evidence carries test authority role")
-	}
 	hasAssignment := record.AssignmentProcessID != "" || record.ReceiptID != "" || record.ReceiptDigest != "" ||
-		record.AssignmentID != "" || record.AssignmentDigest != "" || record.AssignmentGeneration != 0
+		record.AssignmentID != "" || record.AssignmentDigest != "" || record.AssignmentGeneration != 0 || record.AssignmentRole != ""
 	if !hasAssignment {
+		if record.Kind == FinalEvidenceTest || record.Kind == FinalEvidenceVerification {
+			return errors.New("role-owned evidence lacks explicit assignment authority")
+		}
 		if record.AssignedSelector != nil || record.ResolvedRevision != "" || record.ExecutedCommand != "" ||
 			record.CheckSelector != nil {
 			return errors.New("selector execution identity lacks accepted assignment authority")
@@ -333,6 +327,9 @@ func validateFinalEvidenceAssignment(record FinalEvidenceRecord, inputs map[stri
 	if record.AssignmentProcessID == "" || record.ReceiptID == "" || record.ReceiptDigest == "" ||
 		record.AssignmentID == "" || record.AssignmentDigest == "" || record.AssignmentGeneration == 0 {
 		return errors.New("accepted assignment or receipt identity is incomplete")
+	}
+	if err := validateFinalRoleSource(record); err != nil {
+		return err
 	}
 	input, found := inputs[record.AssignmentProcessID]
 	if !found || input.ActiveAssignment == nil {
@@ -344,13 +341,7 @@ func validateFinalEvidenceAssignment(record FinalEvidenceRecord, inputs map[stri
 		active.SubjectRevision != record.SubjectRevision || record.SubjectRevision != expectedRevision {
 		return errors.New("receipt does not join to the active assignment id, digest, generation, and subject")
 	}
-	wantRole := assignment.RoleVerification
-	if record.Kind == FinalEvidenceReview {
-		wantRole = assignment.RoleReview
-	} else if record.Kind == FinalEvidenceTest {
-		wantRole = record.TestAuthorityRole
-	}
-	if active.Role != wantRole {
+	if active.Role != record.AssignmentRole {
 		return fmt.Errorf("%s evidence cannot use %s assignment", record.Kind, active.Role)
 	}
 	slot := strings.Join([]string{record.AssignmentProcessID, record.AssignmentID, record.AssignmentDigest,
@@ -376,29 +367,9 @@ func validateFinalEvidenceAssignment(record FinalEvidenceRecord, inputs map[stri
 		}
 		return nil
 	}
-	selector := assignment.TestSelector{ID: record.Name, Command: record.ExecutedCommand}
-	if record.AssignedSelector != nil {
-		selector = *record.AssignedSelector
-		if selector.ID != record.Name {
-			return errors.New("assigned selector id differs from evidence name")
-		}
-		if record.ResolvedRevision == "" {
-			return errors.New("bound selector lacks resolved revision")
-		}
-		if err := assignment.ValidateTestSelectorRevisionContract(record.TestAuthorityRole, expectedRevision, selector); err != nil {
-			return err
-		}
-		resolved, err := assignment.ResolveTestSelector(selector, record.ResolvedRevision)
-		if err != nil || record.ResolvedRevision != expectedRevision || record.ExecutedCommand != resolved.Command {
-			return errors.New("bound selector does not reproduce the exact executed command")
-		}
-	} else {
-		if record.ResolvedRevision != "" {
-			return errors.New("literal selector carries resolved revision")
-		}
-		if err := assignment.ValidateTestSelectorRevisionContract(record.TestAuthorityRole, expectedRevision, selector); err != nil {
-			return err
-		}
+	selector, err := finalEvidenceTestSelector(record, expectedRevision)
+	if err != nil {
+		return err
 	}
 	assigned := false
 	for _, required := range active.RequiredTests {
@@ -414,6 +385,70 @@ func validateFinalEvidenceAssignment(record FinalEvidenceRecord, inputs map[stri
 		return errors.New("test selector is not required by the active assignment")
 	}
 	return nil
+}
+
+func validateFinalRoleSource(record FinalEvidenceRecord) error {
+	wantRole, wantPrefix := assignment.RoleVerification, "accepted-verification-receipt:"
+	switch record.Kind {
+	case FinalEvidenceReview:
+		wantRole, wantPrefix = assignment.RoleReview, "accepted-review-receipt:"
+	case FinalEvidenceVerification, FinalEvidenceCheck:
+	case FinalEvidenceTest:
+		if record.AssignmentRole == assignment.RoleReview {
+			wantRole, wantPrefix = assignment.RoleReview, "accepted-review-receipt:"
+		}
+	default:
+		return fmt.Errorf("role-owned evidence has unsupported kind %q", record.Kind)
+	}
+	if record.AssignmentRole != wantRole || !strings.HasPrefix(record.Source, wantPrefix) {
+		return fmt.Errorf("evidence has incompatible assignment role %q, kind %q, or source %q",
+			record.AssignmentRole, record.Kind, record.Source)
+	}
+	return nil
+}
+
+func finalEvidenceTestSelector(record FinalEvidenceRecord, expectedRevision string) (assignment.TestSelector, error) {
+	selector := assignment.TestSelector{ID: record.Name, Command: record.ExecutedCommand}
+	if record.AssignedSelector == nil {
+		if record.ResolvedRevision != "" {
+			return assignment.TestSelector{}, errors.New("literal selector carries resolved revision")
+		}
+		if err := assignment.ValidateTestSelectorRevisionContract(record.AssignmentRole, expectedRevision, selector); err != nil {
+			return assignment.TestSelector{}, err
+		}
+		return selector, nil
+	}
+	selector = *record.AssignedSelector
+	if selector.ID != record.Name {
+		return assignment.TestSelector{}, errors.New("assigned selector id differs from evidence name")
+	}
+	if record.ResolvedRevision == "" {
+		return assignment.TestSelector{}, errors.New("bound selector lacks resolved revision")
+	}
+	if err := assignment.ValidateTestSelectorRevisionContract(record.AssignmentRole, expectedRevision, selector); err != nil {
+		return assignment.TestSelector{}, err
+	}
+	resolved, err := assignment.ResolveTestSelector(selector, record.ResolvedRevision)
+	if err != nil || record.ResolvedRevision != expectedRevision || record.ExecutedCommand != resolved.Command {
+		return assignment.TestSelector{}, errors.New("bound selector does not reproduce the exact executed command")
+	}
+	return selector, nil
+}
+
+func matchingRequiredTestEvidence(records []FinalEvidenceRecord, required assignment.TestSelector,
+	expectedRevision string) (bool, bool) {
+	sameID := false
+	for _, record := range records {
+		if record.Name != required.ID {
+			continue
+		}
+		sameID = true
+		selector, err := finalEvidenceTestSelector(record, expectedRevision)
+		if err == nil && assignment.TestSelectorIdentityEqual(selector, required) {
+			return true, true
+		}
+	}
+	return false, sameID
 }
 
 func processReport(reports []ProcessEvidenceReport, processID string) *ProcessEvidenceReport {

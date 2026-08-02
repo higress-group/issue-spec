@@ -537,7 +537,8 @@ func TestCompiledVerifierSelectorAuthoritySurvivesBindWorkspaceRoundTripAndActiv
 		Authority: CanonicalEvidenceRoleOwned, EvidenceID: "receipt-selector-e2e:check:route-owner-policy",
 		ReceiptID: "receipt-selector-e2e", ReceiptDigest: strings.Repeat("a", 64), AssignmentProcessID: active.ProcessID,
 		AssignmentID: active.AssignmentID, AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation,
-		SubjectRevision: subject, CheckSelector: &workflowCheck, Source: "accepted-verification-receipt:self-reported-checks", Trusted: true}
+		AssignmentRole: assignment.RoleVerification, SubjectRevision: subject, CheckSelector: &workflowCheck,
+		Source: "accepted-verification-receipt:self-reported-checks", Trusted: true}
 	index, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{testRecord, checkRecord}, subject,
 		map[string]gates.ActiveAssignmentEvidence{active.ProcessID: *active}, MaxCanonicalEvidenceIndexEntries)
 	if err != nil || index.Len() != 2 {

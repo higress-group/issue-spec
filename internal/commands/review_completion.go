@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,8 +21,14 @@ import (
 const (
 	externalReviewCompletionStart = "<!-- issue-spec:external-review-completion version=1 -->"
 	externalReviewCompletionEnd   = "<!-- /issue-spec:external-review-completion -->"
-	acceptedReviewReceiptStart    = "<!-- issue-spec:accepted-review-receipt version=1 -->"
+	acceptedReviewReceiptV1Start  = "<!-- issue-spec:accepted-review-receipt version=1 -->"
+	acceptedReviewReceiptStart    = "<!-- issue-spec:accepted-review-receipt version=2 -->"
 	acceptedReviewReceiptEnd      = "<!-- /issue-spec:accepted-review-receipt -->"
+)
+
+var (
+	acceptedReviewStableIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	acceptedReviewDigestPattern   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // acceptedReviewReceipt is the compact immutable authority projected from a
@@ -30,13 +37,46 @@ const (
 type acceptedReviewReceipt struct {
 	ReceiptID            string                   `json:"receipt_id"`
 	ReceiptDigest        string                   `json:"receipt_digest"`
+	AssignmentProcessID  string                   `json:"assignment_process_id"`
 	AssignmentID         string                   `json:"assignment_id"`
 	AssignmentDigest     string                   `json:"assignment_digest"`
 	AssignmentGeneration uint64                   `json:"assignment_generation"`
 	SubjectRevision      string                   `json:"subject_revision"`
 	Verdict              assignment.ReviewVerdict `json:"verdict"`
 	FindingIDs           []string                 `json:"finding_ids,omitempty"`
-	Tests                []acceptedReviewTest     `json:"tests,omitempty"`
+	Tests                []acceptedReviewTest     `json:"tests"`
+	Provenance           assignment.Provenance    `json:"provenance"`
+	CarrierVersion       int                      `json:"-"`
+	TestsAvailable       bool                     `json:"-"`
+}
+
+// acceptedReviewReceiptV1 is the closed historical completion-only schema.
+// It intentionally has no issuing PROCESS or test fields.
+type acceptedReviewReceiptV1 struct {
+	ReceiptID            string                   `json:"receipt_id"`
+	ReceiptDigest        string                   `json:"receipt_digest"`
+	AssignmentID         string                   `json:"assignment_id"`
+	AssignmentDigest     string                   `json:"assignment_digest"`
+	AssignmentGeneration uint64                   `json:"assignment_generation"`
+	SubjectRevision      string                   `json:"subject_revision"`
+	Verdict              assignment.ReviewVerdict `json:"verdict"`
+	FindingIDs           []string                 `json:"finding_ids,omitempty"`
+	Provenance           assignment.Provenance    `json:"provenance"`
+}
+
+// acceptedReviewReceiptV2 is separate from the read model so the on-wire
+// field order and the required zero-test representation remain closed.
+type acceptedReviewReceiptV2 struct {
+	ReceiptID            string                   `json:"receipt_id"`
+	ReceiptDigest        string                   `json:"receipt_digest"`
+	AssignmentProcessID  string                   `json:"assignment_process_id"`
+	AssignmentID         string                   `json:"assignment_id"`
+	AssignmentDigest     string                   `json:"assignment_digest"`
+	AssignmentGeneration uint64                   `json:"assignment_generation"`
+	SubjectRevision      string                   `json:"subject_revision"`
+	Verdict              assignment.ReviewVerdict `json:"verdict"`
+	FindingIDs           []string                 `json:"finding_ids,omitempty"`
+	Tests                []acceptedReviewTest     `json:"tests"`
 	Provenance           assignment.Provenance    `json:"provenance"`
 }
 
@@ -79,6 +119,11 @@ func validateReviewReceiptBinding(receipt assignment.Receipt, sealed assignment.
 	if err := assignment.ValidateReviewReceiptCoverage(*sealed.Review, receipt); err != nil {
 		return err
 	}
+	for _, test := range receipt.Tests {
+		if test.Assurance != assignment.AssuranceSelfReported {
+			return fmt.Errorf("review test %s must retain self-reported assurance", test.ID)
+		}
+	}
 	sealedSpecs := map[string]bool{}
 	for _, scenario := range sealed.Scenarios {
 		sealedSpecs[scenario.SpecID] = true
@@ -118,11 +163,13 @@ func normalizeReviewIdentity(value string) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
-func acceptedReviewReceiptFrom(receipt assignment.Receipt) acceptedReviewReceipt {
+func acceptedReviewReceiptFrom(receipt assignment.Receipt, assignmentProcessID string) acceptedReviewReceipt {
 	result := acceptedReviewReceipt{ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest,
-		AssignmentID: receipt.AssignmentID, AssignmentDigest: receipt.AssignmentDigest,
+		AssignmentProcessID: strings.TrimSpace(assignmentProcessID), AssignmentID: receipt.AssignmentID,
+		AssignmentDigest:     receipt.AssignmentDigest,
 		AssignmentGeneration: receipt.AssignmentGeneration, SubjectRevision: receipt.SubjectRevision,
-		Verdict: receipt.Review.Verdict, Provenance: receipt.Provenance}
+		Verdict: receipt.Review.Verdict, Tests: make([]acceptedReviewTest, 0, len(receipt.Tests)),
+		Provenance: receipt.Provenance, CarrierVersion: 2, TestsAvailable: true}
 	for _, finding := range receipt.Review.Findings {
 		result.FindingIDs = append(result.FindingIDs, finding.ID)
 	}
@@ -141,18 +188,29 @@ func acceptedReviewReceiptFrom(receipt assignment.Receipt) acceptedReviewReceipt
 }
 
 func stampAcceptedReviewReceipt(body string, receipt acceptedReviewReceipt) (string, bool, error) {
-	raw, err := json.Marshal(receipt)
+	receipt.CarrierVersion = 2
+	receipt.TestsAvailable = true
+	if receipt.Tests == nil {
+		receipt.Tests = []acceptedReviewTest{}
+	}
+	if err := validateAcceptedReviewReceiptV2(receipt); err != nil {
+		return "", false, err
+	}
+	raw, err := json.Marshal(acceptedReviewReceiptV2From(receipt))
 	if err != nil {
 		return "", false, err
 	}
 	block := acceptedReviewReceiptStart + "\n" + string(raw) + "\n" + acceptedReviewReceiptEnd
-	startCount, endCount := strings.Count(body, acceptedReviewReceiptStart), strings.Count(body, acceptedReviewReceiptEnd)
-	if startCount != endCount || startCount > 1 || strings.Count(body, "issue-spec:accepted-review-receipt") != startCount+endCount {
-		return "", false, errors.New("existing accepted review receipt block is malformed")
+	existing, found, err := parseAcceptedReviewReceipt(body)
+	if err != nil {
+		return "", false, fmt.Errorf("existing accepted review receipt block is malformed: %w", err)
 	}
-	if startCount == 0 {
+	if !found {
 		updated := strings.TrimRight(body, "\n") + "\n\n" + block + "\n"
 		return updated, true, nil
+	}
+	if existing.CarrierVersion != 2 {
+		return "", false, errors.New("accepted review receipt authority is immutable")
 	}
 	start, end := strings.Index(body, acceptedReviewReceiptStart), strings.Index(body, acceptedReviewReceiptEnd)
 	if end < start+len(acceptedReviewReceiptStart) {
@@ -169,33 +227,170 @@ func parseAcceptedReviewReceipt(body string) (acceptedReviewReceipt, bool, error
 	if !strings.Contains(body, "issue-spec:accepted-review-receipt") {
 		return acceptedReviewReceipt{}, false, nil
 	}
-	if strings.Count(body, acceptedReviewReceiptStart) != 1 || strings.Count(body, acceptedReviewReceiptEnd) != 1 ||
+	v1Count, v2Count := strings.Count(body, acceptedReviewReceiptV1Start), strings.Count(body, acceptedReviewReceiptStart)
+	if v1Count+v2Count != 1 || strings.Count(body, acceptedReviewReceiptEnd) != 1 ||
 		strings.Count(body, "issue-spec:accepted-review-receipt") != 2 {
-		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt must contain exactly one version-1 marker pair")
+		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt must contain exactly one recognized marker pair")
 	}
-	start, end := strings.Index(body, acceptedReviewReceiptStart), strings.Index(body, acceptedReviewReceiptEnd)
+	version, startMarker := 2, acceptedReviewReceiptStart
+	if v1Count == 1 {
+		version, startMarker = 1, acceptedReviewReceiptV1Start
+	}
+	start, end := strings.Index(body, startMarker), strings.Index(body, acceptedReviewReceiptEnd)
 	if end <= start {
 		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt marker order is invalid")
 	}
-	rawBlock := body[start+len(acceptedReviewReceiptStart) : end]
+	if start > 0 && body[start-1] != '\n' {
+		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt start marker framing is invalid")
+	}
+	afterEnd := end + len(acceptedReviewReceiptEnd)
+	if afterEnd < len(body) && body[afterEnd] != '\n' {
+		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt end marker framing is invalid")
+	}
+	rawBlock := body[start+len(startMarker) : end]
 	if len(rawBlock) < 3 || rawBlock[0] != '\n' || rawBlock[len(rawBlock)-1] != '\n' {
 		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt payload framing is invalid")
 	}
 	raw := []byte(rawBlock[1 : len(rawBlock)-1])
-	var result acceptedReviewReceipt
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&result); err != nil {
-		return acceptedReviewReceipt{}, true, fmt.Errorf("decode accepted review receipt: %w", err)
+	if version == 1 {
+		var payload acceptedReviewReceiptV1
+		if err := decodeCanonicalAcceptedReviewReceipt(raw, &payload); err != nil {
+			return acceptedReviewReceipt{}, true, err
+		}
+		return acceptedReviewReceiptFromV1(payload), true, nil
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt has trailing JSON")
+	var payload acceptedReviewReceiptV2
+	if err := decodeCanonicalAcceptedReviewReceipt(raw, &payload); err != nil {
+		return acceptedReviewReceipt{}, true, err
 	}
-	canonical, _ := json.Marshal(result)
-	if !bytes.Equal(raw, canonical) {
-		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt payload is not canonical JSON")
+	result := acceptedReviewReceiptFromV2(payload)
+	if err := validateAcceptedReviewReceiptV2(result); err != nil {
+		return acceptedReviewReceipt{}, true, err
 	}
 	return result, true, nil
+}
+
+func decodeCanonicalAcceptedReviewReceipt(raw []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("decode accepted review receipt: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("accepted review receipt has trailing JSON")
+	}
+	canonical, err := json.Marshal(target)
+	if err != nil {
+		return fmt.Errorf("encode accepted review receipt: %w", err)
+	}
+	if !bytes.Equal(raw, canonical) {
+		return errors.New("accepted review receipt payload is not canonical JSON")
+	}
+	return nil
+}
+
+func acceptedReviewReceiptFromV1(payload acceptedReviewReceiptV1) acceptedReviewReceipt {
+	return acceptedReviewReceipt{ReceiptID: payload.ReceiptID, ReceiptDigest: payload.ReceiptDigest,
+		AssignmentID: payload.AssignmentID, AssignmentDigest: payload.AssignmentDigest,
+		AssignmentGeneration: payload.AssignmentGeneration, SubjectRevision: payload.SubjectRevision,
+		Verdict: payload.Verdict, FindingIDs: payload.FindingIDs, Provenance: payload.Provenance,
+		CarrierVersion: 1, TestsAvailable: false}
+}
+
+func acceptedReviewReceiptFromV2(payload acceptedReviewReceiptV2) acceptedReviewReceipt {
+	return acceptedReviewReceipt{ReceiptID: payload.ReceiptID, ReceiptDigest: payload.ReceiptDigest,
+		AssignmentProcessID: payload.AssignmentProcessID, AssignmentID: payload.AssignmentID,
+		AssignmentDigest: payload.AssignmentDigest, AssignmentGeneration: payload.AssignmentGeneration,
+		SubjectRevision: payload.SubjectRevision, Verdict: payload.Verdict, FindingIDs: payload.FindingIDs,
+		Tests: payload.Tests, Provenance: payload.Provenance, CarrierVersion: 2, TestsAvailable: true}
+}
+
+func acceptedReviewReceiptV2From(receipt acceptedReviewReceipt) acceptedReviewReceiptV2 {
+	tests := receipt.Tests
+	if tests == nil {
+		tests = []acceptedReviewTest{}
+	}
+	return acceptedReviewReceiptV2{ReceiptID: receipt.ReceiptID, ReceiptDigest: receipt.ReceiptDigest,
+		AssignmentProcessID: receipt.AssignmentProcessID, AssignmentID: receipt.AssignmentID,
+		AssignmentDigest: receipt.AssignmentDigest, AssignmentGeneration: receipt.AssignmentGeneration,
+		SubjectRevision: receipt.SubjectRevision, Verdict: receipt.Verdict, FindingIDs: receipt.FindingIDs,
+		Tests: tests, Provenance: receipt.Provenance}
+}
+
+// MarshalJSON keeps package-local mutation fixtures and exact-retry comparisons
+// on the same versioned wire contract as the parser.
+func (receipt acceptedReviewReceipt) MarshalJSON() ([]byte, error) {
+	if receipt.CarrierVersion == 1 {
+		return json.Marshal(acceptedReviewReceiptV1{ReceiptID: receipt.ReceiptID, ReceiptDigest: receipt.ReceiptDigest,
+			AssignmentID: receipt.AssignmentID, AssignmentDigest: receipt.AssignmentDigest,
+			AssignmentGeneration: receipt.AssignmentGeneration, SubjectRevision: receipt.SubjectRevision,
+			Verdict: receipt.Verdict, FindingIDs: receipt.FindingIDs, Provenance: receipt.Provenance})
+	}
+	return json.Marshal(acceptedReviewReceiptV2From(receipt))
+}
+
+func validateAcceptedReviewReceiptV2(receipt acceptedReviewReceipt) error {
+	if !acceptedReviewStableIDPattern.MatchString(receipt.ReceiptID) ||
+		!acceptedReviewDigestPattern.MatchString(receipt.ReceiptDigest) ||
+		model.ValidateTypedIdentity("PROCESS", receipt.AssignmentProcessID) != nil ||
+		!acceptedReviewStableIDPattern.MatchString(receipt.AssignmentID) ||
+		!acceptedReviewDigestPattern.MatchString(receipt.AssignmentDigest) || receipt.AssignmentGeneration == 0 ||
+		strings.TrimSpace(receipt.SubjectRevision) == "" || strings.TrimSpace(receipt.SubjectRevision) != receipt.SubjectRevision {
+		return errors.New("accepted review receipt version 2 identity is incomplete")
+	}
+	if receipt.Verdict != assignment.ReviewApprove && receipt.Verdict != assignment.ReviewChangesRequested {
+		return errors.New("accepted review receipt version 2 verdict is invalid")
+	}
+	if (receipt.Verdict == assignment.ReviewApprove && len(receipt.FindingIDs) != 0) ||
+		(receipt.Verdict == assignment.ReviewChangesRequested && len(receipt.FindingIDs) == 0) {
+		return errors.New("accepted review receipt version 2 verdict and finding ids conflict")
+	}
+	if receipt.Tests == nil {
+		return errors.New("accepted review receipt version 2 tests field is required")
+	}
+	if receipt.Provenance.Route != assignment.RouteRoleOwned ||
+		receipt.Provenance.Assurance != assignment.AssuranceSelfReported ||
+		strings.TrimSpace(receipt.Provenance.Writer) == "" ||
+		!strings.EqualFold(strings.TrimSpace(receipt.Provenance.Writer), strings.TrimSpace(receipt.Provenance.Subject)) ||
+		strings.EqualFold(strings.TrimSpace(receipt.Provenance.Writer), "Coordinator") ||
+		strings.TrimSpace(receipt.Provenance.Source) == "" || strings.TrimSpace(receipt.Provenance.Source) != receipt.Provenance.Source {
+		return errors.New("accepted review receipt version 2 provenance is invalid")
+	}
+	for index, findingID := range receipt.FindingIDs {
+		if strings.TrimSpace(findingID) == "" || (index > 0 && receipt.FindingIDs[index-1] >= findingID) {
+			return errors.New("accepted review receipt finding ids must be unique and canonically sorted")
+		}
+	}
+	for index, test := range receipt.Tests {
+		if strings.TrimSpace(test.ID) == "" || strings.TrimSpace(test.Command) == "" ||
+			(index > 0 && receipt.Tests[index-1].ID >= test.ID) {
+			return errors.New("accepted review receipt tests must have unique stable ids in canonical order")
+		}
+		if test.Outcome != assignment.TestPassed || test.Assurance != assignment.AssuranceSelfReported {
+			return fmt.Errorf("accepted review receipt test %s must be passing self-reported evidence", test.ID)
+		}
+		hasSelector, hasRevision := test.AssignedSelector != nil, strings.TrimSpace(test.ResolvedRevision) != ""
+		if hasSelector != hasRevision {
+			return fmt.Errorf("accepted review receipt test %s selector execution identity is incomplete", test.ID)
+		}
+		if !hasSelector {
+			selector := assignment.TestSelector{ID: test.ID, Command: test.Command}
+			if err := assignment.ValidateTestSelectorRevisionContract(assignment.RoleReview, receipt.SubjectRevision, selector); err != nil {
+				return fmt.Errorf("accepted review receipt literal test %s: %w", test.ID, err)
+			}
+			continue
+		}
+		if test.AssignedSelector.ID != test.ID ||
+			assignment.ValidateTestSelectorRevisionContract(assignment.RoleReview, receipt.SubjectRevision, *test.AssignedSelector) != nil ||
+			test.ResolvedRevision != receipt.SubjectRevision {
+			return fmt.Errorf("accepted review receipt test %s assigned selector or resolved revision is invalid", test.ID)
+		}
+		resolved, err := assignment.ResolveTestSelector(*test.AssignedSelector, receipt.SubjectRevision)
+		if err != nil || resolved.Command != test.Command || resolved.ResolvedRevision != test.ResolvedRevision {
+			return fmt.Errorf("accepted review receipt test %s executed command is invalid", test.ID)
+		}
+	}
+	return nil
 }
 
 // ReviewCompletionPolicy projects repository and native review policy onto the

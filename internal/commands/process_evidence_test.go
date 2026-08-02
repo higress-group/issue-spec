@@ -1114,7 +1114,8 @@ func TestActiveAssignmentEvidenceUsesOnlyDurableSelectorAuthorityAndLegacyFailsC
 	checkRecord := CanonicalEvidenceRecord{ProcessID: "PROCESS-900", SpecID: "SPEC-001", Kind: CanonicalEvidenceCheck,
 		Authority: CanonicalEvidenceRoleOwned, EvidenceID: "receipt-active:check:branch-policy", ReceiptID: "receipt-active",
 		ReceiptDigest: strings.Repeat("a", 64), AssignmentProcessID: active.ProcessID, AssignmentID: active.AssignmentID,
-		AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation, SubjectRevision: revision,
+		AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation,
+		AssignmentRole: active.Role, SubjectRevision: revision,
 		CheckSelector: &checkSelector, Source: "accepted-verification-receipt:self-reported-checks", Trusted: true}
 	index, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{testRecord, checkRecord}, revision,
 		activeByProcess, MaxCanonicalEvidenceIndexEntries)
@@ -1246,9 +1247,9 @@ func TestCanonicalEvidenceIndexSeparatesReviewAndVerificationTestAuthority(t *te
 
 			wrongRole := cloneCanonicalEvidenceRecord(record)
 			if role == assignment.RoleReview {
-				wrongRole.TestAuthorityRole = assignment.RoleVerification
+				wrongRole.AssignmentRole = assignment.RoleVerification
 			} else {
-				wrongRole.TestAuthorityRole = assignment.RoleReview
+				wrongRole.AssignmentRole = assignment.RoleReview
 			}
 			if _, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{wrongRole}, revision,
 				activeByProcess, MaxCanonicalEvidenceIndexEntries); err == nil {
@@ -1279,9 +1280,19 @@ func TestCanonicalEvidenceIndexSeparatesReviewAndVerificationTestAuthority(t *te
 	}
 
 	nonTest := canonicalRoleEvidence("PROCESS-001", "SPEC-001", "receipt-1", CanonicalEvidenceReview)
-	nonTest.TestAuthorityRole = assignment.RoleReview
+	nonTest.AssignmentRole = assignment.RoleVerification
 	if _, err := BuildCanonicalEvidenceIndex([]CanonicalEvidenceRecord{nonTest}, "head-current"); err == nil {
-		t.Fatal("non-test evidence carried a test authority role")
+		t.Fatal("review completion accepted a verification assignment role")
+	}
+	provider := CanonicalEvidenceRecord{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: CanonicalEvidenceReview,
+		Authority: CanonicalEvidenceProviderOwned, EvidenceID: "provider-review-1", SubjectRevision: "head-current",
+		Source: "github-pr-review-comment:1", Trusted: true}
+	if _, err := BuildCanonicalEvidenceIndex([]CanonicalEvidenceRecord{provider}, "head-current"); err != nil {
+		t.Fatalf("role-less provider review was rejected: %v", err)
+	}
+	provider.AssignmentRole = assignment.RoleReview
+	if _, err := BuildCanonicalEvidenceIndex([]CanonicalEvidenceRecord{provider}, "head-current"); err == nil {
+		t.Fatal("provider review carried role-owned assignment authority")
 	}
 }
 
@@ -1296,7 +1307,7 @@ func canonicalActiveTestEvidence(t *testing.T, active gates.ActiveAssignmentEvid
 		Authority: CanonicalEvidenceRoleOwned, EvidenceID: receiptID + ":test:" + selector.ID,
 		ReceiptID: receiptID, ReceiptDigest: strings.Repeat("a", 64), AssignmentProcessID: active.ProcessID,
 		AssignmentID: assignmentID, AssignmentDigest: assignmentDigest, AssignmentGeneration: generation,
-		SubjectRevision: revision, TestID: selector.ID, TestAuthorityRole: active.Role, ExecutedCommand: selector.Command,
+		AssignmentRole: active.Role, SubjectRevision: revision, TestID: selector.ID, ExecutedCommand: selector.Command,
 		Source: source, Trusted: true}
 	if selector.RevisionBinding != nil {
 		resolved, err := assignment.ResolveTestSelector(selector, revision)
@@ -1313,12 +1324,14 @@ func canonicalActiveTestEvidence(t *testing.T, active gates.ActiveAssignmentEvid
 
 func canonicalRoleEvidence(processID, specID, receiptID string, kind CanonicalEvidenceKind) CanonicalEvidenceRecord {
 	source := "accepted-verification-receipt:self-reported-tests"
+	role := assignment.RoleVerification
 	if kind == CanonicalEvidenceReview {
 		source = "accepted-review-receipt:self-reported"
+		role = assignment.RoleReview
 	}
 	return CanonicalEvidenceRecord{ProcessID: processID, SpecID: specID, Kind: kind,
 		Authority: CanonicalEvidenceRoleOwned, EvidenceID: receiptID, ReceiptID: receiptID,
-		ReceiptDigest: strings.Repeat("a", 64), AssignmentID: "assignment-1",
-		AssignmentDigest: strings.Repeat("b", 64), AssignmentGeneration: 1, SubjectRevision: "head-current",
+		ReceiptDigest: strings.Repeat("a", 64), AssignmentProcessID: processID, AssignmentID: "assignment-1",
+		AssignmentDigest: strings.Repeat("b", 64), AssignmentGeneration: 1, AssignmentRole: role, SubjectRevision: "head-current",
 		URL: "https://example/evidence/" + receiptID, Source: source, Trusted: true}
 }
