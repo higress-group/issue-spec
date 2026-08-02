@@ -454,7 +454,7 @@ func observeDurableSources(ctx context.Context, backend github.Backend, repo str
 		if parsed.Type != "SPEC" || parsed.Status != "confirmed" {
 			continue
 		}
-		exact, version, err := observeExactFinalizationComment(ctx, backend, repo, listed)
+		exact, version, err := observeExactDurableSourceComment(ctx, backend, repo, listed)
 		if err != nil {
 			return nil, fmt.Errorf("observe SPEC comment %d: %w", listed.ID, err)
 		}
@@ -479,6 +479,32 @@ func observeDurableSources(ctx context.Context, backend github.Backend, repo str
 			result[j].ID+"\x00"+result[j].URL+"\x00"+result[j].RepresentationDigest
 	})
 	return result, nil
+}
+
+func observeExactDurableSourceComment(ctx context.Context, backend github.Backend, repo string, listed github.Comment) (github.Comment, int64, error) {
+	if conditional, ok := any(backend).(github.ConditionalCommentBackend); ok {
+		observed, err := conditional.GetCommentRepresentation(ctx, repo, listed.ID)
+		if err == nil {
+			if observed.Comment.ID != listed.ID || observed.Comment.Body == "" {
+				return github.Comment{}, 0, errors.New("conditional representation identity is incomplete")
+			}
+			return observed.Comment, observed.RepresentationVersion, nil
+		}
+		if !errors.Is(err, github.ErrConditionalCommentMutationUnsupported) {
+			return github.Comment{}, 0, err
+		}
+	}
+	if observer, ok := any(backend).(github.IssueCommentObserver); ok {
+		observed, err := observer.ObserveIssueComment(ctx, repo, listed.ID)
+		if err != nil {
+			return github.Comment{}, 0, err
+		}
+		if observed.Comment.ID != listed.ID || observed.Comment.Body == "" {
+			return github.Comment{}, 0, errors.New("provider observation identity is incomplete")
+		}
+		return observed.Comment, observed.RepresentationVersion, nil
+	}
+	return listed, 0, nil
 }
 
 func exactSourceAuthorities(inputs []durable.SourceInput) ([]durable.SourceAuthority, error) {

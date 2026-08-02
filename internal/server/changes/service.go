@@ -467,8 +467,6 @@ func buildCard(orgID uuid.UUID, repository Repository, changeKey string, items [
 		anomalies = append(anomalies, AnomalyImplementMissingPredecessor)
 	}
 	blocked := false
-	verified := false
-	closureLinked := false
 	answers := resolveTypedAnswers(typed)
 	for _, item := range typed {
 		if item.updatedAt.After(card.UpdatedAt) {
@@ -482,14 +480,8 @@ func buildCard(orgID uuid.UUID, repository Repository, changeKey string, items [
 		case "QUESTION":
 			question := model.TypedComment{Type: "QUESTION", ID: item.key, Status: item.status, Body: item.body}
 			blocked = blocked || !model.QuestionIsSatisfied(question, answers)
-		case "VERIFY":
-			verified = verified || item.status == "done"
-			closureLinked = closureLinked || (item.status == "done" && item.closureLink)
 		}
 	}
-	allClosed := card.Artifacts.Proposal != nil && card.Artifacts.Proposal.Valid && card.Artifacts.Proposal.State == "closed" &&
-		card.Artifacts.Design != nil && card.Artifacts.Design.Valid && card.Artifacts.Design.State == "closed" &&
-		card.Artifacts.Implement != nil && card.Artifacts.Implement.Valid && card.Artifacts.Implement.State == "closed"
 	anyValid := card.CurrentStage != StageUnknown
 	allPresentClosed := anyValid
 	for _, slot := range []*Artifact{card.Artifacts.Proposal, card.Artifacts.Design, card.Artifacts.Implement} {
@@ -500,8 +492,6 @@ func buildCard(orgID uuid.UUID, repository Repository, changeKey string, items [
 	switch {
 	case blocked:
 		card.Lifecycle = LifecycleBlocked
-	case verified && closureLinked && allClosed:
-		card.Lifecycle = LifecycleCompleted
 	case allPresentClosed:
 		card.Lifecycle = LifecycleClosed
 	}

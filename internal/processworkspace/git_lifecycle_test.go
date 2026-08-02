@@ -1,6 +1,7 @@
 package processworkspace
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,7 +19,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
-func TestManagerPreparesParallelWritableAndDetachedSnapshot(t *testing.T) {
+func TestManagerPreparesParallelWritableAndRejectsRetiredSnapshot(t *testing.T) {
 	repo, base := newGitRepository(t)
 	manager := openTestManager(t, repo)
 	first := testLease("ws-a", "PROCESS-001", ModeWritable, "process-a", base, []string{"internal/a/**"})
@@ -40,15 +41,54 @@ func TestManagerPreparesParallelWritableAndDetachedSnapshot(t *testing.T) {
 	}
 
 	snapshot := testLease("ws-review", "PROCESS-003", ModeSnapshot, "", base, nil)
-	review, err := manager.Prepare(context.Background(), PrepareRequest{Lease: snapshot})
+	registryBefore, err := os.ReadFile(manager.Store.path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !review.Registered || review.Branch != "" || review.Head != base {
-		t.Fatalf("snapshot is not detached at exact SHA: %+v", review)
+	lockBefore, err := os.ReadFile(manager.Store.lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Prepare(context.Background(), PrepareRequest{Lease: snapshot}); !errors.Is(err, ErrDeprecatedWorkflow) {
+		t.Fatalf("retired review snapshot error = %v", err)
+	}
+	if _, found, err := manager.Store.peek(snapshot.Portable.WorkspaceID); err != nil || found {
+		t.Fatalf("retired review snapshot mutated registry: found=%t err=%v", found, err)
+	}
+	registryAfter, _ := os.ReadFile(manager.Store.path)
+	lockAfter, _ := os.ReadFile(manager.Store.lockPath)
+	if !bytes.Equal(registryBefore, registryAfter) || !bytes.Equal(lockBefore, lockAfter) {
+		t.Fatal("retired review prepare mutated registry or lock bytes")
 	}
 	if got := gitOutput(t, repo, "rev-parse", "HEAD"); got != base {
 		t.Fatalf("integration HEAD changed: %s", got)
+	}
+}
+
+func TestRetiredSnapshotCompletionDoesNotTouchRegistryOrLock(t *testing.T) {
+	repo, base := newGitRepository(t)
+	manager := openTestManager(t, repo)
+	lease := testLease("ws-historical-review", "PROCESS-099", ModeSnapshot, "", base, nil)
+	lease.IntegrationRoot = manager.IntegrationRoot
+	if _, err := manager.Store.Create(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+	registryBefore, err := os.ReadFile(manager.Store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockBefore, err := os.ReadFile(manager.Store.lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Complete(context.Background(), CompleteRequest{WorkspaceID: lease.Portable.WorkspaceID,
+		OwnerToken: lease.Owner.Token, ResultCommit: base}); !errors.Is(err, ErrDeprecatedWorkflow) {
+		t.Fatalf("retired review completion error = %v", err)
+	}
+	registryAfter, _ := os.ReadFile(manager.Store.path)
+	lockAfter, _ := os.ReadFile(manager.Store.lockPath)
+	if !bytes.Equal(registryBefore, registryAfter) || !bytes.Equal(lockBefore, lockAfter) {
+		t.Fatal("retired review completion mutated registry or lock bytes")
 	}
 }
 

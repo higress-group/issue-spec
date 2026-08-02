@@ -53,7 +53,6 @@ type app struct {
 	resolveRequirementsToken        func(context.Context, auth.Profile) (auth.Token, error)
 	readRequirementsSecret          func(io.Reader, io.Writer) (string, error)
 	stdinIsTerminal                 func(io.Reader) bool
-	resolveFinalizationBaseline     func(context.Context, string, string) (string, error)
 	openWorkspace                   func(context.Context, string, string, processworkspace.ManagerOptions) (workspaceService, error)
 }
 
@@ -67,6 +66,9 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return 2
 	}
 	a.profileName = profileName
+	if deprecated, ok := deprecatedWorkflowSelection(args); ok {
+		return a.outputDeprecatedWorkflow(deprecated, args)
+	}
 	ctx := context.Background()
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
 		a.printUsage()
@@ -184,7 +186,6 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		newNativeQuestionAnswerProvider: defaultNewNativeQuestionAnswerProvider,
 		newNativeCodeChangeBackend:      defaultNewNativeCodeChangeBackend,
 		lookupOperatorProvider:          defaultResolveOperatorProvider,
-		resolveFinalizationBaseline:     defaultResolveFinalizationBaseline,
 		openWorkspace:                   defaultOpenWorkspace,
 	}
 }

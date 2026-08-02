@@ -70,7 +70,7 @@ func TestLifecycleForIssueTxBoundsLargeRepositoryAndMatchesBoard(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := requireCard(t, page.Cards, "target-change").Lifecycle
-	if want != LifecycleCompleted {
+	if want != LifecycleClosed {
 		t.Fatalf("board lifecycle = %s", want)
 	}
 

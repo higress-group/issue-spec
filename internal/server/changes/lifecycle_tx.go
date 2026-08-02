@@ -13,8 +13,8 @@ import (
 )
 
 // LifecycleSnapshot is the smallest transaction-bound view needed by the
-// notification integration. It deliberately reuses buildCard, so completed
-// keeps the same verified/closure/artifact rules as the authoritative board.
+// notification integration. It deliberately reuses buildCard, so historical
+// VERIFY/closure carriers remain inert in both transaction and board views.
 type LifecycleSnapshot struct {
 	ChangeKey string
 	Lifecycle Lifecycle

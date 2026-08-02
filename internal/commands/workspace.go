@@ -310,12 +310,16 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "process_observation_failed", err, *flags.jsonOut)
 	}
-	if err := validateWorkspaceWriteBoundary(target, flags); err != nil {
-		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "remote_precondition_failed", err, *flags.jsonOut)
-	}
 	class := model.ParseProcessExecutionClass(processID, target.artifact.URL, target.body)
 	if class.Blocking() {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "execution_class_invalid", errors.New(model.CanonicalDiagnosticStrings(class.Diagnostics)[0]), *flags.jsonOut)
+	}
+	if class.Class == model.ProcessExecutionReview || class.Class == model.ProcessExecutionVerification {
+		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, deprecatedWorkflowCode,
+			fmt.Errorf("%s PROCESS workspaces belong to the retired final-evidence workflow and perform no mutation", class.Class), *flags.jsonOut)
+	}
+	if err := validateWorkspaceWriteBoundary(target, flags); err != nil {
+		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "remote_precondition_failed", err, *flags.jsonOut)
 	}
 	if code, managementErr := managedWorkspaceLifecycleProblem(target, processID); managementErr != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, code, managementErr, *flags.jsonOut)

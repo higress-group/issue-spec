@@ -22,19 +22,16 @@ const maxRoleInputBytes = 1 << 20
 
 var fullRevision = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 
+// ErrDeprecatedWorkflow identifies retired REVIEW/VERIFY receipt production.
+// Historical packets and receipts remain readable through assignment audit
+// APIs, but only implementation completion may execute tests or publish a new
+// receipt.
+var ErrDeprecatedWorkflow = errors.New("deprecated_workflow")
+
 type implementationDecision struct {
 	Decisions      []string `json:"decisions,omitempty"`
 	Risks          []string `json:"risks,omitempty"`
 	RationaleDraft string   `json:"rationale_draft,omitempty"`
-}
-
-type reviewDecision struct {
-	Verdict  assignment.ReviewVerdict `json:"verdict"`
-	Findings []assignment.Finding     `json:"findings,omitempty"`
-}
-
-type verificationDecision struct {
-	Summary string `json:"summary,omitempty"`
 }
 
 type observedRole struct {
@@ -42,7 +39,6 @@ type observedRole struct {
 	revision     string
 	changedPaths []string
 	tests        []assignment.TestSelector
-	checks       []assignment.CheckSelector
 }
 
 func (s *Service) Complete(ctx context.Context, request Request) (Result, error) {
@@ -70,6 +66,9 @@ func (s *Service) Complete(ctx context.Context, request Request) (Result, error)
 			return Result{}, errors.New("role completion requires a sealed assignment packet with generation and delivery.worktree_path; issue it with workflow workspace prepare")
 		}
 		return Result{}, err
+	}
+	if packet.Assignment.Role != assignment.RoleImplementation {
+		return Result{}, fmt.Errorf("%w: role complete supports only optional change-bearing implementation assignments", ErrDeprecatedWorkflow)
 	}
 	if packet.Delivery == nil || strings.TrimSpace(packet.Delivery.WorktreePath) == "" {
 		return Result{}, errors.New("role completion requires packet delivery.worktree_path")
@@ -161,16 +160,9 @@ func (s *Service) Complete(ctx context.Context, request Request) (Result, error)
 	}
 
 	receipt.BaseRevision = postTests.base
+	receipt.ResultRevision = postTests.revision
 	receipt.Tests = testResults
-	if receipt.Role == assignment.RoleImplementation {
-		receipt.ResultRevision = postTests.revision
-		receipt.Implementation.ChangedPaths = append([]string(nil), postTests.changedPaths...)
-	} else {
-		receipt.SubjectRevision = postTests.revision
-		if receipt.Role == assignment.RoleVerification {
-			receipt.Verification.CheckSelectors = append([]assignment.CheckSelector(nil), postTests.checks...)
-		}
-	}
+	receipt.Implementation.ChangedPaths = append([]string(nil), postTests.changedPaths...)
 
 	sealed, err := assignment.SealReceipt(receipt)
 	if err != nil {
@@ -215,20 +207,8 @@ func applyDecision(receipt *assignment.Receipt, data []byte) error {
 			return fmt.Errorf("parse implementation decision: %w", err)
 		}
 		receipt.Implementation = &assignment.ImplementationResult{Decisions: value.Decisions, Risks: value.Risks, RationaleDraft: value.RationaleDraft}
-	case assignment.RoleReview:
-		var value reviewDecision
-		if err := decodeDecision(data, &value); err != nil {
-			return fmt.Errorf("parse review decision: %w", err)
-		}
-		receipt.Review = &assignment.ReviewResult{Verdict: value.Verdict, Findings: value.Findings}
-	case assignment.RoleVerification:
-		var value verificationDecision
-		if err := decodeDecision(data, &value); err != nil {
-			return fmt.Errorf("parse verification decision: %w", err)
-		}
-		receipt.Verification = &assignment.VerificationResult{Summary: value.Summary}
 	default:
-		return fmt.Errorf("unsupported assignment role %q", receipt.Role)
+		return fmt.Errorf("%w: role complete supports only implementation decisions", ErrDeprecatedWorkflow)
 	}
 	return nil
 }
@@ -250,15 +230,8 @@ func validateDecisionSemantics(receipt assignment.Receipt) error {
 		candidate.BaseRevision = strings.Repeat("a", 40)
 		candidate.ResultRevision = strings.Repeat("b", 40)
 		candidate.Implementation.ChangedPaths = []string{"decision-validation-placeholder"}
-	case assignment.RoleReview:
-		candidate.SubjectRevision = strings.Repeat("a", 40)
-	case assignment.RoleVerification:
-		verification := *candidate.Verification
-		candidate.Verification = &verification
-		candidate.SubjectRevision = strings.Repeat("a", 40)
-		candidate.Verification.CheckSelectors = []assignment.CheckSelector{{Provider: "decision-validation", Name: "placeholder"}}
 	default:
-		return fmt.Errorf("unsupported assignment role %q", candidate.Role)
+		return fmt.Errorf("%w: role complete supports only implementation decisions", ErrDeprecatedWorkflow)
 	}
 	if _, err := assignment.SealReceipt(candidate); err != nil {
 		return fmt.Errorf("validate %s decision semantics: %w", candidate.Role, err)
@@ -296,23 +269,8 @@ func (s *Service) observeRole(ctx context.Context, worktree string, value assign
 	switch value.Role {
 	case assignment.RoleImplementation:
 		return s.observeImplementation(ctx, worktree, value, head)
-	case assignment.RoleReview:
-		if err := s.validateImmutableSubject(ctx, worktree, value.SubjectRevision, head); err != nil {
-			return observedRole{}, err
-		}
-		resolvedBase, err := s.gitText(ctx, worktree, "resolve sealed review diff base", nil, "rev-parse", "--verify", value.Review.DiffBaseRevision+"^{commit}")
-		if err != nil || resolvedBase != value.Review.DiffBaseRevision {
-			return observedRole{}, errors.Join(errors.New("sealed review diff base does not resolve exactly"), err)
-		}
-		return observedRole{revision: head, tests: append([]assignment.TestSelector(nil), value.Review.RequiredTests...)}, nil
-	case assignment.RoleVerification:
-		if err := s.validateImmutableSubject(ctx, worktree, value.SubjectRevision, head); err != nil {
-			return observedRole{}, err
-		}
-		return observedRole{revision: head, tests: append([]assignment.TestSelector(nil), value.Verification.RequiredTests...),
-			checks: append([]assignment.CheckSelector(nil), value.Verification.RequiredChecks...)}, nil
 	default:
-		return observedRole{}, fmt.Errorf("unsupported assignment role %q", value.Role)
+		return observedRole{}, fmt.Errorf("%w: role complete supports only implementation observation", ErrDeprecatedWorkflow)
 	}
 }
 
@@ -403,17 +361,6 @@ func (s *Service) observeImplementation(ctx context.Context, worktree string, va
 	sort.Strings(changed)
 	return observedRole{base: value.BaseRevision, revision: head, changedPaths: changed,
 		tests: append([]assignment.TestSelector(nil), payload.FocusedTests...)}, nil
-}
-
-func (s *Service) validateImmutableSubject(ctx context.Context, worktree, subject, head string) error {
-	if head != subject {
-		return fmt.Errorf("immutable snapshot HEAD %s differs from sealed subject revision %s", head, subject)
-	}
-	result, err := s.git(ctx, worktree, "verify detached immutable snapshot", nil, "symbolic-ref", "--quiet", "HEAD")
-	if err == nil || result.ExitCode != 1 {
-		return errors.New("review and verification completion require a detached immutable snapshot")
-	}
-	return nil
 }
 
 func (s *Service) validateGeneratorOutputs(ctx context.Context, worktree, revision string, generators []assignment.GeneratorPolicy) error {

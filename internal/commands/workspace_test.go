@@ -316,6 +316,21 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 }
 
 func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile(t *testing.T) {
+	{
+		repo, subject := workspaceGitRepository(t)
+		backend := newWorkspaceCASBackend(workspaceProcessBody(t, model.ProcessExecutionVerification))
+		root := filepath.Join(t.TempDir(), "managed")
+		app, out, errOut := transitionAppWithError(backend)
+		args := append(workspaceBaseArgs(repo, root, "verification-owner"), "--base", subject, "--json")
+		if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 1 {
+			t.Fatalf("retired verification workspace code=%d out=%s err=%s", code, out.String(), errOut.String())
+		}
+		result := decodeWorkspaceResult(t, out)
+		if result.Code != deprecatedWorkflowCode || backend.writes != 0 {
+			t.Fatalf("retired verification workspace result=%+v writes=%d", result, backend.writes)
+		}
+		return
+	}
 	t.Setenv("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
 	t.Setenv("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
 	scenario := assignment.ScenarioRef{SpecID: "SPEC-001", Scenario: "project verification is sealed"}
@@ -493,9 +508,14 @@ func TestCompiledVerifierSelectorAuthoritySurvivesBindWorkspaceRoundTripAndActiv
 		t.Fatal(err)
 	}
 	bound, err := store.BindAssignment(t.Context(), lease.Portable.WorkspaceID, compiled, false, nil)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, processworkspace.ErrDeprecatedWorkflow) {
+		t.Fatalf("retired verification assignment persistence error=%v", err)
 	}
+	current, found, getErr := store.Get(t.Context(), lease.Portable.WorkspaceID)
+	if getErr != nil || !found || current.Portable.Assignment != nil || current.Assignment != nil {
+		t.Fatalf("retired verification assignment mutated lease: found=%t lease=%+v err=%v", found, current, getErr)
+	}
+	return
 	if bound.Portable.Assignment == nil || bound.Portable.Assignment.SelectorAuthority == nil {
 		t.Fatalf("BindAssignment omitted compiled selector authority: %+v", bound.Portable.Assignment)
 	}
@@ -1442,12 +1462,12 @@ func TestWorkspaceReviewSnapshotCompleteAndUnsafeCleanup(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "managed")
 		args := append(workspaceBaseArgs(repo, root, "review-owner"), "--base", base, "--json")
 		app, out, errOut := transitionAppWithError(backend)
-		if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 0 {
+		if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 1 {
 			t.Fatalf("snapshot code=%d out=%s err=%s", code, out.String(), errOut.String())
 		}
 		result := decodeWorkspaceResult(t, out)
-		if result.Mode != processworkspace.ModeSnapshot || result.Branch != "" || result.DetachedRevision != base || result.Head != base {
-			t.Fatalf("snapshot result=%+v", result)
+		if result.Code != deprecatedWorkflowCode || backend.writes != 0 {
+			t.Fatalf("retired review snapshot result=%+v writes=%d", result, backend.writes)
 		}
 	})
 
@@ -1457,23 +1477,12 @@ func TestWorkspaceReviewSnapshotCompleteAndUnsafeCleanup(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "managed")
 		args := append(workspaceBaseArgs(repo, root, "verify-owner"), "--base", base, "--json")
 		app, out, errOut := transitionAppWithError(backend)
-		if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 0 {
+		if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 1 {
 			t.Fatalf("verification snapshot code=%d out=%s err=%s", code, out.String(), errOut.String())
 		}
 		prepared := decodeWorkspaceResult(t, out)
-		if prepared.Mode != processworkspace.ModeSnapshot || prepared.DetachedRevision != base || prepared.Head != base {
-			t.Fatalf("verification snapshot result=%+v", prepared)
-		}
-		writes := backend.writes
-		completeArgs := append([]string{"complete"}, workspaceBaseArgs(repo, root, "verify-owner")...)
-		completeArgs = append(completeArgs, "--result-commit", base, "--json")
-		app, out, _ = transitionAppWithError(backend)
-		if code := app.runWorkflowWorkspace(t.Context(), completeArgs); code != 1 {
-			t.Fatalf("snapshot complete code=%d out=%s", code, out.String())
-		}
-		result := decodeWorkspaceResult(t, out)
-		if result.State != processworkspace.StatePrepared || backend.writes != writes {
-			t.Fatalf("snapshot completion mutated state: result=%+v writes=%d->%d", result, writes, backend.writes)
+		if prepared.Code != deprecatedWorkflowCode || backend.writes != 0 {
+			t.Fatalf("retired verification snapshot result=%+v writes=%d", prepared, backend.writes)
 		}
 	})
 

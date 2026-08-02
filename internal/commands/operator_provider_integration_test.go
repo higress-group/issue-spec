@@ -21,10 +21,10 @@ import (
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
-// This test deliberately enters through Execute twice. It proves production
-// newApp wiring resolves both change.comment and change.create from operator
-// configuration; no app test field is replaced.
-func TestExecuteLoadsOperatorProviderForCommentAndCreate(t *testing.T) {
+// This test deliberately enters through Execute twice. It proves supported
+// provider-native comments still resolve the operator bridge while the retired
+// archive writer stops before provider or native-reference mutation.
+func TestExecuteLoadsOperatorProviderForCommentAndStopsRetiredArchive(t *testing.T) {
 	clearCommandAuthEnv(t)
 	fixture := newOperatorCLIFixture(t)
 	profile := auth.Profile{Name: "operator-e2e", Kind: auth.ProfileKindHosted,
@@ -71,18 +71,18 @@ func TestExecuteLoadsOperatorProviderForCommentAndCreate(t *testing.T) {
 	createCode := Execute([]string{"--profile", "operator-e2e", "archive", "durable-spec", "--repo", "acme/widgets",
 		"--proposal", "1", "--implement", "9", "--capability", "operator-provider-e2e", "--create-pr",
 		"--branch", "issue-spec/operator-provider-e2e", "--json"}, strings.NewReader(""), &out, &errOut)
-	if createCode != 0 {
-		t.Fatalf("archive create exit=%d stdout=%q stderr=%q", createCode, out.String(), errOut.String())
+	if createCode != 1 || !strings.Contains(out.String(), `"code": "deprecated_workflow"`) {
+		t.Fatalf("retired archive exit=%d stdout=%q stderr=%q", createCode, out.String(), errOut.String())
 	}
 	log, err := os.ReadFile(fixture.bridgeLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(log), "mutate comment change-42") || !strings.Contains(string(log), "mutate create_change archive-77") {
+	if !strings.Contains(string(log), "mutate comment change-42") || strings.Contains(string(log), "create_change") {
 		t.Fatalf("operator bridge log = %q", log)
 	}
-	if !fixture.archiveUpserted.Load() {
-		t.Fatal("create_change succeeded without native archive_change upsert")
+	if fixture.archiveUpserted.Load() {
+		t.Fatal("retired archive writer upserted an archive_change reference")
 	}
 }
 
