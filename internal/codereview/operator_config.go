@@ -150,3 +150,15 @@ func (r Registry) ResolveMutationProvider(_ context.Context, key string) (Mutati
 	}
 	return mutation, nil
 }
+
+func (r Registry) ResolveMergeAuthorityProvider(_ context.Context, key string) (MergeAuthorityProvider, error) {
+	provider, err := r.Lookup(key)
+	if err != nil {
+		return nil, err
+	}
+	authority, ok := provider.(MergeAuthorityProvider)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s does not implement merge authority", ErrCapabilityMissing, strings.TrimSpace(key))
+	}
+	return authority, nil
+}

@@ -12,7 +12,19 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
-var ErrIdempotencyMismatch = errors.New("evidence idempotency key reused with different content")
+var (
+	ErrIdempotencyMismatch       = errors.New("evidence idempotency key reused with different content")
+	ErrFallbackAuthorityConflict = errors.New("fallback authority has conflicting active leaves")
+	ErrAtomicFallbackUnsupported = errors.New("conditional merge cannot atomically validate external authority generation")
+)
+
+const (
+	EvidenceTypeReviewDecisionFallbackV1 = "review-decision-fallback/v1"
+	EvidenceTypeCheckAttestationV1       = "check-attestation/v1"
+	EvidenceTypeFallbackRevocationV1     = "fallback-revocation/v1"
+	IssueServerActorProvider             = "issue-spec"
+	ExternalAuthorityEnforcementToken    = "provider_authority_token"
+)
 
 type Visibility string
 
@@ -129,4 +141,65 @@ type ExactRevisionQuery struct {
 	ExternalRepositoryID string    `json:"external_repository_id"`
 	SubjectRevision      string    `json:"subject_revision"`
 	EvidenceType         string    `json:"evidence_type,omitempty"`
+}
+
+type ReviewDecisionFallbackInput struct {
+	IssueID              uuid.UUID                  `json:"issue_id"`
+	Reference            codereview.Reference       `json:"reference"`
+	Decision             codereview.ReviewDecision  `json:"decision"`
+	Findings             []codereview.ReviewFinding `json:"findings"`
+	SupersedesEvidenceID *uuid.UUID                 `json:"supersedes_evidence_id,omitempty"`
+	ObservedAt           time.Time                  `json:"observed_at"`
+	Visibility           Visibility                 `json:"visibility,omitempty"`
+}
+
+type CheckAttestationInput struct {
+	IssueID              uuid.UUID                   `json:"issue_id"`
+	Reference            codereview.Reference        `json:"reference"`
+	Attestation          codereview.CheckAttestation `json:"attestation"`
+	SupersedesEvidenceID *uuid.UUID                  `json:"supersedes_evidence_id,omitempty"`
+	ObservedAt           time.Time                   `json:"observed_at"`
+	Visibility           Visibility                  `json:"visibility,omitempty"`
+}
+
+type FallbackRevocationInput struct {
+	IssueID          uuid.UUID                `json:"issue_id"`
+	Reference        codereview.Reference     `json:"reference"`
+	SubjectRevision  string                   `json:"subject_revision"`
+	ID               string                   `json:"id"`
+	TargetEvidenceID uuid.UUID                `json:"target_evidence_id"`
+	Administrator    codereview.ActorIdentity `json:"administrator"`
+	Reason           string                   `json:"reason"`
+	ObservedAt       time.Time                `json:"observed_at"`
+	Visibility       Visibility               `json:"visibility,omitempty"`
+}
+
+type FallbackCheckRequirement struct {
+	Check    codereview.CheckIdentity `json:"check"`
+	Executor codereview.ActorIdentity `json:"executor"`
+}
+
+type ExternalAuthorityBinding struct {
+	ProviderKey     string `json:"provider_key"`
+	EnforcementMode string `json:"enforcement_mode"`
+}
+
+type FallbackAuthorityQuery struct {
+	IssueID               uuid.UUID                  `json:"issue_id"`
+	Reference             codereview.Reference       `json:"reference"`
+	SubjectRevision       string                     `json:"subject_revision"`
+	ReviewFallbackEnabled bool                       `json:"review_fallback_enabled"`
+	RequiredAttestations  []FallbackCheckRequirement `json:"required_attestations,omitempty"`
+	AtomicBinding         ExternalAuthorityBinding   `json:"atomic_binding"`
+}
+
+type FallbackReviewDecision struct {
+	Decision codereview.ReviewDecision  `json:"decision"`
+	Findings []codereview.ReviewFinding `json:"findings"`
+}
+
+type FallbackAuthority struct {
+	ExternalAuthorityGeneration string                        `json:"external_authority_generation"`
+	ReviewDecisions             []FallbackReviewDecision      `json:"review_decisions"`
+	CheckAttestations           []codereview.CheckAttestation `json:"check_attestations"`
 }

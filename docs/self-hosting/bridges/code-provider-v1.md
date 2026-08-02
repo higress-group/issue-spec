@@ -2,10 +2,11 @@
 
 Self-hosted issue-spec keeps issue data and code-host facts behind separate
 trust boundaries. The issue server is authoritative for issues and typed
-workflow artifacts. An operator-installed bridge reports normalized,
-revision-bound code evidence or performs an explicitly requested external
-mutation. Core evaluates every gate itself; a bridge cannot return an
-`approved` boolean.
+workflow artifacts. An operator-installed bridge supplies one normalized,
+exact-subject merge-authority generation and performs the one conditional
+merge that atomically validates that generation. Provider snapshots and
+authority tokens stay ephemeral. A bridge cannot replace policy-complete
+facts with an `approved` or `mergeable` boolean.
 
 For platform assessment, wrapper scaffolding, operator registration, Source
 Binding, and work-tracker boundaries, see
@@ -13,28 +14,29 @@ Binding, and work-tracker boundaries, see
 
 ## Trust and registration
 
-The operator registers a provider key and its implementation when starting the
-CLI/server process. Repository `issue-spec/config.yaml` may select only that
-key and an evidence policy:
+The operator registers a provider key, immutable provider build identity, and
+implementation when starting the CLI/server process. Repository configuration
+may select only that key and stable check/review inputs. It cannot define the
+executable or credentials:
 
 ```yaml
 external_code:
   provider_key: code.example
-  evidence:
-    required: [review, check, merge]
-    required_checks: [unit, dco]
-    freshness:
-      review: 24h
-      check: 1h
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:42/context:unit
+        owner: app:42
+        display_name: unit
+    review_fallback:
+      enabled: false
 ```
 
 Repository configuration containing an executable, arguments, environment, or
-credential source is rejected. Provider keys do not grant authority: evidence
-ingestion still requires an active supported credential with explicit
-`evidence:write`, access to the exact repository, and an authenticated active
-identity with live `write`-or-higher repository permission. Repository roles
-and `repo`, `admin:repo`, or `issues:write` scopes do not replace the evidence
-scope, and the evidence scope does not replace repository permission.
+credential source is rejected. Display names are diagnostic only. A check is
+identified by its opaque provider key and owner/integration plus its mandatory
+provider configuration generation.
 
 ### Deprecated Evidence Writer compatibility API
 
@@ -82,8 +84,10 @@ configuration cannot replace any registered executable or credential input.
 ## Process boundary
 
 An operator may register an in-process implementation of
-`codereview.Provider`, or construct `codereview.CommandProvider` from trusted
-process configuration. The command implementation:
+`codereview.MergeAuthorityProvider`, or construct
+`codereview.CommandProvider` from trusted process configuration. Legacy audit
+readers may continue to implement `codereview.Provider`; that interface is not
+merge authority. The command implementation:
 
 - is a clean absolute executable path and is invoked directly without a shell;
 - receives only the operator-configured arguments and environment;
@@ -124,9 +128,19 @@ failure uses a stable bridge-owned code and a safe message:
 
 ### Capabilities
 
-Core always discovers capabilities before a mutation. Supported v1 values are
-`evidence.snapshot`, `change.create`, and `change.comment`. Missing capability
-fails before any workflow comment, evidence, or external mutation is written.
+The protocol string remains v1. Merge-authority bridges must advertise the
+closed semantic generation `minimal-merge-authority/v1`, an immutable provider
+build identity, and all three merge-authority capabilities:
+
+- `evidence.review-decision`
+- `evidence.authoritative-check-conclusion`
+- `change.merge-conditional`
+
+Missing or partial capabilities, another semantic generation, an absent build
+identity, duplicate/unknown values, or a build that changes after discovery
+fails before usable authority or mutation. The legacy `evidence.snapshot`,
+`change.create`, and `change.comment` values remain decodable only for their
+non-authoritative compatibility surfaces.
 
 ```json
 {
@@ -134,12 +148,110 @@ fails before any workflow comment, evidence, or external mutation is written.
   "request_id": "c6234dde-0dc0-4f03-a727-c26bdbeda9b6",
   "capabilities": {
     "protocol_version": "issue-spec.code-provider/v1",
-    "values": ["evidence.snapshot", "change.comment"]
+    "semantic_generation": "minimal-merge-authority/v1",
+    "provider_build_identity": "code-example@sha256:0123456789abcdef",
+    "values": [
+      "evidence.review-decision",
+      "evidence.authoritative-check-conclusion",
+      "change.merge-conditional"
+    ]
   }
 }
 ```
 
-### Evidence snapshot
+### Merge-authority snapshot
+
+The `merge_snapshot` action takes a complete provider reference, an exact
+expected subject revision, and configured provider-native check identities:
+
+```json
+{
+  "reference": {
+    "provider_key": "code.example",
+    "external_repository": "acme/widgets",
+    "change_id": "42"
+  },
+  "expected_subject_revision": "abc123",
+  "required_checks": [
+    {
+      "provider": "code.example",
+      "key": "app:42/context:unit",
+      "owner": "app:42",
+      "display_name": "unit"
+    }
+  ]
+}
+```
+
+The response field is `merge_snapshot`. It repeats protocol generation, build,
+reference, and exact subject; includes current change state and capture time;
+returns a closed exact-subject author set, effective review policy, current
+per-reviewer decisions, findings and unresolved conversations; returns exactly
+one provider-selected current conclusion for every requested check; and carries
+an opaque `authority_token`.
+
+Actors preserve source audit identity as `(provider, stable_id)`. Independence
+uses only their trusted `canonical_principal` `(realm, stable_id)`. Every opener,
+commit author, coauthor, and committer belongs to the closed author set,
+including services. Login, email, display, logical agent, comment writer, and
+bridge process identity are never heuristic substitutes. Missing, ambiguous,
+or conflicting mappings fail closed.
+
+Review mode is `provider_native` or `issue_fallback_required`. The policy
+contains approval count and explicit CODEOWNER, stale-dismissal, and
+conversation-resolution rules. Verdicts are `approved`, `changes_requested`,
+`dismissed`, or `stale`. Findings have P0/P1/P2 severity and open/resolved/
+dismissed state; resolution or dismissal must be owned by the finding reviewer.
+Provider mode carries only current decisions, never a supersession history.
+
+Check conclusions are `pending`, `success`, `failure`, `cancelled`, or
+`skipped`; only `success` passes. Each conclusion repeats the exact subject,
+opaque check key, owner, provider-selected current attempt, and configuration
+generation. Duplicate, missing, unrequested, owner-mismatched, or wrong-subject
+conclusions invalidate the whole snapshot. Core never selects a run by time or
+list order.
+
+The bridge must observe one coherent provider generation. Head movement or an
+inability to bind the effective policy, review, findings, conversations, and
+all required conclusions returns an error and no usable token. The snapshot
+and token are never persisted as REVIEW, VERIFY, a receipt, or a merge plan.
+
+### Conditional merge
+
+The `merge_change` action is distinct from legacy `mutate`. Its request repeats
+the exact reference, caller-required `expected_head`, fresh opaque
+`authority_token`, and, only for supported fallback, the exact
+`external_authority_generation`. Its response field is `merge` and returns the
+same reference/head plus provider merge ID, merged revision, and canonical URL.
+
+At the write boundary the provider must atomically validate expected head and
+every fact covered by the token: effective policy, decisions, findings,
+conversations, and required conclusions. Expected-head-only or read-then-merge
+implementations must not advertise `change.merge-conditional`.
+
+### Issue-native fallback boundary
+
+Fallback is disabled by default and exists only when the selected provider
+cannot represent a configured fact. Review fallback stores one authenticated,
+exact-subject immutable decision stream per reviewer. External check fallback
+stores one stream per configured executor and stable check identity. The new
+types are `review-decision-fallback/v1` and `check-attestation/v1`; legacy
+`review` and `check` rows can never decode as these types.
+
+Each changed record explicitly supersedes the caller's current record. Exact
+replay is idempotent; conflicting replay, concurrent roots, forked successors,
+multiple active leaves, wrong reviewer/executor, wrong head, or malformed
+fields fail closed. Source identity is derived from the authenticated server
+user and counts only after trusted canonical-principal mapping.
+
+The append-only evidence collection version supplies an opaque external
+authority generation. Fallback access is usable only when the selected
+conditional-merge provider declares provider-authority-token enforcement for
+that generation. An expected-head-only provider is rejected before fallback
+authority is read. No lease, pending merge, receipt, or database migration is
+introduced.
+
+### Legacy evidence snapshot (audit only)
 
 A snapshot request contains a provider-namespaced repository/change reference
 and the exact expected revision. The response repeats both and returns
@@ -156,10 +268,9 @@ while facts are collected, the bridge returns an error with the stable code
 `revision_mismatch` and no snapshot. Core therefore has no provider facts to
 persist from a failed current-HEAD assertion.
 
-Core rejects protocol/reference/revision mismatches, missing or malformed
-records, untrusted writers, expired/stale observations, open P0/P1 findings,
-pending/failed required checks, and non-merged merge/archive evidence. The
-evidence identifiers and exact revision used are retained in the gate result.
+Historical readers reject protocol/reference/revision mismatches and malformed
+records. These records remain readable for audit but are never imported by the
+merge-authority snapshot or conditional merge path.
 URLs remain navigation metadata; they are never proof by themselves.
 Persisted source-binding web URLs and external-reference canonical URLs are
 canonical HTTPS coordinates only: userinfo, query strings (including a bare
@@ -186,7 +297,7 @@ REVIEW artifact. The external platform continues to own the line-level body;
 the neutral record preserves the workflow identity and optional HTTPS
 `canonical_url` only.
 
-### Mutation
+### Legacy mutation
 
 Mutation actions are `create_change` and `comment`. Requests and responses use
 the same neutral `provider_key`, `external_repository`, and `change_id`
@@ -217,9 +328,12 @@ without that capability use issue-spec's explicit issue-only rationale fallback.
 
 ## Versioning and compatibility
 
-Unknown protocol versions, capabilities, fields, evidence kinds, and mutation
-kinds fail closed. Additive protocol work requires a new advertised version;
-operators may register multiple provider keys during migration. GitHub mode may
-implement the same interfaces in process and retains its existing PR/check
-behavior, while self-hosted issue profiles never infer a code host from the
-issue origin.
+Unknown protocol versions, semantic generations, capabilities, fields,
+actions, enums, evidence kinds, and mutation kinds fail closed. This is an
+intentional closed semantic-generation cutover inside
+`issue-spec.code-provider/v1`, not v2 and not a dual gate. New Core rejects old
+bridges before authority; old Core rejects the new values/fields. CLI, Server,
+Runner, generated assets, and bridge must be deployed as one pinned release
+set. GitHub mode uses the same strict normalized types in process, and rejects
+external fallback when its native merge primitive cannot atomically validate
+the issue-server generation.

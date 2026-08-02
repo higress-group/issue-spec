@@ -99,12 +99,14 @@ type protocolRequest struct {
 }
 
 type protocolResponse struct {
-	Protocol     string          `json:"protocol"`
-	RequestID    string          `json:"request_id"`
-	Capabilities *Capabilities   `json:"capabilities,omitempty"`
-	Snapshot     *Snapshot       `json:"snapshot,omitempty"`
-	Mutation     *MutationResult `json:"mutation,omitempty"`
-	Error        *protocolError  `json:"error,omitempty"`
+	Protocol      string                  `json:"protocol"`
+	RequestID     string                  `json:"request_id"`
+	Capabilities  *Capabilities           `json:"capabilities,omitempty"`
+	Snapshot      *Snapshot               `json:"snapshot,omitempty"`
+	Mutation      *MutationResult         `json:"mutation,omitempty"`
+	MergeSnapshot *MergeSnapshot          `json:"merge_snapshot,omitempty"`
+	Merge         *ConditionalMergeResult `json:"merge,omitempty"`
+	Error         *protocolError          `json:"error,omitempty"`
 }
 
 type protocolError struct {
@@ -117,7 +119,8 @@ func (p *CommandProvider) Capabilities(ctx context.Context) (Capabilities, error
 	if err != nil {
 		return Capabilities{}, err
 	}
-	if response.Capabilities == nil || response.Snapshot != nil || response.Mutation != nil {
+	if response.Capabilities == nil || response.Snapshot != nil || response.Mutation != nil ||
+		response.MergeSnapshot != nil || response.Merge != nil {
 		return Capabilities{}, fmt.Errorf("%w: capabilities response shape", ErrInvalidProviderData)
 	}
 	if err := response.Capabilities.Validate(); err != nil {
@@ -137,7 +140,8 @@ func (p *CommandProvider) Snapshot(ctx context.Context, request SnapshotRequest)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if response.Snapshot == nil || response.Capabilities != nil || response.Mutation != nil {
+	if response.Snapshot == nil || response.Capabilities != nil || response.Mutation != nil ||
+		response.MergeSnapshot != nil || response.Merge != nil {
 		return Snapshot{}, fmt.Errorf("%w: snapshot response shape", ErrInvalidProviderData)
 	}
 	if response.Snapshot.ProtocolVersion != ProtocolVersion || response.Snapshot.Reference != request.Reference ||
@@ -162,6 +166,7 @@ func (p *CommandProvider) Mutate(ctx context.Context, request MutationRequest) (
 		return MutationResult{}, err
 	}
 	if response.Mutation == nil || response.Capabilities != nil || response.Snapshot != nil ||
+		response.MergeSnapshot != nil || response.Merge != nil ||
 		response.Mutation.Reference.ProviderKey != request.Reference.ProviderKey ||
 		response.Mutation.Reference.ExternalRepository != request.Reference.ExternalRepository ||
 		response.Mutation.Reference.Validate() != nil || strings.TrimSpace(response.Mutation.ExternalID) == "" ||
@@ -176,6 +181,42 @@ func (p *CommandProvider) Mutate(ctx context.Context, request MutationRequest) (
 		return MutationResult{}, fmt.Errorf("%w: mutation response change identity mismatch", ErrInvalidProviderData)
 	}
 	return *response.Mutation, nil
+}
+
+func (p *CommandProvider) MergeSnapshot(ctx context.Context, request MergeSnapshotRequest) (MergeSnapshot, error) {
+	if err := request.Validate(); err != nil {
+		return MergeSnapshot{}, err
+	}
+	response, err := p.invoke(ctx, "merge_snapshot", request)
+	if err != nil {
+		return MergeSnapshot{}, err
+	}
+	if response.MergeSnapshot == nil || response.Capabilities != nil || response.Snapshot != nil ||
+		response.Mutation != nil || response.Merge != nil {
+		return MergeSnapshot{}, fmt.Errorf("%w: merge snapshot response shape", ErrInvalidProviderData)
+	}
+	if err := ValidateMergeSnapshot(*response.MergeSnapshot, request); err != nil {
+		return MergeSnapshot{}, err
+	}
+	return *response.MergeSnapshot, nil
+}
+
+func (p *CommandProvider) MergeChange(ctx context.Context, request ConditionalMergeRequest) (ConditionalMergeResult, error) {
+	if err := request.Validate(); err != nil {
+		return ConditionalMergeResult{}, err
+	}
+	response, err := p.invoke(ctx, "merge_change", request)
+	if err != nil {
+		return ConditionalMergeResult{}, err
+	}
+	if response.Merge == nil || response.Capabilities != nil || response.Snapshot != nil ||
+		response.Mutation != nil || response.MergeSnapshot != nil {
+		return ConditionalMergeResult{}, fmt.Errorf("%w: conditional merge response shape", ErrInvalidProviderData)
+	}
+	if err := ValidateConditionalMergeResult(*response.Merge, request); err != nil {
+		return ConditionalMergeResult{}, err
+	}
+	return *response.Merge, nil
 }
 
 func validateMutationRequest(request MutationRequest) error {
@@ -258,6 +299,10 @@ func (p *CommandProvider) invoke(ctx context.Context, action string, payload any
 		return protocolResponse{}, fmt.Errorf("%w: protocol or request identity mismatch", ErrInvalidProviderData)
 	}
 	if response.Error != nil {
+		if response.Capabilities != nil || response.Snapshot != nil || response.Mutation != nil ||
+			response.MergeSnapshot != nil || response.Merge != nil {
+			return protocolResponse{}, fmt.Errorf("%w: adapter error response contains a success payload", ErrInvalidProviderData)
+		}
 		if strings.TrimSpace(response.Error.Code) == "" || strings.TrimSpace(response.Error.Message) == "" {
 			return protocolResponse{}, fmt.Errorf("%w: malformed adapter error", ErrInvalidProviderData)
 		}

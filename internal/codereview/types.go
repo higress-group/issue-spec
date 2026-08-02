@@ -16,26 +16,40 @@ import (
 	"time"
 )
 
-const ProtocolVersion = "issue-spec.code-provider/v1"
+const (
+	ProtocolVersion          = "issue-spec.code-provider/v1"
+	MergeAuthorityGeneration = "minimal-merge-authority/v1"
+)
 
 type Capability string
 
 const (
-	CapabilityEvidenceSnapshot Capability = "evidence.snapshot"
-	CapabilityChangeCreate     Capability = "change.create"
-	CapabilityChangeComment    Capability = "change.comment"
+	CapabilityEvidenceSnapshot             Capability = "evidence.snapshot"
+	CapabilityChangeCreate                 Capability = "change.create"
+	CapabilityChangeComment                Capability = "change.comment"
+	CapabilityReviewDecision               Capability = "evidence.review-decision"
+	CapabilityAuthoritativeCheckConclusion Capability = "evidence.authoritative-check-conclusion"
+	CapabilityMergeConditional             Capability = "change.merge-conditional"
+
+	// Long-form aliases retain the capability namespace in call sites while
+	// keeping the wire values above as the single protocol vocabulary.
+	CapabilityEvidenceReviewDecision               = CapabilityReviewDecision
+	CapabilityEvidenceAuthoritativeCheckConclusion = CapabilityAuthoritativeCheckConclusion
+	CapabilityChangeMergeConditional               = CapabilityMergeConditional
 )
 
 // ProviderDescription is the transport-safe, operator-owned metadata clients
 // use during onboarding. It deliberately cannot describe an executable,
 // arguments, environment variables, credentials, or filesystem paths.
 type ProviderDescription struct {
-	ProviderKey         string         `json:"provider_key"`
-	DisplayName         string         `json:"display_name"`
-	RemoteAuthorities   []string       `json:"remote_authorities,omitempty"`
-	CodeChangeLabel     string         `json:"code_change_label"`
-	Capabilities        []Capability   `json:"capabilities,omitempty"`
-	RecommendedEvidence []EvidenceKind `json:"recommended_evidence,omitempty"`
+	ProviderKey           string         `json:"provider_key"`
+	DisplayName           string         `json:"display_name"`
+	RemoteAuthorities     []string       `json:"remote_authorities,omitempty"`
+	CodeChangeLabel       string         `json:"code_change_label"`
+	SemanticGeneration    string         `json:"semantic_generation,omitempty"`
+	ProviderBuildIdentity string         `json:"provider_build_identity,omitempty"`
+	Capabilities          []Capability   `json:"capabilities,omitempty"`
+	RecommendedEvidence   []EvidenceKind `json:"recommended_evidence,omitempty"`
 }
 
 func (d ProviderDescription) Normalized(key string) (ProviderDescription, error) {
@@ -77,10 +91,16 @@ func (d ProviderDescription) Normalized(key string) (ProviderDescription, error)
 		}
 		seenCapabilities[capability] = true
 		switch capability {
-		case CapabilityEvidenceSnapshot, CapabilityChangeCreate, CapabilityChangeComment:
+		case CapabilityEvidenceSnapshot, CapabilityChangeCreate, CapabilityChangeComment,
+			CapabilityReviewDecision, CapabilityAuthoritativeCheckConclusion, CapabilityMergeConditional:
 		default:
 			return ProviderDescription{}, fmt.Errorf("%w: unsupported capability %q", ErrInvalidProviderData, capability)
 		}
+	}
+	d.SemanticGeneration = strings.TrimSpace(d.SemanticGeneration)
+	d.ProviderBuildIdentity = strings.TrimSpace(d.ProviderBuildIdentity)
+	if err := validateGenerationMetadata(d.Capabilities, d.SemanticGeneration, d.ProviderBuildIdentity); err != nil {
+		return ProviderDescription{}, err
 	}
 	seenEvidence := map[EvidenceKind]bool{}
 	for _, kind := range d.RecommendedEvidence {
@@ -136,8 +156,10 @@ var (
 )
 
 type Capabilities struct {
-	ProtocolVersion string       `json:"protocol_version"`
-	Values          []Capability `json:"values"`
+	ProtocolVersion       string       `json:"protocol_version"`
+	SemanticGeneration    string       `json:"semantic_generation,omitempty"`
+	ProviderBuildIdentity string       `json:"provider_build_identity,omitempty"`
+	Values                []Capability `json:"values"`
 }
 
 func (c Capabilities) Has(value Capability) bool {
@@ -156,7 +178,8 @@ func (c Capabilities) Validate() error {
 	seen := make(map[Capability]struct{}, len(c.Values))
 	for _, value := range c.Values {
 		switch value {
-		case CapabilityEvidenceSnapshot, CapabilityChangeCreate, CapabilityChangeComment:
+		case CapabilityEvidenceSnapshot, CapabilityChangeCreate, CapabilityChangeComment,
+			CapabilityReviewDecision, CapabilityAuthoritativeCheckConclusion, CapabilityMergeConditional:
 		default:
 			return fmt.Errorf("%w: unsupported capability %q", ErrInvalidProviderData, value)
 		}
@@ -165,7 +188,53 @@ func (c Capabilities) Validate() error {
 		}
 		seen[value] = struct{}{}
 	}
+	return validateGenerationMetadata(c.Values, c.SemanticGeneration, c.ProviderBuildIdentity)
+}
+
+func validateGenerationMetadata(values []Capability, generation, build string) error {
+	mergeAuthority := false
+	for _, value := range values {
+		if isMergeAuthorityCapability(value) {
+			mergeAuthority = true
+			break
+		}
+	}
+	generation = strings.TrimSpace(generation)
+	build = strings.TrimSpace(build)
+	if !mergeAuthority {
+		if generation != "" || build != "" {
+			return fmt.Errorf("%w: generation metadata without merge-authority capabilities", ErrInvalidProviderData)
+		}
+		return nil
+	}
+	if generation != MergeAuthorityGeneration {
+		return fmt.Errorf("%w: unsupported semantic generation %q", ErrInvalidProviderData, generation)
+	}
+	if !validOpaqueIdentity(build, 256) {
+		return fmt.Errorf("%w: immutable provider build identity is required", ErrInvalidProviderData)
+	}
 	return nil
+}
+
+func isMergeAuthorityCapability(value Capability) bool {
+	switch value {
+	case CapabilityReviewDecision, CapabilityAuthoritativeCheckConclusion, CapabilityMergeConditional:
+		return true
+	default:
+		return false
+	}
+}
+
+func validOpaqueIdentity(value string, limit int) bool {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > limit {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x21 || r > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 type Reference struct {

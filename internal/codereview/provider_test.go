@@ -182,8 +182,11 @@ func TestCommandProviderHelper(t *testing.T) {
 	switch request.Action {
 	case "capabilities":
 		values := []Capability{CapabilityEvidenceSnapshot, CapabilityChangeComment, CapabilityChangeCreate}
-		response["capabilities"] = Capabilities{ProtocolVersion: ProtocolVersion,
-			Values: values}
+		capabilities := Capabilities{ProtocolVersion: ProtocolVersion, Values: values}
+		if strings.HasPrefix(mode, "authority") {
+			capabilities = validMergeCapabilities()
+		}
+		response["capabilities"] = capabilities
 	case "snapshot":
 		var payload SnapshotRequest
 		_ = json.Unmarshal(request.Payload, &payload)
@@ -208,6 +211,15 @@ func TestCommandProviderHelper(t *testing.T) {
 			canonicalURL += "?access_token=secret"
 		}
 		response["mutation"] = MutationResult{Reference: payload.Reference, ExternalID: "comment-1", CanonicalURL: canonicalURL}
+	case "merge_snapshot":
+		var payload MergeSnapshotRequest
+		_ = json.Unmarshal(request.Payload, &payload)
+		response["merge_snapshot"] = validMergeSnapshot(payload)
+	case "merge_change":
+		var payload ConditionalMergeRequest
+		_ = json.Unmarshal(request.Payload, &payload)
+		response["merge"] = ConditionalMergeResult{Reference: payload.Reference, ExpectedHead: payload.ExpectedHead,
+			MergeID: "merge-42", MergedRevision: "merge789", CanonicalURL: "https://code.example/acme/widgets/change/42"}
 	default:
 		os.Exit(3)
 	}
