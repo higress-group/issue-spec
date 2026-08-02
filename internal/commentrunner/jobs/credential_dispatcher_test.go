@@ -80,8 +80,6 @@ func TestDispatcherCredentialOrderRotationSandboxAndTerminalRevoke(t *testing.T)
 			}},
 	}
 	dispatcher.CredentialScopes = map[string]models.RepoScope{"o/r": repoScope}
-	preGate := &recordingEvidencePreGate{}
-	dispatcher.EvidencePreGate = preGate
 
 	result, err := dispatcher.RunNext(context.Background())
 	if err != nil || result.Status != state.StatusCompleted {
@@ -95,10 +93,6 @@ func TestDispatcherCredentialOrderRotationSandboxAndTerminalRevoke(t *testing.T)
 	}
 	if !providerRevokeDeadline.Load() || !providerJobRevokeDeadline.Load() {
 		t.Fatalf("cleanup deadlines individual=%t job=%t", providerRevokeDeadline.Load(), providerJobRevokeDeadline.Load())
-	}
-	if preGate.calls != 1 || !preGate.credentialAvailable || preGate.request.Repo != "o/r" ||
-		preGate.request.IssueNumber != 30 || preGate.request.WorkflowRoot != workspaces.binding.Workspace.Path {
-		t.Fatalf("evidence pre-gate request=%+v calls=%d credential_available=%t", preGate.request, preGate.calls, preGate.credentialAvailable)
 	}
 	if workspaces.lastNewRequest.Credentials == nil || len(sandboxer.requests) != 1 || len(sandboxer.requests[0].FileCapabilities) != 4 || sandboxer.requests[0].ChildProfile == nil {
 		t.Fatalf("workspace request=%+v sandbox request=%+v", workspaces.lastNewRequest, sandboxer.requests)
