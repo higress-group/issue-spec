@@ -865,6 +865,10 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		a.errorf("collect REVIEW owner PROCESSes: %v\n", err)
 		return 1
 	}
+	if err := validateReviewSyncTarget(implementComments, *id); err != nil {
+		a.errorf("validate REVIEW %s sync target: %v\n", *id, err)
+		return 1
+	}
 	specSources, err := loadSubmittedReviewSpecSources(ctx, client, repo, 0, implementIssue, model.Artifact{}, implementComments)
 	if err != nil {
 		a.errorf("collect REVIEW owner SPECs: %v\n", err)
@@ -943,7 +947,7 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		a.errorf("render REVIEW owner coverage: %v\n", err)
 		return 1
 	}
-	action, comment, _, err := upsertTypedComment(ctx, client, repo, implementIssue, "REVIEW", *id, body)
+	action, comment, err := upsertReviewSyncComment(ctx, client, repo, implementIssue, *id, body)
 	if err != nil {
 		a.errorf("upsert REVIEW %s: %v\n", *id, err)
 		return 1
@@ -963,6 +967,66 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func validateReviewSyncTarget(comments []github.Comment, reviewID string) error {
+	reviewID = strings.TrimSpace(reviewID)
+	type observedReview struct {
+		comment github.Comment
+		parsed  model.TypedComment
+	}
+	var matches []observedReview
+	for _, comment := range comments {
+		parsed := model.ParseTypedComment(comment.Body)
+		if parsed.Type == "REVIEW" && parsed.ID == reviewID {
+			matches = append(matches, observedReview{comment: comment, parsed: parsed})
+		}
+	}
+	if len(matches) > 1 {
+		return fmt.Errorf("multiple active REVIEW comments use id %s; review sync target is ambiguous", reviewID)
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	_, accepted, err := parseAcceptedReviewReceipt(matches[0].comment.Body)
+	if err != nil {
+		return fmt.Errorf("REVIEW %s accepted receipt authority is malformed: %w", reviewID, err)
+	}
+	if accepted {
+		return fmt.Errorf("REVIEW %s already carries accepted receipt authority; review submit and review sync are alternative publication paths for one REVIEW ID", reviewID)
+	}
+	if len(matches[0].parsed.Errors) != 0 {
+		return fmt.Errorf("existing REVIEW %s is noncanonical: %s", reviewID, strings.Join(matches[0].parsed.Errors, "; "))
+	}
+	return nil
+}
+
+func upsertReviewSyncComment(ctx context.Context, client github.Operations, repo string, issueNumber int,
+	reviewID, body string) (string, github.Comment, error) {
+	comments, err := client.ListIssueComments(ctx, repo, issueNumber)
+	if err != nil {
+		return "", github.Comment{}, err
+	}
+	if err := validateReviewSyncTarget(comments, reviewID); err != nil {
+		return "", github.Comment{}, err
+	}
+	for _, comment := range comments {
+		parsed := model.ParseTypedComment(comment.Body)
+		if parsed.Type != "REVIEW" || parsed.ID != reviewID {
+			continue
+		}
+		merged := body
+		for _, url := range model.RelatedCommentURLs(parsed) {
+			next, _, addErr := model.AddRelatedCommentLink(merged, url)
+			if addErr == nil {
+				merged = next
+			}
+		}
+		updated, updateErr := client.UpdateComment(ctx, repo, comment.ID, merged)
+		return "updated", updated, updateErr
+	}
+	created, createErr := client.CreateComment(ctx, repo, issueNumber, body)
+	return "created", created, createErr
 }
 
 func resolveReviewSyncCoverage(comments []github.Comment, issue int, specSources []submittedReviewSpecSource,
@@ -1108,6 +1172,9 @@ func upsertExternalReviewSyncCommentAt(ctx context.Context, client github.Operat
 	coverages ...reviewOwnerCoverage) (string, github.Comment, error) {
 	comments, err := client.ListIssueComments(ctx, repo, issueNumber)
 	if err != nil {
+		return "", github.Comment{}, err
+	}
+	if err := validateReviewSyncTarget(comments, id); err != nil {
 		return "", github.Comment{}, err
 	}
 	var existing *github.Comment

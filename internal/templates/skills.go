@@ -213,6 +213,9 @@ Coordinator: follow issue-spec-workflow to prepare the immutable review snapshot
 4. Outside the snapshot, write only ` + "`{\"verdict\":\"approve\",\"findings\":[]}`" + ` (or ` + "`changes-requested`" + ` with complete existing-model findings), then run ` + "`issue-spec role complete --assignment-file <sealed-packet.json> --decision-file <decision.json> --output <receipt.json> --agent <reviewer-name> --json`" + ` from the snapshot.
 5. The command proves immutable Git identity, runs every sealed test, and atomically self-validates v1 evidence. Missing, failed, stale, or substituted evidence blocks output. Return only the bounded completion result and findings; Coordinator review submission/sync, links, and acceptance remain separate.
 `,
+			SkillOnly: `## Review Publication Paths
+
+Role-owned review submit and provider-derived review sync are alternative publication paths for a REVIEW ID: choose exactly one and never run them sequentially against the same ID. Submit publishes immutable accepted receipt authority; sync must refuse a REVIEW ID that already carries that authority. Either path publishes the complete bounded REVIEW owner coverage, and no peer mutation follows publication.`,
 		},
 		{
 			Name:        "issue-spec-verify",
