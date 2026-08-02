@@ -19,7 +19,7 @@ class ScaffoldProviderTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve(strict=True)
         self.mapping = self.root / "principal-mappings.json"
         self.mapping.write_text(
             json.dumps(
