@@ -1700,10 +1700,13 @@ func consumeAcceptedVerificationEvidence(inputs []gates.ProcessEvidenceInput, ar
 			assignmentProcessID, err := acceptedRoleAssignmentProcess(inputs, inputs[inputIndex].Process.Comment.ID,
 				evidence.URL, evidence.SpecID, assignment.RoleVerification, authority.AssignmentID,
 				authority.AssignmentDigest, authority.AssignmentGeneration, authority.SubjectRevision, "")
-			if err != nil || assignmentProcessID != inputs[inputIndex].Process.Comment.ID ||
-				!acceptedAssignmentMatchesActive(inputs[inputIndex].ActiveAssignment,
-					assignment.RoleVerification, authority.AssignmentID, authority.AssignmentDigest,
-					authority.AssignmentGeneration, authority.SubjectRevision) {
+			if err != nil {
+				continue
+			}
+			sourceInput, found := processEvidenceInputByID(inputs, assignmentProcessID)
+			if !found || !acceptedAssignmentMatchesActive(sourceInput.ActiveAssignment,
+				assignment.RoleVerification, authority.AssignmentID, authority.AssignmentDigest,
+				authority.AssignmentGeneration, authority.SubjectRevision) {
 				continue
 			}
 			evidence.SubjectRevision = expectedRevision

@@ -543,6 +543,23 @@ func TestBuildMinimalFinalEvidenceUsesV2IssuingProcessWithoutReviewBacklink(t *t
 	}
 }
 
+func TestConsumeAcceptedVerificationEvidenceUsesSharedIssuingProcessAuthority(t *testing.T) {
+	fixture := newMultiCarrierRoleEvidenceFixture(t)
+	consumed := consumeAcceptedVerificationEvidence(fixture.inputs, fixture.artifacts, fixture.subject)
+	for _, processID := range fixture.targetProcessIDs {
+		input, found := processEvidenceInputByID(consumed, processID)
+		if !found || len(input.Verifications) != 1 {
+			t.Fatalf("missing shared verification evidence for %s: %+v", processID, input.Verifications)
+		}
+		evidence := input.Verifications[0]
+		if !evidence.Trusted || !evidence.TestEvidence || !evidence.StructuredTests ||
+			evidence.SubjectRevision != fixture.subject ||
+			!strings.HasPrefix(evidence.Source, "accepted-verification-receipt:") {
+			t.Fatalf("shared receipt did not become trusted evidence for %s: %+v", processID, evidence)
+		}
+	}
+}
+
 func TestBuildMinimalFinalEvidenceV2ReviewAssignmentCandidatesRequireActiveAuthority(t *testing.T) {
 	t.Run("unrelated unmanaged process preserves valid index", func(t *testing.T) {
 		fixture := newMultiCarrierRoleEvidenceFixture(t)
