@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/durable"
 	"gopkg.in/yaml.v3"
 )
@@ -368,6 +369,77 @@ external_code:
 		!plan.Config.ExternalCode.Evidence.SynchronizesBefore("verify") ||
 		!plan.Config.ExternalCode.Evidence.SynchronizesBefore("RUNNER") {
 		t.Fatalf("external code config = %+v", plan.Config.ExternalCode)
+	}
+}
+
+func TestExternalCodeMergeUsesStableProviderIdentities(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), `
+external_code:
+  provider_key: code.example
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:unit
+        owner: app:7
+        display_name: unit
+    review_fallback:
+      enabled: false
+`)
+	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("Resolve() = %+v, %v", plan, err)
+	}
+	provider, checks, err := plan.MergeAuthorityConfiguration()
+	if err != nil || provider != "code.example" || len(checks) != 1 ||
+		checks[0] != (codereview.CheckIdentity{Provider: "code.example", Key: "app:7/context:unit", Owner: "app:7", DisplayName: "unit"}) {
+		t.Fatalf("merge configuration = %q %+v, %v", provider, checks, err)
+	}
+}
+
+func TestExternalCodeMergeRejectsBareNamesMixedLegacyAndEnabledFallback(t *testing.T) {
+	configs := map[string]string{
+		"bare-name": `external_code:
+  provider_key: code.example
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: unit
+`,
+		"mixed-legacy": `external_code:
+  provider_key: code.example
+  evidence:
+    required_checks: [unit]
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:unit
+        owner: app:7
+`,
+		"unbound-fallback": `external_code:
+  provider_key: code.example
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:unit
+        owner: app:7
+    review_fallback:
+      enabled: true
+`,
+	}
+	for name, raw := range configs {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), raw)
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err == nil || !hasDiagnostic(plan.Diagnostics, "invalid_config") {
+				t.Fatalf("Resolve() = %+v, %v", plan, err)
+			}
+		})
 	}
 }
 

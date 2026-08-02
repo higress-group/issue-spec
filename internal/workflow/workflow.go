@@ -95,6 +95,27 @@ func (c *WorkflowContext) UnmarshalYAML(value *yaml.Node) error {
 type ExternalCodeConfig struct {
 	ProviderKey string               `json:"provider_key" yaml:"provider_key"`
 	Evidence    EvidencePolicyConfig `json:"evidence" yaml:"evidence"`
+	Merge       *MergePolicyConfig   `json:"merge,omitempty" yaml:"merge,omitempty"`
+}
+
+// MergePolicyConfig contains only stable merge inputs. Executables,
+// credentials, tokens, actor mappings, and saved decisions are operator-owned
+// and cannot be supplied by repository configuration.
+type MergePolicyConfig struct {
+	RequiredChecks []MergeRequiredCheckConfig `json:"required_checks" yaml:"required_checks"`
+	ReviewFallback *MergeReviewFallbackConfig `json:"review_fallback,omitempty" yaml:"review_fallback"`
+}
+
+type MergeRequiredCheckConfig struct {
+	Source      string `json:"source" yaml:"source"`
+	Provider    string `json:"provider" yaml:"provider"`
+	Key         string `json:"key" yaml:"key"`
+	Owner       string `json:"owner" yaml:"owner"`
+	DisplayName string `json:"display_name,omitempty" yaml:"display_name"`
+}
+
+type MergeReviewFallbackConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
 }
 
 type EvidencePolicyConfig struct {
@@ -271,6 +292,30 @@ func (p Plan) HTMLReviewEnabled() bool {
 		return true
 	}
 	return p.Config.HTMLReview.Enabled
+}
+
+// MergeAuthorityConfiguration returns the configured provider-native check
+// identities. It never maps the legacy evidence gate by name.
+func (p Plan) MergeAuthorityConfiguration() (string, []codereview.CheckIdentity, error) {
+	if p.Config.ExternalCode == nil || p.Config.ExternalCode.Merge == nil {
+		return "", nil, errors.New("external_code.merge is required for minimal merge authority")
+	}
+	provider := strings.TrimSpace(p.Config.ExternalCode.ProviderKey)
+	checks := make([]codereview.CheckIdentity, 0, len(p.Config.ExternalCode.Merge.RequiredChecks))
+	for _, configured := range p.Config.ExternalCode.Merge.RequiredChecks {
+		checks = append(checks, codereview.CheckIdentity{Provider: strings.TrimSpace(configured.Provider),
+			Key: strings.TrimSpace(configured.Key), Owner: strings.TrimSpace(configured.Owner),
+			DisplayName: strings.TrimSpace(configured.DisplayName)})
+	}
+	if len(checks) == 0 {
+		return "", nil, errors.New("external_code.merge.required_checks must not be empty")
+	}
+	for _, check := range checks {
+		if check.Validate() != nil || check.Provider != provider {
+			return "", nil, errors.New("external_code.merge.required_checks contains an invalid provider-native identity")
+		}
+	}
+	return provider, checks, nil
 }
 
 func (p Plan) ArtifactForIssue(kind string) (Artifact, bool) {
@@ -478,7 +523,7 @@ func validateExternalCodeConfig(data []byte, config *ExternalCodeConfig) error {
 	if external.Kind != yaml.MappingNode || config == nil {
 		return errors.New("external_code must be a mapping")
 	}
-	if unknown := unknownMappingKeys(external, map[string]bool{"provider_key": true, "evidence": true}); len(unknown) > 0 {
+	if unknown := unknownMappingKeys(external, map[string]bool{"provider_key": true, "evidence": true, "merge": true}); len(unknown) > 0 {
 		return fmt.Errorf("external_code contains operator-only or unsupported fields: %s", strings.Join(unknown, ", "))
 	}
 	evidence := mappingValue(external, "evidence")
@@ -488,6 +533,21 @@ func validateExternalCodeConfig(data []byte, config *ExternalCodeConfig) error {
 		}
 		if unknown := unknownMappingKeys(evidence, map[string]bool{"required": true, "required_checks": true, "freshness": true, "sync_before": true}); len(unknown) > 0 {
 			return fmt.Errorf("external_code.evidence contains unsupported fields: %s", strings.Join(unknown, ", "))
+		}
+	}
+	merge := mappingValue(external, "merge")
+	if merge != nil {
+		if merge.Kind != yaml.MappingNode || config.Merge == nil {
+			return errors.New("external_code.merge must be a mapping")
+		}
+		if unknown := unknownMappingKeys(merge, map[string]bool{"required_checks": true, "review_fallback": true}); len(unknown) > 0 {
+			return fmt.Errorf("external_code.merge contains unsupported fields: %s", strings.Join(unknown, ", "))
+		}
+		if evidence != nil {
+			return errors.New("external_code.evidence and external_code.merge cannot be configured together")
+		}
+		if err := validateMergePolicy(config.ProviderKey, merge, config.Merge); err != nil {
+			return err
 		}
 	}
 	if err := codereview.ValidateProviderKey(config.ProviderKey); err != nil {
@@ -526,6 +586,43 @@ func validateExternalCodeConfig(data []byte, config *ExternalCodeConfig) error {
 			return fmt.Errorf("external_code.evidence.sync_before contains invalid or duplicate stage %q", configured)
 		}
 		seenStages[stage] = true
+	}
+	return nil
+}
+
+func validateMergePolicy(providerKey string, node *yaml.Node, config *MergePolicyConfig) error {
+	if mappingValue(node, "required_checks") == nil {
+		return errors.New("external_code.merge.required_checks is required")
+	}
+	if len(config.RequiredChecks) == 0 {
+		return errors.New("external_code.merge.required_checks must not be empty")
+	}
+	seen := map[string]bool{}
+	for _, check := range config.RequiredChecks {
+		if check.Source != "provider" {
+			return errors.New("external_code.merge.required_checks[].source must be provider")
+		}
+		identity := codereview.CheckIdentity{Provider: strings.TrimSpace(check.Provider), Key: strings.TrimSpace(check.Key),
+			Owner: strings.TrimSpace(check.Owner), DisplayName: strings.TrimSpace(check.DisplayName)}
+		key := identity.Provider + "\x00" + identity.Key + "\x00" + identity.Owner
+		if identity.Validate() != nil || identity.Provider != strings.TrimSpace(providerKey) || seen[key] {
+			return errors.New("external_code.merge.required_checks contains an invalid or duplicate provider-native identity")
+		}
+		seen[key] = true
+	}
+	if fallback := mappingValue(node, "review_fallback"); fallback != nil {
+		if fallback.Kind != yaml.MappingNode || config.ReviewFallback == nil {
+			return errors.New("external_code.merge.review_fallback must be a mapping")
+		}
+		if unknown := unknownMappingKeys(fallback, map[string]bool{"enabled": true}); len(unknown) > 0 {
+			return fmt.Errorf("external_code.merge.review_fallback contains unsupported fields: %s", strings.Join(unknown, ", "))
+		}
+		if mappingValue(fallback, "enabled") == nil {
+			return errors.New("external_code.merge.review_fallback.enabled is required")
+		}
+		if config.ReviewFallback.Enabled {
+			return errors.New("external_code.merge.review_fallback requires an atomic external-generation collector that is not configured")
+		}
 	}
 	return nil
 }

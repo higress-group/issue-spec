@@ -128,7 +128,7 @@ func nativeIssueNodeID(value string) (uuid.UUID, error) {
 
 func (a *app) runCodeChange(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec code-change attach|link-process|rationale ...\n")
+		a.errorf("usage: issue-spec code-change attach|link-process|rationale|merge ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -138,6 +138,8 @@ func (a *app) runCodeChange(ctx context.Context, args []string) int {
 		return a.runCodeChangeLinkProcess(ctx, args[1:])
 	case "rationale":
 		return a.runCodeChangeRationale(ctx, args[1:])
+	case "merge":
+		return a.runCodeChangeMerge(ctx, args[1:])
 	default:
 		a.errorf("unknown code-change command %q\n", args[0])
 		return 2
