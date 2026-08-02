@@ -9,6 +9,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/relationships"
 )
 
 const (
@@ -91,6 +92,38 @@ func TestMinimalFinalForecastAndAuthoritativeDecisionsMatch(t *testing.T) {
 	}
 	if !forecast.PointInTime || authoritative.PointInTime {
 		t.Fatalf("mode projection lost point-in-time semantics: forecast=%+v authoritative=%+v", forecast, authoritative)
+	}
+}
+
+func TestMinimalFinalRejectsUnknownProcessDependency(t *testing.T) {
+	snapshot := minimalFinalDependencySnapshot(t, "PROCESS-404", false, false)
+	report := evaluate(t, snapshot)
+	if report.Ready || !hasDiagnosticMessage(report.Diagnostics, CodeFinalPlanningInvalid,
+		"PROCESS-001 depends on unknown PROCESS PROCESS-404") {
+		t.Fatalf("unknown PROCESS dependency did not block final readiness: %+v", report.Diagnostics)
+	}
+}
+
+func TestMinimalFinalRejectsMissingCanonicalDependencyDespiteStaleBacklink(t *testing.T) {
+	snapshot := minimalFinalDependencySnapshot(t, "PROCESS-002", false, true)
+	if snapshot.Relationships.Index.Totals.LegacyOrStale == 0 {
+		t.Fatalf("fixture did not contain a stale reverse backlink: %+v", snapshot.Relationships.Index)
+	}
+	report := evaluate(t, snapshot)
+	if report.Ready || !hasDiagnosticMessage(report.Diagnostics, CodeFinalPlanningInvalid,
+		"PROCESS-001 dependency PROCESS-002 is missing its canonical PROCESS URL") {
+		t.Fatalf("stale reverse backlink satisfied missing canonical dependency authority: %+v", report.Diagnostics)
+	}
+}
+
+func TestMinimalFinalCanonicalDependencyIgnoresLegacyAndStaleBacklinks(t *testing.T) {
+	snapshot := minimalFinalDependencySnapshot(t, "PROCESS-002", true, true)
+	if snapshot.Relationships.Index.Totals.LegacyBacklink == 0 || snapshot.Relationships.Index.Totals.LegacyOrStale == 0 {
+		t.Fatalf("fixture did not contain legacy and stale reverse backlinks: %+v", snapshot.Relationships.Index)
+	}
+	report := evaluate(t, snapshot)
+	if !report.Ready || len(report.Diagnostics) != 0 {
+		t.Fatalf("legacy or stale reverse backlink blocked canonical dependency authority: %+v", report.Diagnostics)
 	}
 }
 
@@ -367,6 +400,67 @@ func minimalFinalSnapshot(t *testing.T, mode Mode) Snapshot {
 			},
 		},
 	}
+}
+
+func minimalFinalDependencySnapshot(t *testing.T, dependencyID string, canonical, reverse bool) Snapshot {
+	t.Helper()
+	snapshot := minimalFinalSnapshot(t, ModeAuthoritative)
+	snapshot.Artifacts[0].Issue = 392
+	snapshot.Artifacts[1].Issue = 395
+	snapshot.Artifacts[2].Issue = 399
+
+	assignmentInput := snapshot.Artifacts[2].Comment.Assignment
+	body := strings.Replace(snapshot.Artifacts[2].Comment.Body, "\n### Handoff",
+		"\n### Dependencies\n\n- "+dependencyID+"\n\n### Handoff", 1)
+	snapshot.Artifacts[2].Comment = model.ParseTypedComment(body)
+	snapshot.Artifacts[2].Comment.Assignment = assignmentInput
+
+	if dependencyID == "PROCESS-002" {
+		logical := "## Process: prerequisite\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- orchestration\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\ncoordination complete"
+		links := map[string][]string{
+			"Related Comments": {snapshot.Artifacts[1].URL},
+			"PR":               {minimalFinalSubject},
+		}
+		if reverse {
+			links["Related Comments"] = append(links["Related Comments"], snapshot.Artifacts[2].URL)
+		}
+		body, err := model.EnsureTypedBody("PROCESS", dependencyID, logical, model.BodyOptions{Status: "done", Links: links})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prerequisite := model.Artifact{Issue: 399, CommentID: 4, URL: "https://example.test/comments/PROCESS-002",
+			Comment: model.ParseTypedComment(body)}
+		snapshot.Artifacts = append(snapshot.Artifacts, prerequisite)
+		if canonical {
+			updated, _, err := model.AddRelatedCommentLink(snapshot.Artifacts[2].Comment.Body, prerequisite.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot.Artifacts[2].Comment = model.ParseTypedComment(updated)
+			snapshot.Artifacts[2].Comment.Assignment = assignmentInput
+		}
+		if canonical && reverse {
+			staleLinks := map[string][]string{
+				"Related Comments": {snapshot.Artifacts[1].URL, snapshot.Artifacts[2].URL},
+				"PR":               {minimalFinalSubject},
+			}
+			staleBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-003", logical,
+				model.BodyOptions{Status: "done", Links: staleLinks})
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot.Artifacts = append(snapshot.Artifacts, model.Artifact{Issue: 399, CommentID: 5,
+				URL: "https://example.test/comments/PROCESS-003", Comment: model.ParseTypedComment(staleBody)})
+		}
+	}
+
+	index, err := relationships.BuildIndex(snapshot.Artifacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Relationships = RelationshipFacts{Required: true, Observed: true, Index: index}
+	snapshot.ProcessEvidence[0].Process = snapshot.Artifacts[2]
+	return snapshot
 }
 
 func recordsWithoutKind(records []FinalEvidenceRecord, kind FinalEvidenceKind) []FinalEvidenceRecord {

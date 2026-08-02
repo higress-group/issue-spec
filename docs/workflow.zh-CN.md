@@ -21,7 +21,7 @@ AI:  Created design issue #102 and implement issue #103
      - PROCESS-103001: theme state and storage
      - PROCESS-103002: UI toggle
      - PROCESS-103003: tests and verification
-     Linked SPEC <-> TASK <-> PROCESS
+     发布 TASK 与 PROCESS 所有者关系
 
 Worker: opens PR #120
 AI:     Added PR rationale comments on changed lines, each linked to SPEC and PROCESS.
@@ -54,14 +54,16 @@ AI:  After implementation merge, opened a separate durable-spec PR.
 | Design | 怎么做与验收策略 | `TASK`、`QUESTION` |
 | Implement | 多 agent 执行、review、verify | `PROCESS`、`QUESTION`、`REVIEW`、`VERIFY` |
 
-可追溯性是双向的：
+可追溯性按图读取，但每条关系只有一个写入者：
 
 ```text
-SPEC <-> TASK <-> PROCESS <-> PR rationale
-                   |
-                   +-> REVIEW findings and replies
-                   +-> VERIFY evidence
+TASK 所有者 -> SPEC 覆盖范围
+PROCESS 所有者 -> 父 TASK 与 PROCESS 依赖
+REVIEW 所有者 -> Review/变更 PROCESS 与活动 SPEC 覆盖范围
+VERIFY 所有者 -> Verification PROCESS 与活动 SPEC 覆盖范围
 ```
+
+所有者命令先解析并校验完整的规范目标集，再执行一次所有者写入；不会仅为反向导航而更新对端。
 
 在实现 PR 合并之前，`pr link-issues` 会把关闭链接写入实现 PR 正文，这样代码托管平台会在合并时关闭与该 PR 关联的 proposal、design 与 implement issue。合并之后，`archive durable-spec --create-pr --close-issues` 会开一个单独的 PR，把长期行为契约写入仓库，并幂等地关闭任何仍处于打开状态的活跃 issue。
 

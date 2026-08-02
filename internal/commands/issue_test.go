@@ -527,6 +527,75 @@ func TestIssueCreateCustomBodiesNormalizeAuthoritativePredecessorLinks(t *testin
 	})
 }
 
+func TestIssueCreateImplementFailsClosedOnRelationshipIndexError(t *testing.T) {
+	const (
+		proposalIssue = 21
+		designIssue   = 31
+		specURL       = "https://github.com/o/r/issues/21#issuecomment-1"
+		taskURL       = "https://github.com/o/r/issues/31#issuecomment-2"
+	)
+	specBody := mustTypedBody(t, "SPEC", "SPEC-001", "confirmed", "gate",
+		"## Requirement: gate\n\nThe implementation gate MUST use canonical relationships.\n\n### Scenario: valid\n\n- **WHEN** topology is valid\n- **THEN** creation proceeds\n")
+	collidingSpecBody := mustTypedBody(t, "SPEC", "SPEC-002", "confirmed", "gate",
+		"## Requirement: collision\n\nCanonical provider identities MUST be unique.\n\n### Scenario: invalid\n\n- **WHEN** identities collide\n- **THEN** creation stops\n")
+	taskBody, err := model.EnsureTypedBody("TASK", "TASK-001",
+		"## Task: gate\n\n### Implementation Checklist\n\n- [ ] preserve canonical creation\n\n### Execution Planning\n\n- Coupling class: low\n\n### Covers\n\n- SPEC-001\n",
+		model.BodyOptions{Status: "confirmed", Scope: "gate", Links: map[string][]string{
+			"Related Comments": {specURL},
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalSpec := github.Comment{ID: 1, HTMLURL: specURL,
+		URL: "https://api.github.com/repos/o/r/issues/comments/1", Body: specBody}
+	task := github.Comment{ID: 2, HTMLURL: taskURL,
+		URL: "https://api.github.com/repos/o/r/issues/comments/2", Body: taskBody}
+
+	for _, test := range []struct {
+		name        string
+		proposal    []github.Comment
+		wantCode    int
+		wantCreates int
+		wantError   string
+	}{
+		{name: "ambiguous canonical topology", proposal: []github.Comment{canonicalSpec, {
+			ID: 3, HTMLURL: specURL,
+			URL: "https://api.github.com/repos/o/r/issues/comments/3", Body: collidingSpecBody,
+		}}, wantCode: 1, wantCreates: 0, wantError: "canonical relationship index: relationship_ambiguous"},
+		{name: "valid canonical topology", proposal: []github.Comment{canonicalSpec}, wantCode: 0, wantCreates: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			creates := 0
+			app := newApp(strings.NewReader(""), &out, &errOut)
+			app.selectGitHubBackend = ghSelection
+			app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+				f.listIssueComments = func(_ context.Context, _ string, issueNumber int) ([]github.Comment, error) {
+					switch issueNumber {
+					case proposalIssue:
+						return append([]github.Comment(nil), test.proposal...), nil
+					case designIssue:
+						return []github.Comment{task}, nil
+					default:
+						t.Fatalf("unexpected issue comments request: %d", issueNumber)
+						return nil, nil
+					}
+				}
+				f.createIssue = func(_ context.Context, _ string, _ string, _ string, _ []string) (github.Issue, error) {
+					creates++
+					return github.Issue{Number: 32, HTMLURL: "https://github.com/o/r/issues/32"}, nil
+				}
+			})
+			code := app.runIssueCreate(t.Context(), "implement", []string{"--repo", "o/r", "--change", "index-gate",
+				"--proposal", "21", "--design", "31", "--json"})
+			if code != test.wantCode || creates != test.wantCreates ||
+				(test.wantError != "" && !strings.Contains(errOut.String(), test.wantError)) {
+				t.Fatalf("exit=%d creates=%d stdout=%q stderr=%q", code, creates, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
 func TestIssuePredecessorLinkPreservesProposalAndDefaultTemplates(t *testing.T) {
 	proposal := "<!-- issue-spec:issue=proposal change=x version=1 -->\n# Proposal: x\n\nBody.\n"
 	if got, err := ensureIssuePredecessorLink("proposal", "", proposal); err != nil || got != proposal {

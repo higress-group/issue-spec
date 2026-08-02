@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +16,71 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/relationships"
 )
+
+func TestBuildProcessEvidenceFailsClosedWhenRelationshipIndexFails(t *testing.T) {
+	artifacts := relationshipIndexFailureArtifacts(t)
+	if _, err := relationships.BuildIndex(artifacts); !errors.Is(err, relationships.ErrAmbiguous) {
+		t.Fatalf("fixture must fail relationship indexing ambiguously: %v", err)
+	}
+
+	inputs := buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 {
+		t.Fatalf("inputs=%+v", inputs)
+	}
+	input := inputs[0]
+	if !strings.Contains(input.RelationshipError, relationships.ErrAmbiguous.Error()) {
+		t.Fatalf("relationship failure was not preserved: %+v", input)
+	}
+	if len(input.Reviews) != 0 || len(input.Verifications) != 0 {
+		t.Fatalf("legacy references discovered candidates after index failure: reviews=%+v verifies=%+v",
+			input.Reviews, input.Verifications)
+	}
+	report := gates.EvaluateProcessEvidence(input, gates.TargetFinal, gates.ModeAuthoritative)
+	if !hasDiagnosticCode(report.Diagnostics, gates.CodeProcessEvidenceUnknown) ||
+		!strings.Contains(report.Diagnostics[0].Message, relationships.ErrAmbiguous.Error()) {
+		t.Fatalf("relationship failure was not an explicit role-aware blocker: %+v", report)
+	}
+}
+
+func relationshipIndexFailureArtifacts(t *testing.T) []model.Artifact {
+	t.Helper()
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement\n\n### Scenario: one")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	process := processClassArtifact(t, "PROCESS-001", "verification", "SPEC-001", "done")
+	reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001",
+		"### Covered PROCESSes\n\n- PROCESS-001\n\n### Covered SPECs\n\n- SPEC-001",
+		model.BodyOptions{Status: "done", Links: map[string][]string{"Related Comments": {process.URL, spec.URL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyBody, err := model.EnsureTypedBody("VERIFY", "VERIFY-001",
+		"Tests passed.\n\n### Covered PROCESSes\n\n- PROCESS-001\n\n### Covered SPECs\n\n- SPEC-001",
+		model.BodyOptions{Status: "done", Links: map[string][]string{"Related Comments": {process.URL, spec.URL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := model.Artifact{Issue: 3, URL: "https://example.test/issues/3#review-001", Comment: model.ParseTypedComment(reviewBody)}
+	verify := model.Artifact{Issue: 3, URL: "https://example.test/issues/3#verify-001", Comment: model.ParseTypedComment(verifyBody)}
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	// A repeated physical link makes the whole selected topology ambiguous.
+	// The REVIEW/VERIFY owner references remain present to prove they cannot be
+	// rediscovered through the legacy readers after that failure.
+	links := map[string][]string{}
+	for name, values := range task.Comment.Links {
+		links[name] = append([]string(nil), values...)
+	}
+	links[relationships.RelatedCommentsField] = append(links[relationships.RelatedCommentsField], spec.URL)
+	taskBody, err := model.EnsureTypedBody("TASK", task.Comment.ID, model.LogicalBody(task.Comment.Body),
+		model.BodyOptions{Status: task.Comment.Status, Links: links})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Comment = model.ParseTypedComment(taskBody)
+	return []model.Artifact{spec, task, process, review, verify}
+}
 
 func TestFilterSharedVerificationIdentitySupportsAcceptedAndManualSelfReportedPerPair(t *testing.T) {
 	const specID = "SPEC-001"
@@ -182,10 +248,45 @@ func TestArtifactReferencesRejectIDPrefixCollisions(t *testing.T) {
 	}
 }
 
+func TestBuildProcessEvidenceRequiresCanonicalReviewOwnerEdges(t *testing.T) {
+	spec := model.Artifact{Issue: 381, URL: "https://example.test/issues/381#issuecomment-1",
+		Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "confirmed",
+			Links: map[string][]string{}}}
+	process := processClassArtifact(t, "PROCESS-001", "review", "SPEC-001", "done")
+	process.Issue, process.URL = 383, "https://example.test/issues/383#issuecomment-2"
+	body, err := model.EnsureTypedBody("REVIEW", "REVIEW-001", "Reviewed PROCESS-001 for SPEC-001.",
+		model.BodyOptions{Agent: "Independent Reviewer", Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := model.Artifact{Issue: 383, URL: "https://example.test/issues/383#issuecomment-3",
+		Comment: model.ParseTypedComment(body)}
+	process.Comment.Links["Related Comments"] = []string{review.URL}
+	spec.Comment.Links["Related Comments"] = []string{review.URL}
+
+	inputs := buildProcessEvidenceInputs([]model.Artifact{spec, process, review}, "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 || len(inputs[0].Reviews) != 0 {
+		t.Fatalf("text IDs or reverse backlinks created REVIEW coverage: %+v", inputs)
+	}
+
+	body, err = model.EnsureTypedBody("REVIEW", "REVIEW-001",
+		"Reviewed exact owner coverage.\n\n### Covered PROCESSes\n\n- PROCESS-001\n\n### Covered SPECs\n\n- SPEC-001",
+		model.BodyOptions{Agent: "Independent Reviewer", Status: "done",
+			Links: map[string][]string{"Related Comments": {process.URL, spec.URL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.Comment = model.ParseTypedComment(body)
+	inputs = buildProcessEvidenceInputs([]model.Artifact{spec, process, review}, "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 || len(inputs[0].Reviews) != 1 || inputs[0].Reviews[0].SpecID != spec.Comment.ID {
+		t.Fatalf("canonical REVIEW owner coverage was not discovered: %+v", inputs)
+	}
+}
+
 func TestBuildProcessEvidenceMapsAuthoritativeBindingsToExactProcesses(t *testing.T) {
 	artifacts := []model.Artifact{
-		{URL: "https://example/spec-1", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
-		{URL: "https://example/spec-2", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-002", Status: "proposed"}},
+		{Issue: 1, URL: "https://example.test/issues/1#spec-1", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		{Issue: 1, URL: "https://example.test/issues/1#spec-2", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-002", Status: "proposed"}},
 		externalProcessArtifact(t, "PROCESS-001"), externalProcessArtifact(t, "PROCESS-002"),
 	}
 	consumption := externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
@@ -208,8 +309,8 @@ func TestBuildProcessEvidenceMapsAuthoritativeBindingsToExactProcesses(t *testin
 
 func TestBuildProcessEvidenceRejectsMixedReplayAndUnknownBindings(t *testing.T) {
 	artifacts := []model.Artifact{
-		{URL: "https://example/spec-1", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
-		{URL: "https://example/spec-2", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-002", Status: "proposed"}},
+		{Issue: 1, URL: "https://example.test/issues/1#spec-1", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		{Issue: 1, URL: "https://example.test/issues/1#spec-2", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-002", Status: "proposed"}},
 		externalProcessArtifact(t, "PROCESS-001"), externalProcessArtifact(t, "PROCESS-002"),
 	}
 	valid := externalEvidenceBinding{ProcessID: "PROCESS-001", SpecID: "SPEC-001", EvidenceID: "review-1",
@@ -417,6 +518,8 @@ func TestBuildProcessEvidenceBindsSelfHostedReviewToCurrentNativeLedgerReview(t 
 		ChangeID: "change-1", ReferenceVersion: 7, SubjectRevision: "head-current", EvidenceIDs: []string{"review-2"},
 		Bindings: []externalEvidenceBinding{{ProcessID: "PROCESS-002", SpecID: "SPEC-001", EvidenceID: "review-2",
 			Kind: codereview.EvidenceReview, SubjectRevision: "head-current", Trusted: true, Source: "native-authoritative-ledger"}}}
+	canonicalizeReviewFixture(t, &artifacts[2], []model.Artifact{artifacts[1]}, artifacts[0])
+	canonicalUnstamped := artifacts[2].Comment
 	stamped, _, err := stampConsumedEvidence(artifacts[2].Comment.Body, consumption)
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +540,7 @@ func TestBuildProcessEvidenceBindsSelfHostedReviewToCurrentNativeLedgerReview(t 
 		t.Fatalf("self-hosted review did not satisfy exact-current carrier: %+v", report)
 	}
 	unstamped := append([]model.Artifact(nil), artifacts...)
-	unstamped[2].Comment = model.ParseTypedComment(reviewBody)
+	unstamped[2].Comment = canonicalUnstamped
 	unstampedInputs := buildProcessEvidenceInputs(unstamped, "", nil, reviewSyncReport{}, &consumption)
 	if len(unstampedInputs) != 1 || len(unstampedInputs[0].Reviews) != 1 || unstampedInputs[0].Reviews[0].Trusted {
 		t.Fatalf("unstamped REVIEW borrowed native-ledger authority: %+v", unstampedInputs)
@@ -753,7 +856,50 @@ func processClassArtifact(t *testing.T, id, class, spec, status string) model.Ar
 	if err != nil {
 		t.Fatal(err)
 	}
-	return model.Artifact{URL: "https://example/" + strings.ToLower(id), Comment: model.ParseTypedComment(body)}
+	return model.Artifact{Issue: 3, URL: "https://example.test/issues/3#" + strings.ToLower(id), Comment: model.ParseTypedComment(body)}
+}
+
+func canonicalizeReviewFixture(t *testing.T, review *model.Artifact, processes []model.Artifact, spec model.Artifact) {
+	t.Helper()
+	processIDs := make([]string, 0, len(processes))
+	links := map[string][]string{}
+	for name, values := range review.Comment.Links {
+		links[name] = append([]string(nil), values...)
+	}
+	appendRelatedComment := func(url string) {
+		if !linksContainURL(links[relationships.RelatedCommentsField], url) {
+			links[relationships.RelatedCommentsField] = append(links[relationships.RelatedCommentsField], url)
+		}
+	}
+	for _, process := range processes {
+		processIDs = append(processIDs, process.Comment.ID)
+		appendRelatedComment(process.URL)
+	}
+	sort.Strings(processIDs)
+	appendRelatedComment(spec.URL)
+	logical := review.Comment.Body
+	if _, after, found := strings.Cut(logical, "\n\n"); found {
+		logical = after
+	}
+	logical = strings.TrimSpace(logical)
+	logical +=
+		"\n\n### Covered PROCESSes\n\n- " + strings.Join(processIDs, "\n- ") +
+			"\n\n### Covered SPECs\n\n- " + spec.Comment.ID
+	agent := review.Comment.Agent
+	if strings.TrimSpace(agent) == "" {
+		agent = "Reviewer"
+	}
+	body, err := model.EnsureTypedBody("REVIEW", review.Comment.ID, logical, model.BodyOptions{
+		Agent: agent, SubjectRevision: review.Comment.SubjectRevision,
+		Status: review.Comment.Status, Scope: review.Comment.Scope, Links: links,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.Comment = model.ParseTypedComment(body)
+	if review.Comment.Agent == "" || len(review.Comment.Errors) > 0 {
+		t.Fatalf("canonical REVIEW fixture is invalid: %+v", review.Comment)
+	}
 }
 
 func externalProcessArtifact(t *testing.T, processID string) model.Artifact {
@@ -763,11 +909,11 @@ func externalProcessArtifact(t *testing.T, processID string) model.Artifact {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return model.Artifact{URL: "https://example/" + strings.ToLower(processID), Comment: model.ParseTypedComment(body)}
+	return model.Artifact{Issue: 3, URL: "https://example.test/issues/3#" + strings.ToLower(processID), Comment: model.ParseTypedComment(body)}
 }
 
 func TestBuildProcessEvidenceUsesCollectorRevisionNotTypedText(t *testing.T) {
-	const taskURL = "https://example/task"
+	const taskURL = "https://example.test/issues/2#task"
 	const prURL = "https://example/pr"
 	processBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-001", "## Process: verify\n\n### Execution Class\n\n- verification\n\n### Required Checks\n\n- unit tests\n\n### Covers\n\n- SPEC-001", model.BodyOptions{Status: "done", Links: map[string][]string{"Related Comments": {taskURL}, "PR": {prURL}}})
 	if err != nil {
@@ -778,10 +924,10 @@ func TestBuildProcessEvidenceUsesCollectorRevisionNotTypedText(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifacts := []model.Artifact{
-		{URL: "https://example/spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
-		{URL: taskURL, Comment: model.TypedComment{Type: "TASK", ID: "TASK-001", Status: "done"}},
-		{URL: "https://example/process", Comment: model.ParseTypedComment(processBody)},
-		{URL: "https://example/verify", Comment: model.ParseTypedComment(verifyBody)},
+		{Issue: 1, URL: "https://example.test/issues/1#spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		{Issue: 2, URL: taskURL, Comment: model.TypedComment{Type: "TASK", ID: "TASK-001", Status: "done"}},
+		{Issue: 3, URL: "https://example.test/issues/3#process", Comment: model.ParseTypedComment(processBody)},
+		{Issue: 3, URL: "https://example.test/issues/3#verify", Comment: model.ParseTypedComment(verifyBody)},
 	}
 	review := reviewSyncReport{PassedChecks: []reviewCheck{{Name: "unit tests", SubjectRevision: "head-new", Trusted: true, Source: "github-check-run:7"}}}
 	inputs := buildProcessEvidenceInputs(artifacts, prURL, nil, review, nil)
@@ -822,10 +968,11 @@ func TestBuildProcessEvidenceBindsZeroFindingReviewToAuthoritativeHead(t *testin
 				t.Fatal(err)
 			}
 			artifacts := []model.Artifact{
-				{URL: "https://example/spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+				{Issue: 1, URL: "https://example.test/issues/1#spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
 				processClassArtifact(t, "PROCESS-001", "review", "SPEC-001", "done"),
-				{URL: "https://example/review", Comment: model.ParseTypedComment(reviewBody)},
+				{Issue: 3, URL: "https://example.test/issues/3#review", Comment: model.ParseTypedComment(reviewBody)},
 			}
+			canonicalizeReviewFixture(t, &artifacts[2], []model.Artifact{artifacts[1]}, artifacts[0])
 			inputs := buildProcessEvidenceInputs(artifacts, prURL, nil, report, nil)
 			if len(inputs) != 1 || len(inputs[0].Reviews) != 1 {
 				t.Fatalf("inputs = %+v", inputs)
@@ -855,10 +1002,11 @@ func TestBuildProcessEvidenceCurrentReviewSupersedesOldResolvedFindingRevision(t
 		t.Fatal(err)
 	}
 	artifacts := []model.Artifact{
-		{URL: "https://example/spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		{Issue: 1, URL: "https://example.test/issues/1#spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
 		processClassArtifact(t, "PROCESS-001", "review", "SPEC-001", "done"),
-		{URL: "https://example/review", Comment: model.ParseTypedComment(reviewBody)},
+		{Issue: 3, URL: "https://example.test/issues/3#review", Comment: model.ParseTypedComment(reviewBody)},
 	}
+	canonicalizeReviewFixture(t, &artifacts[2], []model.Artifact{artifacts[1]}, artifacts[0])
 	report := reviewSyncReport{PR: 7, PRURL: prURL, SubjectRevision: current, RevisionSource: "github-pull-request-head:7",
 		ResolvedFindings: []reviewFinding{{Process: "PROCESS-001", Spec: "SPEC-001", URL: "https://example/finding", Agent: "Reviewer",
 			SubjectRevision: old, RevisionSource: "github-pr-review-comment:3"}}}
@@ -876,7 +1024,7 @@ func TestBuildProcessEvidenceIndependentFindingSurvivesCurrentSelfReview(t *test
 	const (
 		prURL   = "https://github.com/o/r/pull/7"
 		current = "0123456789abcdef0123456789abcdef01234567"
-		specURL = "https://example/spec"
+		specURL = "https://example.test/issues/1#spec"
 	)
 	reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001", "Reviewed PROCESS-002 and SPEC-001 at the current head.", model.BodyOptions{
 		Agent: "Worker", Status: "done", SubjectRevision: current, Links: map[string][]string{"PR": {prURL}},
@@ -885,11 +1033,12 @@ func TestBuildProcessEvidenceIndependentFindingSurvivesCurrentSelfReview(t *test
 		t.Fatal(err)
 	}
 	artifacts := []model.Artifact{
-		{URL: specURL, Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		{Issue: 1, URL: specURL, Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
 		processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "done"),
 		processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done"),
-		{URL: "https://example/self-review", Comment: model.ParseTypedComment(reviewBody)},
+		{Issue: 3, URL: "https://example.test/issues/3#self-review", Comment: model.ParseTypedComment(reviewBody)},
 	}
+	canonicalizeReviewFixture(t, &artifacts[3], []model.Artifact{artifacts[2]}, artifacts[0])
 	rationale, err := model.RenderRationaleBody("Worker", "PROCESS-001", "SPEC-001", specURL, "rationale", "internal/x.go", 12)
 	if err != nil {
 		t.Fatal(err)
@@ -923,10 +1072,11 @@ func TestBuildProcessEvidenceResolvedFindingRevisionRemainsCompatible(t *testing
 		t.Fatal(err)
 	}
 	artifacts := []model.Artifact{
-		{URL: "https://example/spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		{Issue: 1, URL: "https://example.test/issues/1#spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
 		processClassArtifact(t, "PROCESS-001", "review", "SPEC-001", "done"),
-		{URL: "https://example/review", Comment: model.ParseTypedComment(reviewBody)},
+		{Issue: 3, URL: "https://example.test/issues/3#review", Comment: model.ParseTypedComment(reviewBody)},
 	}
+	canonicalizeReviewFixture(t, &artifacts[2], []model.Artifact{artifacts[1]}, artifacts[0])
 	report := reviewSyncReport{ResolvedFindings: []reviewFinding{{
 		Process: "PROCESS-001", Spec: "SPEC-001", URL: "https://example/finding", Agent: "Reviewer",
 		SubjectRevision: revision, RevisionSource: "github-pr-review-comment:3",
@@ -965,7 +1115,7 @@ func TestBuildProcessEvidenceExternalSubstringCannotCreateBinding(t *testing.T) 
 		t.Fatal(err)
 	}
 	artifacts := []model.Artifact{
-		{URL: "https://example/spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		{Issue: 1, URL: "https://example.test/issues/1#spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
 		{URL: "https://example/process", Comment: model.ParseTypedComment(processBody)},
 	}
 	external := &externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",

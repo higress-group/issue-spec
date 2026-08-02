@@ -856,12 +856,14 @@ func validateCompletedFinalizationPostconditions(operations []reconcile.Operatio
 		switch operation.Kind {
 		case "upsert":
 			desired := model.ParseTypedComment(operation.Desired.Body)
-			want, found, err := model.ParseSupersededBy(desired.Body, desired.ID)
+			if desired.Type != strings.ToUpper(operation.Target.Type) || desired.ID != operation.Target.ID {
+				return fmt.Errorf("checkpointed operation %s desired identity is invalid", operation.ID)
+			}
+			_, found, err := model.ParseSupersededBy(desired.Body, desired.ID)
 			if err != nil || !found {
 				return fmt.Errorf("checkpointed operation %s desired authority is invalid", operation.ID)
 			}
-			got, found, err := model.ParseSupersededBy(target.Body, desired.ID)
-			if err != nil || !found || got != want || model.LogicalBody(target.Body) != model.LogicalBody(desired.Body) {
+			if target.Body != operation.Desired.Body {
 				return fmt.Errorf("checkpointed operation %s postcondition drifted", operation.ID)
 			}
 		case "transition":

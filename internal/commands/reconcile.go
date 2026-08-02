@@ -223,6 +223,13 @@ func hasPlanRoles(plan reconcile.Plan) bool {
 		if op.Target.Role != "" || (op.Desired.Peer != nil && op.Desired.Peer.Role != "") {
 			return true
 		}
+		if update := op.Desired.RelationshipUpdate; update != nil {
+			for _, relationship := range append(append([]reconcile.RelationshipTarget(nil), update.Add...), update.Remove...) {
+				if relationship.Target.Role != "" {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -251,6 +258,18 @@ func resolvePlanRoles(plan *reconcile.Plan, located changegraph.Located) error {
 		if plan.Operations[i].Desired.Peer != nil {
 			if err := resolve(plan.Operations[i].Desired.Peer); err != nil {
 				return err
+			}
+		}
+		if update := plan.Operations[i].Desired.RelationshipUpdate; update != nil {
+			for index := range update.Add {
+				if err := resolve(&update.Add[index].Target); err != nil {
+					return err
+				}
+			}
+			for index := range update.Remove {
+				if err := resolve(&update.Remove[index].Target); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -314,18 +333,19 @@ func resolveReceiptRelationshipAuthority(ctx context.Context, backend github.Iss
 
 	for index := range plan.Operations {
 		op := &plan.Operations[index]
-		if op.Kind != "link" || !op.Desired.CarrierAuthorizedBacklink {
+		legacyLink := op.Kind == "link" && op.Desired.CarrierAuthorizedBacklink
+		ownerUpdate := op.Kind == "relationship-update" && op.Desired.RelationshipUpdate != nil
+		if !legacyLink && !ownerUpdate {
 			continue
 		}
 		carrier, err := observe(op.Target)
 		if err != nil {
 			return fmt.Errorf("operation %s carrier: %w", op.ID, err)
 		}
-		peer, err := observe(*op.Desired.Peer)
-		if err != nil {
-			return fmt.Errorf("operation %s peer: %w", op.ID, err)
-		}
 		expected := op.Precondition.AcceptedReceipt
+		if expected == nil {
+			return fmt.Errorf("operation %s relationship assertion lacks accepted receipt authority", op.ID)
+		}
 		observedReceipt, found, err := model.ObserveAcceptedReceiptAuthority(carrier.comment.Body, expected.Role)
 		if err != nil || !found || observedReceipt.ReceiptID != expected.ReceiptID || observedReceipt.Digest != expected.Digest ||
 			observedReceipt.Generation != expected.Generation {
@@ -344,15 +364,47 @@ func resolveReceiptRelationshipAuthority(ctx context.Context, backend github.Iss
 		if err != nil {
 			return fmt.Errorf("operation %s: %w", op.ID, err)
 		}
-		peerKey := strings.ToUpper(peer.target.Type) + ":" + peer.target.ID
-		if !authorized[peerKey] {
-			return fmt.Errorf("operation %s: accepted %s authority does not cover relationship target %s",
-				op.ID, expected.Role, peerKey)
+		peerURL := ""
+		if legacyLink {
+			peer, peerErr := observe(*op.Desired.Peer)
+			if peerErr != nil {
+				return fmt.Errorf("operation %s peer: %w", op.ID, peerErr)
+			}
+			peerKey := strings.ToUpper(peer.target.Type) + ":" + peer.target.ID
+			if !authorized[peerKey] {
+				return fmt.Errorf("operation %s: accepted %s authority does not cover relationship target %s",
+					op.ID, expected.Role, peerKey)
+			}
+			peerURL = peer.comment.HTMLURL
+		} else {
+			resolveTargets := func(values []reconcile.RelationshipTarget) error {
+				for targetIndex := range values {
+					peer, peerErr := observe(values[targetIndex].Target)
+					if peerErr != nil {
+						return peerErr
+					}
+					peerKey := strings.ToUpper(peer.target.Type) + ":" + peer.target.ID
+					if !authorized[peerKey] {
+						return fmt.Errorf("accepted %s authority does not cover relationship target %s", expected.Role, peerKey)
+					}
+					values[targetIndex].URL = model.NormalizeURL(peer.comment.HTMLURL)
+				}
+				return nil
+			}
+			if err := resolveTargets(op.Desired.RelationshipUpdate.Add); err != nil {
+				return fmt.Errorf("operation %s add target: %w", op.ID, err)
+			}
+			if err := resolveTargets(op.Desired.RelationshipUpdate.Remove); err != nil {
+				return fmt.Errorf("operation %s remove target: %w", op.ID, err)
+			}
 		}
 		expected.AssignmentID, expected.AssignmentDigest = binding.AssignmentID, binding.Digest
+		if ownerUpdate && plan.AllowNonAtomic {
+			op.Precondition.BodyDigest = model.RepresentationDigest(carrier.comment.Body)
+		}
 		op.Precondition.RelationshipAuthority = &reconcile.RelationshipAuthority{
 			CarrierURL: carrier.comment.HTMLURL, CarrierBodyDigest: model.RepresentationDigest(carrier.comment.Body),
-			PeerURL: peer.comment.HTMLURL, AssignmentProcess: &assignmentProcess.target,
+			PeerURL: peerURL, AssignmentProcess: &assignmentProcess.target,
 			AssignmentProcessURL:        assignmentProcess.comment.HTMLURL,
 			AssignmentProcessBodyDigest: model.RepresentationDigest(assignmentProcess.comment.Body),
 			AssignmentID:                binding.AssignmentID, AssignmentDigest: binding.Digest, AssignmentGeneration: binding.Generation,

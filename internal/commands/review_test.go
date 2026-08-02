@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -46,8 +47,10 @@ func TestReceiptReviewFindingUsesStableReceiptIdentityOnRetry(t *testing.T) {
 
 func TestSubmittedReviewCarriesOnlyCompactAcceptedReceiptAuthority(t *testing.T) {
 	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
-	body, err := renderSubmittedReview("REVIEW-101", "PROCESS-101", "https://github.com/o/r/issues/9#issuecomment-10",
-		"https://github.com/o/r/pull/7", []string{"https://github.com/o/r/issues/9#issuecomment-2"}, receipt)
+	coverage := reviewOwnerCoverage{Processes: []model.Artifact{{URL: "https://github.com/o/r/issues/9#issuecomment-10",
+		Comment: model.TypedComment{Type: "PROCESS", ID: "PROCESS-101"}}}, Specs: []model.Artifact{{
+		URL: "https://github.com/o/r/issues/9#issuecomment-2", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-002"}}}}
+	body, err := renderSubmittedReviewWithCoverage("REVIEW-101", "PROCESS-101", "https://github.com/o/r/pull/7", coverage, receipt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +59,10 @@ func TestSubmittedReviewCarriesOnlyCompactAcceptedReceiptAuthority(t *testing.T)
 	if err != nil || !found || parsed.Agent != receipt.Provenance.Writer || parsed.SubjectRevision != receipt.SubjectRevision ||
 		parsed.Status != "done" || authority.ReceiptDigest != receipt.ReceiptDigest || len(authority.FindingIDs) != 0 {
 		t.Fatalf("review=%+v authority=%+v found=%t err=%v", parsed, authority, found, err)
+	}
+	if !strings.Contains(body, "### Covered PROCESSes\n\n- PROCESS-101") ||
+		!strings.Contains(body, "### Covered SPECs\n\n- SPEC-002") {
+		t.Fatalf("production REVIEW omitted semantic owner coverage: %s", body)
 	}
 	for _, forbidden := range []string{"runtime-attested", "evaluation", "gate_forecast", "coordinator"} {
 		if strings.Contains(strings.ToLower(body), forbidden) {
@@ -201,6 +208,8 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 	const proposalSpecURL = "https://github.com/o/r/issues/295#issuecomment-2"
 	comments := []github.Comment{
 		{ID: 10, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-10", Body: processBody},
+		{ID: 12, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-12",
+			Body: reviewCoverageProcessBody(t, "PROCESS-102", model.ProcessExecutionChangeBearing, "SPEC-002")},
 	}
 	proposalCommentsByIssue := map[int][]github.Comment{295: {{ID: 2, HTMLURL: proposalSpecURL, Body: specBody}}}
 	changeIssues := map[int]github.Issue{
@@ -253,15 +262,16 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 	}
 	code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--implement", "297", "--pr", "7",
 		"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath})
-	if code != 0 || created != 1 || len(comments) != 2 {
+	if code != 0 || created != 1 || len(comments) != 3 {
 		t.Fatalf("exit=%d created=%d comments=%d out=%q err=%q", code, created, len(comments), out.String(), errOut.String())
 	}
-	parsed := model.ParseTypedComment(comments[1].Body)
+	parsed := model.ParseTypedComment(comments[2].Body)
 	if parsed.Agent != "Independent Reviewer" || parsed.SubjectRevision != receipt.SubjectRevision ||
-		!strings.Contains(comments[1].Body, "### Findings\n\n- None.") ||
+		!strings.Contains(comments[2].Body, "### Findings\n\n- None.") ||
 		!linksContainURL(parsed.Links["PR"], "https://github.com/o/r/pull/7") ||
-		!linksContainURL(parsed.Links["Related Comments"], proposalSpecURL) {
-		t.Fatalf("submitted no-finding REVIEW=%+v body=%s", parsed, comments[1].Body)
+		!linksContainURL(parsed.Links["Related Comments"], proposalSpecURL) ||
+		!strings.Contains(comments[2].Body, "### Covered PROCESSes\n\n- PROCESS-101\n- PROCESS-102") {
+		t.Fatalf("submitted no-finding REVIEW=%+v body=%s", parsed, comments[2].Body)
 	}
 	head = strings.Repeat("c", 40)
 	out.Reset()
@@ -495,9 +505,162 @@ func TestExternalReviewSyncIsForcedAndIdempotent(t *testing.T) {
 		parsed.AgentSessionSource != "" || parsed.SubjectRevision != "head-abc" ||
 		strings.Count((*comments)[0].Body, externalReviewCompletionStart) != 1 ||
 		!linksContainURL(parsed.Links["Related Comments"], "https://issues.test/acme/widgets/issues/9#issuecomment-process") ||
+		!linksContainURL(parsed.Links["Related Comments"], "https://issues.test/acme/widgets/issues/9#issuecomment-review-process") ||
+		!linksContainURL(parsed.Links["Related Comments"], "https://issues.test/acme/widgets/issues/7#issuecomment-spec") ||
+		!strings.Contains((*comments)[0].Body, "### Covered PROCESSes") ||
+		!strings.Contains((*comments)[0].Body, "### Covered SPECs") ||
 		!strings.Contains((*comments)[0].Body, `"subject_revision":"head-abc"`) {
 		t.Fatalf("persisted REVIEW=%+v", parsed)
 	}
+}
+
+func TestGitHubReviewSyncPublishesCompleteOwnerCoverageOnce(t *testing.T) {
+	specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{
+		ID: "SPEC-001", Status: "confirmed"}, Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{
+		Title: "GitHub sync", Text: "GitHub review sync MUST publish complete owner coverage."}, Scenarios: []templates.SpecScenarioInput{{
+		Title: "single write", When: "review converges", Then: "only REVIEW is written"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	static := []github.Comment{
+		{ID: 61, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-61",
+			Body: reviewCoverageProcessBody(t, "PROCESS-900", model.ProcessExecutionReview, "SPEC-001")},
+		{ID: 62, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-62",
+			Body: reviewCoverageProcessBody(t, "PROCESS-001", model.ProcessExecutionChangeBearing, "SPEC-001")},
+	}
+	var published []github.Comment
+	creates, updates := 0, 0
+	backend := reviewSyncGitHubBackend{fakeGitHubBackend: fakeGitHubBackend{
+		info: github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
+		getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			items := map[int]github.Issue{
+				7: {Number: 7, HTMLURL: "https://github.com/o/r/issues/7", Body: "<!-- issue-spec:issue=proposal change=github-review version=1 -->"},
+				8: {Number: 8, HTMLURL: "https://github.com/o/r/issues/8", Body: "<!-- issue-spec:issue=design change=github-review version=1 -->\n- Proposal Issue: 7"},
+				9: {Number: 9, HTMLURL: "https://github.com/o/r/issues/9", Body: "<!-- issue-spec:issue=implement change=github-review version=1 -->\n- Design Issue: 8"},
+			}
+			return items[issue], nil
+		},
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			switch issue {
+			case 7:
+				return []github.Comment{{ID: 51, HTMLURL: "https://github.com/o/r/issues/7#issuecomment-51", Body: specBody}}, nil
+			case 9:
+				return append(append([]github.Comment(nil), static...), published...), nil
+			default:
+				return nil, nil
+			}
+		},
+		getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
+			pr := github.PullRequest{Number: 42, HTMLURL: "https://github.com/o/r/pull/42"}
+			pr.Head.SHA = "head-abc"
+			return pr, nil
+		},
+		listPRReviewComments: func(context.Context, string, int) ([]github.PullRequestReviewComment, error) { return nil, nil },
+		createComment: func(_ context.Context, _ string, issue int, body string) (github.Comment, error) {
+			if issue != 9 {
+				t.Fatalf("owner publication issue=%d", issue)
+			}
+			creates++
+			comment := github.Comment{ID: 71, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-71", Body: body}
+			published = append(published, comment)
+			return comment, nil
+		},
+		updateComment: func(context.Context, string, int64, string) (github.Comment, error) {
+			updates++
+			return github.Comment{}, nil
+		},
+	}}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	code := app.runReviewSync(t.Context(), []string{"--repo", "o/r", "--implement", "9", "--pr", "42",
+		"--process", "PROCESS-900", "--id", "REVIEW-900", "--agent", "Independent Reviewer", "--json"})
+	if code != 0 || creates != 1 || updates != 0 || len(published) != 1 {
+		t.Fatalf("exit=%d creates=%d updates=%d stdout=%q stderr=%q", code, creates, updates, out.String(), errOut.String())
+	}
+	parsed := model.ParseTypedComment(published[0].Body)
+	for _, target := range []string{"https://github.com/o/r/issues/9#issuecomment-61",
+		"https://github.com/o/r/issues/9#issuecomment-62", "https://github.com/o/r/issues/7#issuecomment-51"} {
+		if !linksContainURL(parsed.Links["Related Comments"], target) {
+			t.Fatalf("missing owner target %s in %q", target, published[0].Body)
+		}
+	}
+}
+
+func TestGitHubReviewSyncRejectsAcceptedReceiptWithoutWrites(t *testing.T) {
+	body := reviewSyncAcceptedReceiptBody(t, "REVIEW-900")
+	comments := []github.Comment{{ID: 71, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-71", Body: body}}
+	creates, updates, prReads := 0, 0, 0
+	backend := reviewSyncGitHubBackend{fakeGitHubBackend: fakeGitHubBackend{
+		info: github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return append([]github.Comment(nil), comments...), nil
+		},
+		getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
+			prReads++
+			return github.PullRequest{}, errors.New("accepted receipt guard ran too late")
+		},
+		createComment: func(context.Context, string, int, string) (github.Comment, error) {
+			creates++
+			return github.Comment{}, nil
+		},
+		updateComment: func(context.Context, string, int64, string) (github.Comment, error) {
+			updates++
+			return github.Comment{}, nil
+		},
+	}}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	code := app.runReviewSync(t.Context(), []string{"--repo", "o/r", "--implement", "9", "--pr", "42",
+		"--process", "PROCESS-900", "--id", "REVIEW-900", "--agent", "Independent Reviewer", "--json"})
+	if code != 1 || creates != 0 || updates != 0 || prReads != 0 || comments[0].Body != body ||
+		!strings.Contains(errOut.String(), "alternative publication paths") {
+		t.Fatalf("exit=%d creates=%d updates=%d pr_reads=%d body_changed=%t stderr=%q",
+			code, creates, updates, prReads, comments[0].Body != body, errOut.String())
+	}
+}
+
+func TestReviewSyncWriteHelpersRecheckAcceptedAuthority(t *testing.T) {
+	body := reviewSyncAcceptedReceiptBody(t, "REVIEW-101")
+	creates, updates := 0, 0
+	backend := fakeGitHubBackend{
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{{ID: 71, Body: body}}, nil
+		},
+		createComment: func(context.Context, string, int, string) (github.Comment, error) {
+			creates++
+			return github.Comment{}, nil
+		},
+		updateComment: func(context.Context, string, int64, string) (github.Comment, error) {
+			updates++
+			return github.Comment{}, nil
+		},
+	}
+	if _, _, err := upsertReviewSyncComment(t.Context(), backend, "o/r", 9, "REVIEW-101", "replacement"); err == nil ||
+		!strings.Contains(err.Error(), "accepted receipt authority") {
+		t.Fatalf("GitHub write helper accepted receipt err=%v", err)
+	}
+	if _, _, err := upsertExternalReviewSyncCommentAt(t.Context(), backend, "o/r", 9, "REVIEW-101",
+		"Reviewer", writerSession{}, "review", externalGateResult{}, time.Now().UTC()); err == nil ||
+		!strings.Contains(err.Error(), "accepted receipt authority") {
+		t.Fatalf("external write helper accepted receipt err=%v", err)
+	}
+	if creates != 0 || updates != 0 {
+		t.Fatalf("accepted receipt crossed fresh write guard: creates=%d updates=%d", creates, updates)
+	}
+}
+
+type reviewSyncGitHubBackend struct{ fakeGitHubBackend }
+
+func (reviewSyncGitHubBackend) GetCombinedStatus(context.Context, string, string) (github.CombinedStatus, error) {
+	return github.CombinedStatus{}, nil
+}
+
+func (reviewSyncGitHubBackend) ListCheckRuns(context.Context, string, string) ([]github.CheckRun, error) {
+	return nil, nil
 }
 
 func TestExternalReviewSyncZeroFindingsWritesCompletionWithoutReviewFacts(t *testing.T) {
@@ -516,6 +679,56 @@ func TestExternalReviewSyncZeroFindingsWritesCompletionWithoutReviewFacts(t *tes
 	completion, found, err := parseExternalReviewCompletion(body)
 	if err != nil || !found || completion.SubjectRevision != "head-abc" || completion.ReferenceVersion != 7 {
 		t.Fatalf("completion=%+v found=%t err=%v", completion, found, err)
+	}
+}
+
+func TestExternalReviewSyncRejectsAcceptedMalformedAndDuplicateAuthorityWithoutWrites(t *testing.T) {
+	accepted := reviewSyncAcceptedReceiptBody(t, "REVIEW-101")
+	tests := []struct {
+		name   string
+		bodies []string
+		want   string
+	}{
+		{name: "accepted", bodies: []string{accepted}, want: "alternative publication paths"},
+		{name: "malformed", bodies: []string{strings.Replace(accepted, acceptedReviewReceiptEnd, "", 1)}, want: "authority is malformed"},
+		{name: "duplicate", bodies: []string{accepted, accepted}, want: "multiple active REVIEW comments"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app, native, comments, creates, updates, _, errOut := setupExternalReviewSyncCommand(t)
+			for index, body := range test.bodies {
+				*comments = append(*comments, github.Comment{ID: int64(71 + index), Body: body,
+					HTMLURL: fmt.Sprintf("https://issues.test/acme/widgets/issues/9#comment-%d", 71+index)})
+			}
+			before := append([]github.Comment(nil), (*comments)...)
+			code := app.runReviewSync(t.Context(), []string{"--repo", "acme/widgets", "--hostname", "issues.test",
+				"--implement", "9", "--revision", "head-abc", "--id", "REVIEW-101", "--agent", "Independent Reviewer"})
+			unchanged := len(*comments) == len(before)
+			for index := range before {
+				unchanged = unchanged && (*comments)[index].ID == before[index].ID && (*comments)[index].Body == before[index].Body
+			}
+			if code != 1 || native.syncs != 0 || native.resolveCalls != 0 || *creates != 0 || *updates != 0 || !unchanged ||
+				!strings.Contains(errOut.String(), test.want) {
+				t.Fatalf("exit=%d syncs=%d resolves=%d creates=%d updates=%d unchanged=%t stderr=%q",
+					code, native.syncs, native.resolveCalls, *creates, *updates, unchanged, errOut.String())
+			}
+		})
+	}
+}
+
+func TestGeneratedReviewSkillSeparatesSubmitAndSyncPublicationPaths(t *testing.T) {
+	var content string
+	for _, skill := range templates.IssueSpecSkills("o/r") {
+		if skill.Name == "issue-spec-review" {
+			content = skill.Content
+			break
+		}
+	}
+	for _, want := range []string{"alternative publication paths for a REVIEW ID", "choose exactly one",
+		"sync must refuse a REVIEW ID that already carries that authority"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("generated review skill does not separate submit and sync publication: missing %q in %q", want, content)
+		}
 	}
 }
 
@@ -637,11 +850,43 @@ func setupExternalReviewSyncCommand(t *testing.T) (*app, *commandNativeEvidence,
 	native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
 		SubjectRevision: "head-abc", Provider: &commandEvidenceProvider{snapshot: ledger}}}
 	comments := []github.Comment{}
+	specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{
+		ID: "SPEC-001", Status: "confirmed"}, Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{
+		Title: "provider review", Text: "Provider review MUST publish owner coverage."}, Scenarios: []templates.SpecScenarioInput{{
+		Title: "complete sync", When: "review converges", Then: "owner coverage is complete"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	processComments := []github.Comment{
+		{ID: 61, HTMLURL: "https://issues.test/acme/widgets/issues/9#issuecomment-review-process",
+			Body: reviewCoverageProcessBody(t, "PROCESS-900", model.ProcessExecutionReview, "SPEC-001")},
+		{ID: 62, HTMLURL: "https://issues.test/acme/widgets/issues/9#issuecomment-process",
+			Body: reviewCoverageProcessBody(t, "PROCESS-001", model.ProcessExecutionChangeBearing, "SPEC-001")},
+	}
 	creates, updates := 0, 0
 	backend := fakeGitHubBackend{
 		info: github.BackendInfo{Name: "rest", Kind: "rest", Host: profile.Hostname},
-		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
-			return append([]github.Comment(nil), comments...), nil
+		getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			items := map[int]github.Issue{
+				7: {Number: 7, HTMLURL: "https://issues.test/acme/widgets/issues/7", Body: "<!-- issue-spec:issue=proposal change=provider-review version=1 -->"},
+				8: {Number: 8, HTMLURL: "https://issues.test/acme/widgets/issues/8", Body: "<!-- issue-spec:issue=design change=provider-review version=1 -->\n- Proposal Issue: 7"},
+				9: {Number: 9, HTMLURL: "https://issues.test/acme/widgets/issues/9", Body: "<!-- issue-spec:issue=implement change=provider-review version=1 -->\n- Design Issue: 8"},
+			}
+			item, ok := items[issue]
+			if !ok {
+				return github.Issue{}, errors.New("unexpected issue")
+			}
+			return item, nil
+		},
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			switch issue {
+			case 7:
+				return []github.Comment{{ID: 51, HTMLURL: "https://issues.test/acme/widgets/issues/7#issuecomment-spec", Body: specBody}}, nil
+			case 9:
+				return append(append([]github.Comment(nil), processComments...), comments...), nil
+			default:
+				return nil, nil
+			}
 		},
 		createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
 			creates++
@@ -665,6 +910,47 @@ func setupExternalReviewSyncCommand(t *testing.T) (*app, *commandNativeEvidence,
 	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
 	app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) { return provider, nil }
 	return app, native, &comments, &creates, &updates, out, errOut
+}
+
+func reviewSyncAcceptedReceiptBody(t *testing.T, reviewID string) string {
+	t.Helper()
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	body, err := renderSubmittedReview(reviewID, "PROCESS-900",
+		"https://issues.test/acme/widgets/issues/9#issuecomment-review-process", "",
+		[]string{"https://issues.test/acme/widgets/issues/7#issuecomment-spec"}, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func reviewCoverageProcessBody(t *testing.T, id string, class model.ProcessExecutionClass, specID string) string {
+	t.Helper()
+	body, err := model.EnsureTypedBody("PROCESS", id, fmt.Sprintf(`## Process: owner coverage
+
+### Parent TASK
+
+- TASK-001
+
+### Dependencies
+
+- N/A
+
+### Execution Class
+
+- %s
+
+### Covers
+
+- %s
+
+### Handoff
+
+N/A`, class, specID), model.BodyOptions{Status: "in-progress"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
 
 func TestBuildReviewSyncReportClassifiesRationaleFindingsAndChecks(t *testing.T) {

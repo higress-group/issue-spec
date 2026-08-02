@@ -10,10 +10,12 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	changegraph "github.com/higress-group/issue-spec/internal/change"
 	"github.com/higress-group/issue-spec/internal/durable"
 	"github.com/higress-group/issue-spec/internal/finalization"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/relationships"
 	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
@@ -572,6 +574,11 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 		}
 		noncanonical = true
 	}
+	if strings.EqualFold(strings.TrimSpace(*commentType), "TASK") && len(parseCoversSectionIDs(body)) > 0 &&
+		strings.TrimSpace(*coversIssue) == "" {
+		a.errorf("--covers-issue is required when TASK ### Covers names canonical SPEC targets\n")
+		return 2
+	}
 
 	client, _, err := a.clientFor(ctx, *host)
 	if err != nil {
@@ -579,9 +586,9 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	// A TASK is the sole writer of its SPEC coverage edge. Resolve the visible
-	// Covers IDs to forward navigation URLs before writing the TASK, but never
-	// fan the derived reverse edge back out across SPEC comments.
+	// A TASK is the sole writer of its SPEC coverage edge. Resolve the complete
+	// target set before writing the TASK, but never fan reverse edges out across
+	// SPEC comments.
 	if strings.TrimSpace(*coversIssue) != "" {
 		coversIssueNumber, err := parseIssueFlag(*coversIssue, "covers-issue")
 		if err != nil {
@@ -593,18 +600,67 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 			a.errorf("list covers issue #%d: %v\n", coversIssueNumber, err)
 			return 1
 		}
-		for _, specID := range parseCoversSectionIDs(body) {
+		covers := parseCoversSectionIDs(body)
+		if len(covers) > relationships.DefaultMutationTargetLimit {
+			a.errorf("resolve TASK coverage: %v: targets=%d limit=%d\n", relationships.ErrBound,
+				len(covers), relationships.DefaultMutationTargetLimit)
+			return 1
+		}
+		urls := make([]string, 0, len(covers))
+		for _, specID := range covers {
 			artifact, _, err := findArtifactByIDIn(coversComments, coversIssueNumber, specID)
 			if err != nil {
-				a.errorf("warning: covers %s not resolved on issue #%d: %v; skipping durable link\n", specID, coversIssueNumber, err)
-				continue
+				a.errorf("resolve TASK coverage %s on issue #%d: canonical SPEC required: %v\n",
+					specID, coversIssueNumber, err)
+				return 1
 			}
-			merged, _, err := model.AddRelatedCommentLink(body, artifact.URL)
+			if artifact.Comment.Type != "SPEC" {
+				a.errorf("resolve TASK coverage %s on issue #%d: canonical SPEC required, got %s\n",
+					specID, coversIssueNumber, artifact.Comment.Type)
+				return 1
+			}
+			urls = append(urls, artifact.URL)
+		}
+		for index, targetURL := range urls {
+			merged, _, err := model.AddRelatedCommentLink(body, targetURL)
 			if err != nil {
-				a.errorf("warning: link covers %s: %v; skipping durable link\n", specID, err)
-				continue
+				a.errorf("render TASK coverage %s: %v\n", covers[index], err)
+				return 1
 			}
 			body = merged
+		}
+	}
+
+	// A PROCESS owns its Parent TASK and Dependencies relationships. Freeze all
+	// canonical targets before the single PROCESS upsert so a resolution error
+	// cannot leave a partially published relationship set.
+	if strings.EqualFold(strings.TrimSpace(*commentType), "PROCESS") {
+		located, err := changegraph.LocateFromImplement(ctx, client, repo, issueNumber)
+		if err != nil {
+			a.errorf("derive PROCESS Parent TASK issue: %v\n", err)
+			return 1
+		}
+		parentComments, err := client.ListIssueComments(ctx, repo, located.Design.Number)
+		if err != nil {
+			a.errorf("list PROCESS Parent TASK targets on issue #%d: %v\n", located.Design.Number, err)
+			return 1
+		}
+		dependencyComments, err := client.ListIssueComments(ctx, repo, issueNumber)
+		if err != nil {
+			a.errorf("list PROCESS relationship targets on issue #%d: %v\n", issueNumber, err)
+			return 1
+		}
+		urls, err := resolveProcessOwnerLinks(parentComments, located.Design.Number, dependencyComments, issueNumber, body)
+		if err != nil {
+			a.errorf("resolve PROCESS owner relationships: %v\n", err)
+			return 1
+		}
+		for _, targetURL := range urls {
+			body, _, err = model.AddRelatedCommentLink(body, targetURL)
+			if err != nil {
+				a.errorf("render PROCESS owner relationships: %v\n", err)
+				return 1
+			}
 		}
 	}
 
@@ -632,6 +688,43 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 		fmt.Fprintf(a.out, "warning: wrote noncanonical %s %s with --allow-noncanonical; status, verify, and archive will keep reporting the noncanonical state until it is regenerated or superseded.\n", strings.ToUpper(*commentType), *id)
 	}
 	return 0
+}
+
+func resolveProcessOwnerLinks(parentComments []github.Comment, parentIssue int, dependencyComments []github.Comment,
+	dependencyIssue int, body string) ([]string, error) {
+	parents := model.TypedSectionList(body, "### Parent TASK")
+	if len(parents) != 1 || strings.EqualFold(parents[0], "N/A") {
+		return nil, fmt.Errorf("PROCESS must name exactly one Parent TASK")
+	}
+	dependencies := []string{}
+	for _, dependency := range model.TypedSectionList(body, "### Dependencies") {
+		if !strings.EqualFold(dependency, "N/A") {
+			dependencies = append(dependencies, dependency)
+		}
+	}
+	if 1+len(dependencies) > relationships.DefaultMutationTargetLimit {
+		return nil, fmt.Errorf("%w: PROCESS relationship targets=%d limit=%d", relationships.ErrBound,
+			1+len(dependencies), relationships.DefaultMutationTargetLimit)
+	}
+	parent, _, err := findArtifactByIDIn(parentComments, parentIssue, parents[0])
+	if err != nil {
+		return nil, fmt.Errorf("%s is not one canonical Parent TASK: %w", parents[0], err)
+	}
+	if parent.Comment.Type != "TASK" {
+		return nil, fmt.Errorf("%s must resolve to TASK, got %s", parents[0], parent.Comment.Type)
+	}
+	urls := []string{parent.URL}
+	for _, id := range dependencies {
+		artifact, _, err := findArtifactByIDIn(dependencyComments, dependencyIssue, id)
+		if err != nil {
+			return nil, fmt.Errorf("%s is not one canonical target: %w", id, err)
+		}
+		if artifact.Comment.Type != "PROCESS" {
+			return nil, fmt.Errorf("%s must resolve to PROCESS, got %s", id, artifact.Comment.Type)
+		}
+		urls = append(urls, artifact.URL)
+	}
+	return urls, nil
 }
 
 func (a *app) runCommentList(ctx context.Context, args []string) int {

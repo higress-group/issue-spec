@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/relationships"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
@@ -29,6 +31,143 @@ func TestRunStatusSummaryRequiresJSON(t *testing.T) {
 	if code := app.runStatus(t.Context(), []string{"--summary"}); code != 2 || !strings.Contains(errOut.String(), "--summary requires --json") {
 		t.Fatalf("status exit=%d stderr=%q", code, errOut.String())
 	}
+}
+
+func TestStatusFullAndCompactShareBoundedRelationshipIndex(t *testing.T) {
+	spec := model.Artifact{Issue: 381, URL: "https://example.test/issues/381#issuecomment-1",
+		Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "confirmed"}}
+	taskBody, err := model.EnsureTypedBody("TASK", "TASK-001", "## Task\n\n### Covers\n\n- SPEC-001",
+		model.BodyOptions{Status: "done", Links: map[string][]string{"Related Comments": {spec.URL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := model.Artifact{Issue: 382, URL: "https://example.test/issues/382#issuecomment-2",
+		Comment: model.ParseTypedComment(taskBody)}
+	artifacts := []model.Artifact{spec, task}
+	for index := 1; index <= 12; index++ {
+		id := fmt.Sprintf("PROCESS-%03d", index)
+		body, bodyErr := model.EnsureTypedBody("PROCESS", id,
+			"## Process\n\n### Parent TASK\n\n- TASK-001\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- SPEC-001",
+			model.BodyOptions{Status: "done", Links: map[string][]string{"Related Comments": {task.URL}}})
+		if bodyErr != nil {
+			t.Fatal(bodyErr)
+		}
+		artifacts = append(artifacts, model.Artifact{Issue: 383,
+			URL: fmt.Sprintf("https://example.test/issues/383#issuecomment-%d", index+2), Comment: model.ParseTypedComment(body)})
+	}
+
+	full := summarizeStatusForGate("o/r", 381, 382, 383, gates.TargetImplement, artifacts, workflow.Plan{})
+	compact := gates.ProjectCompactSummary(full.Gate, full.Counts, nil,
+		gates.Remediation{CommandFamily: "status"}, full.Relationships)
+	if !reflect.DeepEqual(compact.Relationships, full.Relationships) {
+		t.Fatalf("compact relationship projection drifted from full:\nfull=%+v\ncompact=%+v",
+			full.Relationships, compact.Relationships)
+	}
+	if !full.Relationships.Truncated || full.Relationships.IdentityLimit != relationships.DefaultIdentityLimit ||
+		full.Relationships.Totals.Canonical != 13 {
+		t.Fatalf("bounded totals/truncation missing: %+v", full.Relationships)
+	}
+	var reverseFound bool
+	for _, adjacency := range full.Relationships.Reverse {
+		if adjacency.Kind == relationships.ProcessParentTask && adjacency.Artifact.ID == task.Comment.ID {
+			reverseFound = true
+			if adjacency.Total != 12 || len(adjacency.Edges) != relationships.DefaultIdentityLimit ||
+				!adjacency.Truncated || adjacency.Detail.CommandFamily != "relationship-detail" {
+				t.Fatalf("bounded reverse detail=%+v", adjacency)
+			}
+		}
+	}
+	if !reverseFound {
+		t.Fatalf("missing TASK reverse navigation: %+v", full.Relationships.Reverse)
+	}
+}
+
+func TestStatusFullAndCompactPreserveRelationshipIndexFailure(t *testing.T) {
+	artifacts := relationshipIndexFailureArtifacts(t)
+	full := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetImplement, artifacts, workflow.Plan{})
+	if full.OK || full.Traceability.OK || !verifyReportContains(full.Traceability, relationships.ErrAmbiguous.Error()) {
+		t.Fatalf("full status did not fail closed on relationship ambiguity: %+v", full)
+	}
+	if !gateDiagnosticContains(full.Gate.Diagnostics, gates.CodeTraceabilityInvalid, relationships.ErrAmbiguous.Error()) {
+		t.Fatalf("full gate lost relationship failure: %+v", full.Gate.Diagnostics)
+	}
+
+	compact := gates.ProjectCompactSummary(full.Gate, full.Counts, nil,
+		gates.Remediation{CommandFamily: "status"}, full.Relationships)
+	if compact.OK != full.OK || !compactHasBlocker(compact, gates.CodeTraceabilityInvalid) {
+		t.Fatalf("compact decision/blocker drifted from full: full=%+v compact=%+v", full.Gate, compact)
+	}
+}
+
+func TestRunVerifyLinksPreservesRelationshipIndexFailure(t *testing.T) {
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Setenv(auth.ProfileEnv, auth.DefaultProfileName)
+	artifacts := relationshipIndexFailureArtifacts(t)
+	comments := map[int][]github.Comment{}
+	for index, artifact := range artifacts {
+		comments[artifact.Issue] = append(comments[artifact.Issue], github.Comment{
+			ID: int64(index + 1), HTMLURL: artifact.URL, Body: artifact.Comment.Body,
+		})
+	}
+	backend := fakeGitHubBackend{
+		info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "github.com"},
+		getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			return github.Issue{Number: issue, HTMLURL: fmt.Sprintf("https://example.test/issues/%d", issue)}, nil
+		},
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			return comments[issue], nil
+		},
+	}
+	var out, errOut bytes.Buffer
+	application := newApp(strings.NewReader(""), &out, &errOut)
+	application.selectGitHubBackend = ghSelection
+	application.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
+		return backend, nil
+	}
+	code := application.runVerifyLinks(t.Context(), []string{
+		"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+	})
+	if code != 1 || errOut.Len() != 0 {
+		t.Fatalf("verify-links code=%d stderr=%q output=%q", code, errOut.String(), out.String())
+	}
+	var result struct {
+		model.VerifyReport
+		Relationships relationships.Index `json:"relationships"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.OK || !verifyReportContains(result.VerifyReport, relationships.ErrAmbiguous.Error()) ||
+		len(result.Relationships.Edges) != 0 {
+		t.Fatalf("verify-links recovered through legacy references: %+v", result)
+	}
+}
+
+func verifyReportContains(report model.VerifyReport, text string) bool {
+	for _, message := range report.Errors {
+		if strings.Contains(message, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func gateDiagnosticContains(diagnostics []gates.Diagnostic, code, text string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code && strings.Contains(diagnostic.Message, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func compactHasBlocker(summary gates.CompactSummary, code string) bool {
+	for _, blocker := range summary.Blockers {
+		if blocker.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunStatusSummaryIsAdditiveAndExitEquivalent(t *testing.T) {
@@ -185,6 +324,7 @@ func statusAcceptedVerificationArtifacts(t *testing.T, revision, prURL string) [
 	}
 	verify := model.Artifact{Issue: 3, CommentID: 4, URL: "https://github.com/o/r/issues/3#issuecomment-verify",
 		Comment: model.ParseTypedComment(verifyBody)}
+	canonicalizeVerificationFixture(t, &verify, process, spec)
 	return []model.Artifact{spec, task, process, verify}
 }
 

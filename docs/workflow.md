@@ -23,7 +23,7 @@ AI:  Created design issue #102 and implement issue #103
      - PROCESS-103001: theme state and storage
      - PROCESS-103002: UI toggle
      - PROCESS-103003: tests and verification
-     Linked SPEC <-> TASK <-> PROCESS
+     Published TASK and PROCESS owner relationships
 
 Worker: opens PR #120
 AI:     Added PR rationale comments on changed lines, each linked to SPEC and PROCESS.
@@ -56,14 +56,17 @@ Each substantial change uses three issue classes.
 | Design | how and acceptance strategy | `TASK`, `QUESTION` |
 | Implement | multi-agent execution, review, verify | `PROCESS`, `QUESTION`, `REVIEW`, `VERIFY` |
 
-Traceability is bidirectional:
+Traceability is read as a graph, but each relationship has exactly one writer:
 
 ```text
-SPEC <-> TASK <-> PROCESS <-> PR rationale
-                   |
-                   +-> REVIEW findings and replies
-                   +-> VERIFY evidence
+TASK owner -> SPEC coverage
+PROCESS owner -> parent TASK and PROCESS dependencies
+REVIEW owner -> review/change PROCESS coverage and active SPEC coverage
+VERIFY owner -> verification PROCESS and active SPEC coverage
 ```
+
+Owner commands resolve and validate the complete canonical target set before a
+single owner write. They never update peers merely to add reverse navigation.
 
 Before the implementation PR merges, `pr link-issues` writes closing links into
 the implementation PR body so the provider closes the PR-associated proposal,

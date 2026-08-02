@@ -9,7 +9,7 @@ import (
 )
 
 func TestCompileReceiptProjectionDeterministicExistingOperations(t *testing.T) {
-	input := ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "issues.example", Proposal: 7, Issue: 9, AllowNonAtomic: true,
+	input := ReceiptProjection{Version: ReceiptProjectionVersion, Repo: "o/r", Hostname: "issues.example", Proposal: 7, Issue: 9, AllowNonAtomic: true,
 		AcceptedReceipts: []AcceptedReceiptProjection{
 			{Role: assignment.RoleReview, Carrier: Target{Type: "review", ID: "REVIEW-002"}, ReceiptID: "review-2",
 				ReceiptDigest: strings.Repeat("b", 64), Generation: 2,
@@ -41,13 +41,14 @@ func TestCompileReceiptProjectionDeterministicExistingOperations(t *testing.T) {
 		t.Fatalf("compiled plans differ\nfirst=%+v\nsecond=%+v", first, second)
 	}
 	for _, operation := range first.Operations {
-		if operation.Kind != "transition" && operation.Kind != "link" {
+		if operation.Kind != "transition" && operation.Kind != "relationship-update" {
 			t.Fatalf("projection emitted unsupported operation %+v", operation)
 		}
 		if operation.Kind == "upsert" || operation.Desired.Body != "" || operation.Desired.BodyFile != "" {
 			t.Fatalf("projection emitted arbitrary body mutation %+v", operation)
 		}
-		if operation.Kind == "link" && (!operation.Desired.CarrierAuthorizedBacklink ||
+		if operation.Kind == "relationship-update" && (operation.Desired.CarrierAuthorizedBacklink || operation.Desired.Peer != nil ||
+			operation.Desired.RelationshipUpdate == nil ||
 			operation.Precondition.AcceptedReceipt == nil || operation.Target.Type != carrierTypes[operation.Precondition.AcceptedReceipt.Role]) {
 			t.Fatalf("projection emitted a relationship without sealed carrier authority %+v", operation)
 		}
@@ -91,7 +92,7 @@ func TestCompileReceiptProjectionRejectsInvalidRelationshipsBeforePlan(t *testin
 			candidate.CoverageTargets = append([]Target(nil), valid.CoverageTargets...)
 			candidate.CurrentTargets = append([]Target(nil), valid.CurrentTargets...)
 			mutate(&candidate)
-			if plan, err := CompileReceiptProjection(ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "issues.example",
+			if plan, err := CompileReceiptProjection(ReceiptProjection{Version: ReceiptProjectionVersion, Repo: "o/r", Hostname: "issues.example",
 				Proposal: 7, Issue: 9,
 				AcceptedReceipts: []AcceptedReceiptProjection{candidate}}); err == nil || len(plan.Operations) != 0 {
 				t.Fatalf("invalid projection compiled plan=%+v err=%v", plan, err)
@@ -130,7 +131,7 @@ func TestCompileReceiptProjectionRequiresExplicitSafeLifecycleAndRelationships(t
 			candidate.CoverageTargets = append([]Target(nil), valid.CoverageTargets...)
 			candidate.CurrentTargets = append([]Target(nil), valid.CurrentTargets...)
 			mutate(&candidate)
-			if _, err := CompileReceiptProjection(ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "issues.example",
+			if _, err := CompileReceiptProjection(ReceiptProjection{Version: ReceiptProjectionVersion, Repo: "o/r", Hostname: "issues.example",
 				Proposal: 7, Issue: 9, AcceptedReceipts: []AcceptedReceiptProjection{candidate}}); err == nil {
 				t.Fatal("unsafe projection compiled")
 			}

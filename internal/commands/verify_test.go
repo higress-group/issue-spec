@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -22,13 +24,14 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/relationships"
 	"github.com/higress-group/issue-spec/internal/templates"
 )
 
 const (
 	canonicalTaskContent    = "## Task: work\n\n### Implementation Checklist\n\n- [x] 1. work\n\n### Execution Planning\n\n- Owned modules / write areas:\n  - internal/x\n- Coupling class: low\n- Recommended execution mode: coordinator-owned\n\n### Covers\n\n- SPEC-001"
 	canonicalProcessContent = "## Process: impl\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Write Ownership\n\n- internal/x\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A"
-	canonicalReviewProcess  = "## Process: review\n\n### Owner\n\n- Reviewer\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- review\n\n### Write Ownership\n\n- N/A\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A"
+	canonicalReviewProcess  = "## Process: review\n\n### Owner\n\n- Reviewer\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- review\n\n### Write Ownership\n\n- N/A\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n- SPEC-001\n\n### Handoff\n\nN/A"
 	canonicalVerifyContent  = "## Verification Summary: final\n\nTests, review, and traceability confirmed.\n\n### Evidence\n\n- go test ./...\n\n### Covered SPECs\n\n- SPEC-001"
 )
 
@@ -62,6 +65,103 @@ func TestVerificationReceiptBindingAndImmutableProjection(t *testing.T) {
 	other.ReceiptID = "receipt-verification-other"
 	if _, _, err := stampAcceptedVerificationReceipt(body, other); err == nil || !strings.Contains(err.Error(), "immutable") {
 		t.Fatalf("conflicting accepted receipt error=%v", err)
+	}
+}
+
+func TestSubmittedVerificationCarriesCompleteOwnerCoverage(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	coverage := reviewOwnerCoverage{Processes: []model.Artifact{
+		{URL: "https://github.com/o/r/issues/9#issuecomment-10", Comment: model.TypedComment{Type: "PROCESS", ID: "PROCESS-101"}},
+		{URL: "https://github.com/o/r/issues/9#issuecomment-11", Comment: model.TypedComment{Type: "PROCESS", ID: "PROCESS-102"}},
+	}, Specs: []model.Artifact{{URL: "https://github.com/o/r/issues/1#issuecomment-1",
+		Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-005"}}}}
+	body, err := renderSubmittedVerificationWithCoverage("VERIFY-101", coverage, receipt, nil,
+		testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := model.ParseTypedComment(body)
+	authority, found, err := parseAcceptedVerificationReceipt(body)
+	if err != nil || !found || len(parsed.Errors) != 0 || authority.ReceiptDigest != receipt.ReceiptDigest ||
+		!strings.Contains(body, "### Covered PROCESSes\n\n- PROCESS-101\n- PROCESS-102") ||
+		!strings.Contains(body, "### Covered SPECs\n\n- SPEC-005") {
+		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, body)
+	}
+	for _, url := range []string{coverage.Processes[0].URL, coverage.Processes[1].URL, coverage.Specs[0].URL} {
+		if !linksContainURL(parsed.Links[relationships.RelatedCommentsField], url) {
+			t.Fatalf("VERIFY omitted owner relationship %s: %s", url, body)
+		}
+	}
+}
+
+func TestResolveSubmittedVerificationCoverageSelectsActiveChangeOwners(t *testing.T) {
+	verify := verificationCoverageProcessComment(t, 10, "PROCESS-101", model.ProcessExecutionVerification,
+		"in-progress", "SPEC-005")
+	current := verificationCoverageProcessComment(t, 11, "PROCESS-102", model.ProcessExecutionChangeBearing,
+		"done", "SPEC-005")
+	historical := verificationCoverageProcessComment(t, 12, "PROCESS-103", model.ProcessExecutionChangeBearing,
+		"superseded", "SPEC-005")
+	historical.Body, _, _ = model.StampSupersededBy(historical.Body, "PROCESS-103",
+		model.SupersededBy{ProcessID: "PROCESS-102", URL: current.HTMLURL})
+	external := verificationCoverageProcessComment(t, 13, "PROCESS-104", model.ProcessExecutionExternal,
+		"done", "SPEC-005")
+	orchestration := verificationCoverageProcessComment(t, 14, "PROCESS-105", model.ProcessExecutionOrchestration,
+		"done", "SPEC-005")
+	wrongSpec := verificationCoverageProcessComment(t, 15, "PROCESS-106", model.ProcessExecutionChangeBearing,
+		"done", "SPEC-999")
+	comments := []github.Comment{verify, current, historical, external, orchestration, wrongSpec}
+	verifyArtifact := model.Artifact{Issue: 9, CommentID: verify.ID, URL: verify.HTMLURL,
+		APIURL: verify.URL, Comment: model.ParseTypedComment(verify.Body)}
+	sources := []submittedReviewSpecSource{{Issue: 1, Comments: []github.Comment{{ID: 1,
+		HTMLURL: "https://github.com/o/r/issues/1#issuecomment-1", Body: verificationCoverageSpecBody(t, "SPEC-005")}}}}
+	coverage, err := resolveSubmittedVerificationCoverage(comments, 9, sources, verifyArtifact, []string{"SPEC-005"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var processIDs []string
+	for _, process := range coverage.Processes {
+		processIDs = append(processIDs, process.Comment.ID)
+	}
+	if want := []string{"PROCESS-101", "PROCESS-102", "PROCESS-104"}; !reflect.DeepEqual(processIDs, want) {
+		t.Fatalf("active owner PROCESSes=%v want=%v", processIDs, want)
+	}
+	if len(coverage.Specs) != 1 || coverage.Specs[0].Comment.ID != "SPEC-005" {
+		t.Fatalf("canonical owner SPECs=%+v", coverage.Specs)
+	}
+}
+
+func TestResolveSubmittedVerificationCoverageRejectsAmbiguityAndOverflow(t *testing.T) {
+	verify := verificationCoverageProcessComment(t, 10, "PROCESS-101", model.ProcessExecutionVerification,
+		"in-progress", "SPEC-005")
+	verifyArtifact := model.Artifact{Issue: 9, CommentID: verify.ID, URL: verify.HTMLURL,
+		APIURL: verify.URL, Comment: model.ParseTypedComment(verify.Body)}
+	spec := github.Comment{ID: 1, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-1",
+		Body: verificationCoverageSpecBody(t, "SPEC-005")}
+	sources := []submittedReviewSpecSource{{Issue: 1, Comments: []github.Comment{spec}}}
+	duplicate := verificationCoverageProcessComment(t, 11, "PROCESS-102", model.ProcessExecutionChangeBearing,
+		"done", "SPEC-005")
+	duplicateOther := duplicate
+	duplicateOther.ID, duplicateOther.HTMLURL = 12, "https://github.com/o/r/issues/9#issuecomment-12"
+	if _, err := resolveSubmittedVerificationCoverage([]github.Comment{verify, duplicate, duplicateOther}, 9,
+		sources, verifyArtifact, []string{"SPEC-005"}); !errors.Is(err, relationships.ErrAmbiguous) {
+		t.Fatalf("duplicate PROCESS identity error=%v", err)
+	}
+	specOther := spec
+	specOther.ID, specOther.HTMLURL = 2, "https://github.com/o/r/issues/1#issuecomment-2"
+	if _, err := resolveSubmittedVerificationCoverage([]github.Comment{verify, duplicate}, 9,
+		[]submittedReviewSpecSource{{Issue: 1, Comments: []github.Comment{spec, specOther}}}, verifyArtifact,
+		[]string{"SPEC-005"}); err == nil || !strings.Contains(err.Error(), "2 authoritative carriers") {
+		t.Fatalf("ambiguous SPEC authority error=%v", err)
+	}
+	comments := []github.Comment{verify}
+	for index := 0; index < relationships.DefaultMutationTargetLimit-1; index++ {
+		comments = append(comments, verificationCoverageProcessComment(t, int64(20+index),
+			fmt.Sprintf("PROCESS-%03d", 200+index), model.ProcessExecutionChangeBearing, "done", "SPEC-005"))
+	}
+	if _, err := resolveSubmittedVerificationCoverage(comments, 9, sources, verifyArtifact,
+		[]string{"SPEC-005"}); !errors.Is(err, relationships.ErrBound) {
+		t.Fatalf("combined owner overflow error=%v", err)
 	}
 }
 
@@ -346,8 +446,57 @@ func TestBuildMinimalFinalEvidenceReviewTestCarrierTamperingFailsClosed(t *testi
 
 func TestBuildMinimalFinalEvidenceUsesV2IssuingProcessWithoutReviewBacklink(t *testing.T) {
 	fixture := newMultiCarrierRoleEvidenceFixture(t)
+	var reviewURL string
+	for _, artifact := range fixture.artifacts {
+		if artifact.Comment.Type == "REVIEW" {
+			reviewURL = artifact.URL
+			break
+		}
+	}
+	for index := range fixture.artifacts {
+		artifact := &fixture.artifacts[index]
+		if artifact.Comment.Type != "PROCESS" && artifact.Comment.Type != "SPEC" {
+			continue
+		}
+		if artifact.Comment.Links == nil {
+			artifact.Comment.Links = map[string][]string{}
+		}
+		artifact.Comment.Links["Related Comments"] = append(artifact.Comment.Links["Related Comments"], reviewURL)
+	}
+	withBacklinks, err := relationships.BuildIndex(fixture.artifacts)
+	if err != nil || withBacklinks.Totals.LegacyBacklink == 0 {
+		t.Fatalf("fixture did not classify legacy reverse backlinks: index=%+v err=%v", withBacklinks, err)
+	}
+	discovered := buildProcessEvidenceInputs(fixture.artifacts, "", nil, reviewSyncReport{}, nil)
+	for index := range discovered {
+		for _, original := range fixture.inputs {
+			if original.Process.Comment.ID != discovered[index].Process.Comment.ID {
+				continue
+			}
+			discovered[index].ActiveAssignment = original.ActiveAssignment
+			discovered[index].AuthorAgentsBySpec = original.AuthorAgentsBySpec
+			break
+		}
+	}
+	fixture.inputs = discovered
 	fixture.roleInput(assignment.RoleReview).Reviews = nil
+	wantSnapshot := fixture.snapshot()
+	for index := range fixture.artifacts {
+		artifact := &fixture.artifacts[index]
+		if artifact.Comment.Type == "PROCESS" || artifact.Comment.Type == "SPEC" {
+			artifact.Comment.Links["Related Comments"] = nil
+		}
+	}
+	withoutBacklinks, err := relationships.BuildIndex(fixture.artifacts)
+	if err != nil || withoutBacklinks.Totals.LegacyBacklink != 0 ||
+		withoutBacklinks.Totals.Canonical != withBacklinks.Totals.Canonical {
+		t.Fatalf("removing reverse backlinks changed canonical graph: before=%+v after=%+v err=%v",
+			withBacklinks.Totals, withoutBacklinks.Totals, err)
+	}
 	snapshot := fixture.snapshot()
+	if !reflect.DeepEqual(snapshot, wantSnapshot) {
+		t.Fatalf("reverse backlinks changed evidence selection:\nwant=%+v\n got=%+v", wantSnapshot, snapshot)
+	}
 	if !snapshot.Index.Passed {
 		t.Fatalf("v2 issuing PROCESS identity required a reverse backlink: %+v", snapshot.Index)
 	}
@@ -364,6 +513,49 @@ func TestBuildMinimalFinalEvidenceUsesV2IssuingProcessWithoutReviewBacklink(t *t
 	for _, processID := range append([]string{fixture.reviewProcessID}, fixture.targetProcessIDs...) {
 		if !seen[processID] {
 			t.Fatalf("v2 REVIEW evidence was not projected to %s: %+v", processID, snapshot.Records)
+		}
+	}
+	var issuing, projected *gates.FinalEvidenceRecord
+	for index := range snapshot.Records {
+		record := &snapshot.Records[index]
+		if record.Kind != gates.FinalEvidenceTest || record.AssignmentRole != assignment.RoleReview {
+			continue
+		}
+		if record.ProcessID == fixture.reviewProcessID {
+			issuing = record
+		}
+		if record.ProcessID == fixture.targetProcessIDs[0] {
+			projected = record
+		}
+	}
+	if issuing == nil || projected == nil {
+		t.Fatalf("missing issuing/projected REVIEW test records: %+v", snapshot.Records)
+	}
+	wantProjected := *issuing
+	wantProjected.ProcessID = fixture.targetProcessIDs[0]
+	if !reflect.DeepEqual(*projected, wantProjected) {
+		t.Fatalf("relationship projection changed #394 evidence authority:\nwant=%+v\n got=%+v", wantProjected, *projected)
+	}
+	if projected.AssignmentRole != assignment.RoleReview ||
+		projected.AssignmentProcessID != fixture.reviewProcessID ||
+		projected.Source != "accepted-review-receipt:self-reported" {
+		t.Fatalf("explicit role/process/source authority drifted: %+v", *projected)
+	}
+}
+
+func TestConsumeAcceptedVerificationEvidenceUsesSharedIssuingProcessAuthority(t *testing.T) {
+	fixture := newMultiCarrierRoleEvidenceFixture(t)
+	consumed := consumeAcceptedVerificationEvidence(fixture.inputs, fixture.artifacts, fixture.subject)
+	for _, processID := range fixture.targetProcessIDs {
+		input, found := processEvidenceInputByID(consumed, processID)
+		if !found || len(input.Verifications) != 1 {
+			t.Fatalf("missing shared verification evidence for %s: %+v", processID, input.Verifications)
+		}
+		evidence := input.Verifications[0]
+		if !evidence.Trusted || !evidence.TestEvidence || !evidence.StructuredTests ||
+			evidence.SubjectRevision != fixture.subject ||
+			!strings.HasPrefix(evidence.Source, "accepted-verification-receipt:") {
+			t.Fatalf("shared receipt did not become trusted evidence for %s: %+v", processID, evidence)
 		}
 	}
 }
@@ -555,7 +747,7 @@ type multiCarrierRoleEvidenceFixture struct {
 func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFixture {
 	t.Helper()
 	fixture := multiCarrierRoleEvidenceFixture{t: t, subject: strings.Repeat("b", 40), specID: "SPEC-001",
-		specURL: "https://example.test/spec/1", reviewProcessID: "PROCESS-913", verifyProcessID: "PROCESS-914",
+		specURL: "https://example.test/issues/381#issuecomment-1", reviewProcessID: "PROCESS-913", verifyProcessID: "PROCESS-914",
 		targetProcessIDs: []string{"PROCESS-911", "PROCESS-912"}}
 	targets := []model.Artifact{
 		finalEvidenceRoleProcess(t, fixture.targetProcessIDs[0], assignment.RoleImplementation, fixture.specID),
@@ -563,6 +755,12 @@ func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFi
 	}
 	reviewProcess := finalEvidenceRoleProcess(t, fixture.reviewProcessID, assignment.RoleReview, fixture.specID)
 	verifyProcess := finalEvidenceRoleProcess(t, fixture.verifyProcessID, assignment.RoleVerification, fixture.specID)
+	for index := range targets {
+		targets[index].Issue = 383
+		targets[index].URL = fmt.Sprintf("https://example.test/issues/383#issuecomment-%d", 911+index)
+	}
+	reviewProcess.Issue, reviewProcess.URL = 383, "https://example.test/issues/383#issuecomment-913"
+	verifyProcess.Issue, verifyProcess.URL = 383, "https://example.test/issues/383#issuecomment-914"
 
 	reviewSelector := assignment.TestSelector{ID: "review-durable",
 		Command: "issue-spec durable-spec check --repo o/r --proposal 381 --root . --json",
@@ -578,13 +776,18 @@ func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFi
 	if err != nil {
 		t.Fatal(err)
 	}
+	reviewBody += "\n\n### Covered PROCESSes\n\n- " + fixture.reviewProcessID
+	for _, target := range targets {
+		reviewBody += "\n- " + target.Comment.ID
+	}
+	reviewBody += "\n\n### Covered SPECs\n\n- " + fixture.specID + "\n"
 	for _, target := range targets {
 		reviewBody, _, err = model.AddRelatedCommentLink(reviewBody, target.URL)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	review := model.Artifact{URL: "https://example.test/review/913", Comment: model.ParseTypedComment(reviewBody)}
+	review := model.Artifact{Issue: 383, URL: "https://example.test/issues/383#issuecomment-1913", Comment: model.ParseTypedComment(reviewBody)}
 
 	tests := []assignment.TestResult{{ID: "unit", Command: "go test ./internal/commands",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}
@@ -596,13 +799,22 @@ func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFi
 	if err != nil {
 		t.Fatal(err)
 	}
+	verifyBody += "\n\n### Covered PROCESSes\n\n- " + fixture.verifyProcessID
+	for _, target := range targets {
+		verifyBody += "\n- " + target.Comment.ID
+	}
+	verifyBody += "\n\n### Covered SPECs\n\n- " + fixture.specID + "\n"
 	for _, target := range targets {
 		verifyBody, _, err = model.AddRelatedCommentLink(verifyBody, target.URL)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	verify := model.Artifact{URL: "https://example.test/verify/914", Comment: model.ParseTypedComment(verifyBody)}
+	verifyBody, _, err = model.AddRelatedCommentLink(verifyBody, fixture.specURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := model.Artifact{Issue: 383, URL: "https://example.test/issues/383#issuecomment-1914", Comment: model.ParseTypedComment(verifyBody)}
 
 	activeSpecs := map[string]string{fixture.specID: fixture.specURL}
 	authors := map[string]map[string]bool{fixture.specID: {"implementation worker": true}}
@@ -638,6 +850,8 @@ func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFi
 			RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/commands"}}},
 		Verifications: []gates.VerificationEvidence{{ProcessID: fixture.verifyProcessID, SpecID: fixture.specID,
 			URL: verify.URL, Done: true, TestEvidence: true}}})
+	fixture.artifacts = append(fixture.artifacts, model.Artifact{Issue: 381, URL: fixture.specURL,
+		Comment: model.TypedComment{Type: "SPEC", ID: fixture.specID, Status: "confirmed"}})
 	fixture.artifacts = append(fixture.artifacts, targets...)
 	fixture.artifacts = append(fixture.artifacts, reviewProcess, verifyProcess, review, verify)
 	return fixture
@@ -897,6 +1111,11 @@ func TestPublishAcceptedVerificationIsAppendOnlyUnderConcurrentReceipt(t *testin
 	if err != nil || action != "unchanged" || existing.ID != 11 || creates != 0 {
 		t.Fatalf("exact replay action=%q existing=%+v creates=%d err=%v", action, existing, creates, err)
 	}
+	action, existing, err = publishAcceptedVerification(t.Context(), backend, "o/r", 9, "VERIFY-101",
+		body+"\nnew renderer output", receipt)
+	if err != nil || action != "unchanged" || existing.Body != body || creates != 0 {
+		t.Fatalf("immutable replay action=%q existing=%+v creates=%d err=%v", action, existing, creates, err)
+	}
 }
 
 func TestAcceptedVerificationReceiptReadsPreUpgradeSessionFields(t *testing.T) {
@@ -1011,20 +1230,31 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 	if err := os.WriteFile(assignmentPath, assignmentPayload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}}
-	created, updated := 0, 0
+	specBody := verificationCoverageSpecBody(t, "SPEC-005")
+	implementation := verificationCoverageProcessComment(t, 11, "PROCESS-102", model.ProcessExecutionChangeBearing,
+		"done", "SPEC-005")
+	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}, implementation}
+	created, updated, providerReads := 0, 0, 0
 	backend := verifySubmitCommandBackend{checkRuns: []github.CheckRun{{ID: 42, Name: "unit",
 		HeadSHA: receipt.SubjectRevision, Status: "completed", Conclusion: "success"}}}
 	backend.fakeGitHubBackend = fakeGitHubBackend{info: github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
-		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
-			return append([]github.Comment(nil), comments...), nil
+		getIssue: verificationCoverageIssue,
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			if issue == 1 {
+				return []github.Comment{{ID: 1, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-1", Body: specBody}}, nil
+			}
+			if issue == 9 {
+				return append([]github.Comment(nil), comments...), nil
+			}
+			return nil, nil
 		}, getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
+			providerReads++
 			pr := github.PullRequest{Number: 7}
 			pr.Head.SHA = receipt.SubjectRevision
 			return pr, nil
 		}, createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
 			created++
-			comment := github.Comment{ID: 11, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-11", Body: body}
+			comment := github.Comment{ID: 12, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-12", Body: body}
 			comments = append(comments, comment)
 			return comment, nil
 		}, updateComment: func(_ context.Context, _ string, id int64, body string) (github.Comment, error) {
@@ -1044,6 +1274,15 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 	args := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
 		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
 		"--agent", "Verifier"}
+	conflicting := implementation
+	conflicting.ID, conflicting.HTMLURL = 13, "https://github.com/o/r/issues/9#issuecomment-13"
+	comments = append(comments, conflicting)
+	if code := app.runVerify(t.Context(), args); code != 1 || created != 0 || providerReads != 0 ||
+		!strings.Contains(errOut.String(), "multiple canonical candidates") {
+		t.Fatalf("ambiguous coverage exit=%d created=%d providerReads=%d err=%q",
+			code, created, providerReads, errOut.String())
+	}
+	comments = comments[:2]
 	for run := 0; run < 2; run++ {
 		out.Reset()
 		errOut.Reset()
@@ -1051,18 +1290,22 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 			t.Fatalf("run=%d exit=%d out=%q err=%q", run, code, out.String(), errOut.String())
 		}
 	}
-	if created != 1 || updated != 0 || len(comments) != 2 {
-		t.Fatalf("created=%d updated=%d comments=%d", created, updated, len(comments))
+	if created != 1 || updated != 0 || providerReads != 2 || len(comments) != 3 {
+		t.Fatalf("created=%d updated=%d providerReads=%d comments=%d", created, updated, providerReads, len(comments))
 	}
-	parsed := model.ParseTypedComment(comments[1].Body)
-	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
+	parsed := model.ParseTypedComment(comments[2].Body)
+	authority, found, err := parseAcceptedVerificationReceipt(comments[2].Body)
 	if err != nil || !found || parsed.Agent != "Verifier" || parsed.SubjectRevision != receipt.SubjectRevision ||
 		parsed.Status != "done" || len(authority.Tests) != 1 || len(authority.Checks) != 1 ||
 		authority.Submission == nil || authority.Submission.Agent != "Verifier" ||
 		authority.Submission.Assurance != assignment.AssuranceSelfReported ||
-		!strings.Contains(comments[1].Body, "### Local Tests") || !strings.Contains(comments[1].Body, "### Provider Checks") ||
-		strings.Contains(comments[1].Body, "### Evidence") {
-		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[1].Body)
+		!linksContainURL(parsed.Links["Related Comments"], "https://github.com/o/r/issues/1#issuecomment-1") ||
+		!linksContainURL(parsed.Links["Related Comments"], "https://github.com/o/r/issues/9#issuecomment-10") ||
+		!linksContainURL(parsed.Links["Related Comments"], implementation.HTMLURL) ||
+		!strings.Contains(comments[2].Body, "### Covered PROCESSes\n\n- PROCESS-101\n- PROCESS-102") ||
+		!strings.Contains(comments[2].Body, "### Local Tests") || !strings.Contains(comments[2].Body, "### Provider Checks") ||
+		strings.Contains(comments[2].Body, "### Evidence") {
+		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[2].Body)
 	}
 }
 
@@ -1114,12 +1357,22 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	if err := os.WriteFile(coordinatorPath, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}}
+	specBody := verificationCoverageSpecBody(t, "SPEC-005")
+	implementation := verificationCoverageProcessComment(t, 11, "PROCESS-102", model.ProcessExecutionChangeBearing,
+		"done", "SPEC-005")
+	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}, implementation}
 	providerReads, creates := 0, 0
 	backend := verifySubmitCommandBackend{fakeGitHubBackend: fakeGitHubBackend{
-		info: github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
-		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
-			return append([]github.Comment(nil), comments...), nil
+		info:     github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
+		getIssue: verificationCoverageIssue,
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			if issue == 1 {
+				return []github.Comment{{ID: 1, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-1", Body: specBody}}, nil
+			}
+			if issue == 9 {
+				return append([]github.Comment(nil), comments...), nil
+			}
+			return nil, nil
 		},
 		getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
 			providerReads++
@@ -1129,7 +1382,7 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		},
 		createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
 			creates++
-			comment := github.Comment{ID: 11, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-11", Body: body}
+			comment := github.Comment{ID: 12, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-12", Body: body}
 			comments = append(comments, comment)
 			return comment, nil
 		}}, checkRuns: nil}
@@ -1141,7 +1394,7 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		"--id", "VERIFY-COORDINATOR", "--result-file", coordinatorPath, "--assignment-file", assignmentPath,
 		"--agent", "Coordinator"}
 	if code := app.runVerify(t.Context(), coordinatorArgs); code != 1 || providerReads != 0 || creates != 0 ||
-		len(comments) != 1 || !strings.Contains(errOut.String(), "non-Coordinator") {
+		len(comments) != 2 || !strings.Contains(errOut.String(), "non-Coordinator") {
 		t.Fatalf("coordinator exit=%d providerReads=%d creates=%d comments=%d err=%q",
 			code, providerReads, creates, len(comments), errOut.String())
 	}
@@ -1151,7 +1404,7 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
 		"--agent", "Verifier"}
 	legacyImport := append(append([]string(nil), args...), "--owner-token", "coordinator-owner-token")
-	if code := app.runVerify(t.Context(), legacyImport); code != 2 || providerReads != 0 || creates != 0 || len(comments) != 1 ||
+	if code := app.runVerify(t.Context(), legacyImport); code != 2 || providerReads != 0 || creates != 0 || len(comments) != 2 ||
 		!strings.Contains(errOut.String(), "flag provided but not defined") {
 		t.Fatalf("legacy import exit=%d providerReads=%d creates=%d comments=%d err=%q",
 			code, providerReads, creates, len(comments), errOut.String())
@@ -1159,7 +1412,7 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	out.Reset()
 	errOut.Reset()
 	directArgs := append(append([]string(nil), args...), "--agent-session", "verifier-session")
-	if code := app.runVerify(t.Context(), directArgs); code != 0 || len(comments) != 2 || providerReads != 2 || creates != 1 {
+	if code := app.runVerify(t.Context(), directArgs); code != 0 || len(comments) != 3 || providerReads != 2 || creates != 1 {
 		t.Fatalf("submit exit=%d comments=%d providerReads=%d creates=%d out=%q err=%q",
 			code, len(comments), providerReads, creates, out.String(), errOut.String())
 	}
@@ -1177,9 +1430,10 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	finalProcess.Comment = model.ParseTypedComment(linkedProcess)
-	verify := model.Artifact{Issue: 9, CommentID: comments[1].ID, URL: comments[1].HTMLURL,
-		Comment: model.ParseTypedComment(comments[1].Body)}
-	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
+	verify := model.Artifact{Issue: 9, CommentID: comments[2].ID, URL: comments[2].HTMLURL,
+		Comment: model.ParseTypedComment(comments[2].Body)}
+	canonicalizeVerificationFixture(t, &verify, finalProcess, spec)
+	authority, found, err := parseAcceptedVerificationReceipt(comments[2].Body)
 	if err != nil || !found || authority.Submission == nil || authority.Submission.Agent != "Verifier" ||
 		authority.Submission.Assurance != assignment.AssuranceSelfReported ||
 		verify.Comment.AgentSessionID != "" || verify.Comment.AgentSessionSource != "" {
@@ -1194,6 +1448,44 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		report.ProcessEvidence[0].CarrierRevision.Source != "accepted-verification-receipt:self-reported-tests" {
 		t.Fatalf("submit-to-final local receipt errors=%v evidence=%+v", report.Errors, report.ProcessEvidence)
 	}
+}
+
+func verificationCoverageSpecBody(t *testing.T, id string) string {
+	t.Helper()
+	body, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: id, Status: "confirmed"},
+		Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "verification coverage",
+			Text: "Verification publication MUST include canonical SPEC coverage."}, Scenarios: []templates.SpecScenarioInput{{
+			Title: "complete owner", When: "verification completes", Then: "the owner includes the SPEC"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func verificationCoverageProcessComment(t *testing.T, commentID int64, id string,
+	class model.ProcessExecutionClass, status, covers string) github.Comment {
+	t.Helper()
+	logical := fmt.Sprintf("## Process: verification coverage\n\n### Parent TASK\n\n- TASK-006\n\n### Execution Class\n\n- %s\n\n### Covers\n\n- %s\n\n### Handoff\n\nN/A", class, covers)
+	body, err := model.EnsureTypedBody("PROCESS", id, logical, model.BodyOptions{Status: status})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return github.Comment{ID: commentID,
+		HTMLURL: fmt.Sprintf("https://github.com/o/r/issues/9#issuecomment-%d", commentID),
+		URL:     fmt.Sprintf("https://api.github.com/repos/o/r/issues/comments/%d", commentID), Body: body}
+}
+
+func verificationCoverageIssue(_ context.Context, _ string, issue int) (github.Issue, error) {
+	items := map[int]github.Issue{
+		1: {Number: 1, HTMLURL: "https://github.com/o/r/issues/1", Body: "<!-- issue-spec:issue=proposal change=verify-coverage version=1 -->"},
+		2: {Number: 2, HTMLURL: "https://github.com/o/r/issues/2", Body: "<!-- issue-spec:issue=design change=verify-coverage version=1 -->\n- Proposal Issue: 1"},
+		9: {Number: 9, HTMLURL: "https://github.com/o/r/issues/9", Body: "<!-- issue-spec:issue=implement change=verify-coverage version=1 -->\n- Design Issue: 2"},
+	}
+	item, ok := items[issue]
+	if !ok {
+		return github.Issue{}, errors.New("unexpected issue")
+	}
+	return item, nil
 }
 
 func TestBuildFinalVerifyReportConsumesExactAcceptedLocalTestReceipt(t *testing.T) {
@@ -1220,6 +1512,7 @@ func TestBuildFinalVerifyReportConsumesExactAcceptedLocalTestReceipt(t *testing.
 	}
 	verify := model.Artifact{Issue: 3, CommentID: 4, URL: "https://github.com/o/r/issues/3#issuecomment-4",
 		Comment: model.ParseTypedComment(verifyBody)}
+	canonicalizeVerificationFixture(t, &verify, process, spec)
 	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, verify}, "https://github.com/o/r/issues/1",
 		finalVerifyOptions{PR: 7, PRURL: "https://github.com/o/r/pull/7", ExpectedRevision: current, RationaleRequired: true})
 	if err != nil {
@@ -1981,6 +2274,7 @@ func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.
 	linkArtifacts(t, &spec, &task)
 	linkArtifacts(t, &task, &process)
 	linkArtifacts(t, &task, &reviewProcess)
+	canonicalizeReviewFixture(t, &review, []model.Artifact{reviewProcess}, spec)
 	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, reviewProcess, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
 		PR:                7,
 		PRURL:             "https://github.com/o/r/pull/7",
@@ -2285,6 +2579,7 @@ func TestBuildFinalVerifyReportRejectsSelfAuthoredReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	process.Comment = model.ParseTypedComment(processBody)
+	canonicalizeReviewFixture(t, &review, []model.Artifact{reviewProcess}, spec)
 	body, err := model.RenderRationaleBody("Worker Agent A", "PROCESS-001", "SPEC-001", spec.URL, "Explain why.", "internal/foo.go", 12)
 	if err != nil {
 		t.Fatal(err)
@@ -2314,7 +2609,7 @@ func TestBuildFinalVerifyReportUsesVerificationCarrierInsteadOfRationale(t *test
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
 	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
-	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: verify\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- verification\n\n### Handoff\n\nN/A")
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: verify\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- verification\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\nN/A")
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Verification Summary: final\n\nTests passed for PROCESS-001.\n\n### Covered SPECs\n\n- SPEC-001")
 	linkArtifacts(t, &spec, &task)
@@ -2324,6 +2619,7 @@ func TestBuildFinalVerifyReportUsesVerificationCarrierInsteadOfRationale(t *test
 		t.Fatal(err)
 	}
 	process.Comment = model.ParseTypedComment(body)
+	canonicalizeVerificationFixture(t, &verify, process, spec)
 	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
 		PR: 7, PRURL: "https://github.com/o/r/pull/7", RationaleRequired: true,
 	})
@@ -2362,6 +2658,7 @@ func TestBuildFinalVerifyReportBlocksOpenP0P1Findings(t *testing.T) {
 		t.Fatal("expected PR link to change process body")
 	}
 	process.Comment = model.ParseTypedComment(processBody)
+	canonicalizeReviewFixture(t, &review, []model.Artifact{reviewProcess}, spec)
 	rationale, err := model.RenderRationaleBody("Worker Agent A", "PROCESS-001", "SPEC-001", spec.URL, "Explain why.", "internal/foo.go", 12)
 	if err != nil {
 		t.Fatal(err)
@@ -2473,6 +2770,7 @@ func TestBuildFinalVerifyReportRequiresSerialHandoff(t *testing.T) {
 		linkArtifacts(t, &spec, &task)
 		linkArtifacts(t, &task, &p1)
 		linkArtifacts(t, &task, &p2)
+		linkArtifacts(t, &p1, &p2)
 		report, err := buildFinalVerifyReport([]model.Artifact{spec, task, p1, p2, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
 		if err != nil {
 			t.Fatal(err)
@@ -2587,6 +2885,52 @@ func linkArtifacts(t *testing.T, from, to *model.Artifact) {
 	to.Comment = model.ParseTypedComment(toBody)
 }
 
+func canonicalizeVerificationFixture(t *testing.T, verify *model.Artifact, process model.Artifact, specs ...model.Artifact) {
+	t.Helper()
+	links := map[string][]string{}
+	for name, values := range verify.Comment.Links {
+		links[name] = append([]string(nil), values...)
+	}
+	appendLink := func(url string) {
+		if !linksContainURL(links[relationships.RelatedCommentsField], url) {
+			links[relationships.RelatedCommentsField] = append(links[relationships.RelatedCommentsField], url)
+		}
+	}
+	appendLink(process.URL)
+	specIDs := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		appendLink(spec.URL)
+		specIDs = append(specIDs, spec.Comment.ID)
+	}
+	sort.Strings(specIDs)
+	logical := verify.Comment.Body
+	if _, after, found := strings.Cut(logical, "\n\n"); found {
+		logical = after
+	}
+	logical = strings.TrimSpace(logical)
+	if !strings.Contains(logical, "### Covered PROCESSes") {
+		logical += "\n\n### Covered PROCESSes\n\n- " + process.Comment.ID
+	}
+	if !strings.Contains(logical, "### Covered SPECs") {
+		logical += "\n\n### Covered SPECs\n\n- " + strings.Join(specIDs, "\n- ")
+	}
+	agent := verify.Comment.Agent
+	if strings.TrimSpace(agent) == "" {
+		agent = "Verifier"
+	}
+	body, err := model.EnsureTypedBody("VERIFY", verify.Comment.ID, logical, model.BodyOptions{
+		Agent: agent, SubjectRevision: verify.Comment.SubjectRevision,
+		Status: verify.Comment.Status, Scope: verify.Comment.Scope, Links: links,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify.Comment = model.ParseTypedComment(body)
+	if verify.Comment.Agent == "" || len(verify.Comment.Errors) > 0 {
+		t.Fatalf("canonical VERIFY fixture is invalid: %+v", verify.Comment)
+	}
+}
+
 func typedArtifact(t *testing.T, issue int, typ, id, status, content string) model.Artifact {
 	t.Helper()
 	return typedArtifactWithAgent(t, issue, typ, id, status, "", content)
@@ -2600,7 +2944,7 @@ func typedArtifactWithAgent(t *testing.T, issue int, typ, id, status, agent, con
 	}
 	return model.Artifact{
 		Issue:   issue,
-		URL:     "https://github.com/o/r/issues/1#issuecomment-" + id,
+		URL:     fmt.Sprintf("https://github.com/o/r/issues/%d#issuecomment-%s", issue, id),
 		Comment: model.ParseTypedComment(body),
 	}
 }

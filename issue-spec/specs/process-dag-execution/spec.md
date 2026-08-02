@@ -743,3 +743,94 @@ The issue-spec CLI MUST provide a role-owned completion operation that derives e
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/396#issuecomment-5152395123
+
+### Requirement: typed artifact relationships have one canonical owner
+
+Every built-in planning, review, verification, and directional lifecycle relationship MUST resolve to exactly one canonical owning typed artifact. Creating or updating the relationship MUST mutate only that owner and MUST NOT create or refresh a reverse backlink on the target artifact. Unsupported or ambiguous ownership MUST fail before any write.
+
+#### Scenario: shared review fan-out writes only the review
+
+- **WHEN** one REVIEW is related to multiple PROCESS nodes and SPECs
+- **THEN** the relationship operation writes the REVIEW owner at most once and performs zero PROCESS or SPEC backlink writes
+
+#### Scenario: known artifact pair resolves one owner
+
+- **WHEN** a caller supplies either ordering of a supported typed artifact pair
+- **THEN** the CLI deterministically selects the schema-defined owner or returns the exact corrected orientation without mutating either peer
+
+#### Scenario: ambiguous relationship fails before mutation
+
+- **WHEN** the artifact types or relationship kind do not identify exactly one canonical owner
+- **THEN** the command rejects the request before updating any comment
+
+#### Scenario: legacy backlink cannot become authority
+
+- **WHEN** a historical target comment contains a reverse backlink that disagrees with the canonical owner
+- **THEN** the canonical owner controls the relationship and the legacy backlink remains compatibility-only navigation data
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/392#issuecomment-5152236315
+
+### Requirement: canonical relationship updates are bounded and conflict-safe
+
+A canonical relationship owner update MUST merge a bounded target set through one idempotent mutation, preserve every previously accepted canonical target outside an explicit removal plan, detect stale observations, and verify the exact postcondition. A backend without atomic conditional comment updates MUST require an explicit guarded single-writer fallback and MUST NOT report success when concurrent or partial-write drift is observed.
+
+#### Scenario: bounded fan-out is one owner mutation
+
+- **WHEN** a caller adds several PROCESS and SPEC targets owned by one REVIEW or VERIFY
+- **THEN** the CLI merges the complete bounded set and writes the owner once while preserving existing canonical targets
+
+#### Scenario: stale owner observation fails explicitly
+
+- **WHEN** another writer changes the canonical owner after the caller observed it
+- **THEN** conditional mutation or postcondition validation returns a conflict instead of silently overwriting the concurrent relationship
+
+#### Scenario: non-CAS fallback is guarded
+
+- **WHEN** the selected backend cannot provide an atomic compare-and-swap update
+- **THEN** the caller must provide the observed digest and explicitly acknowledge single-writer risk, after which the CLI re-reads and proves the exact merged postcondition
+
+#### Scenario: lost response retry is idempotent
+
+- **WHEN** the owner write succeeded but its response was lost
+- **THEN** an exact retry recognizes the complete postcondition and returns success without duplicating or removing targets
+
+#### Scenario: partial or conflicting postcondition blocks
+
+- **WHEN** re-observation finds only part of the requested target set or an unplanned removal
+- **THEN** the operation returns a structured reconcile result and does not claim that the relationship update completed
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/392#issuecomment-5152236480
+
+### Requirement: reverse navigation is derived from canonical relationship owners
+
+Compact reads, status, traceability diagnostics, generated workflow guidance, and human-facing navigation MUST derive reverse typed-artifact relationships from canonical owner references without persisting a second edge on target comments. Read projections MUST remain bounded and MUST keep historical symmetric backlinks readable but non-authoritative.
+
+#### Scenario: reverse lookup finds canonical owners
+
+- **WHEN** a reader asks which REVIEW, VERIFY, PROCESS, or TASK artifacts refer to a target artifact
+- **THEN** the read model returns the matching canonical owners without requiring the target to contain backlinks
+
+#### Scenario: reverse lookup performs no writes
+
+- **WHEN** status, traceability, or a UI projection constructs reverse navigation
+- **THEN** the operation performs zero comment mutations and does not cache derived edges as target backlinks
+
+#### Scenario: stale legacy backlink does not affect readiness
+
+- **WHEN** a legacy reverse backlink is missing, extra, partial, or stale while canonical owner references are valid
+- **THEN** authoring and final readiness use the canonical relationships and may expose the legacy difference only as bounded compatibility information
+
+#### Scenario: generated workflows use canonical orientation
+
+- **WHEN** issue-spec generates coordinator, review, verification, and recovery guidance
+- **THEN** the guidance uses owner-oriented bounded relationship commands and never instructs callers to create required bidirectional backlinks
+
+#### Scenario: reverse output remains bounded
+
+- **WHEN** many canonical owners refer to the same artifact
+- **THEN** compact reads cap returned identities and expose a detail action without expanding complete comment bodies or performing repository-wide unbounded output
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/392#issuecomment-5152236611

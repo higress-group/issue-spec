@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/finalization"
 	"github.com/higress-group/issue-spec/internal/github"
@@ -30,6 +31,7 @@ type finalizeCommandBackend struct {
 	issues   map[int]github.Issue
 	comments map[int][]github.Comment
 	writes   int
+	writeOK  bool
 }
 
 func (b *finalizeCommandBackend) GetIssue(_ context.Context, _ string, number int) (github.Issue, error) {
@@ -69,9 +71,23 @@ func (b *finalizeCommandBackend) CreateComment(context.Context, string, int, str
 	return github.Comment{}, errors.New("preview attempted a write")
 }
 
-func (b *finalizeCommandBackend) UpdateComment(context.Context, string, int64, string) (github.Comment, error) {
+func (b *finalizeCommandBackend) UpdateComment(_ context.Context, _ string, commentID int64, body string) (github.Comment, error) {
 	b.writes++
-	return github.Comment{}, errors.New("preview attempted a write")
+	if !b.writeOK {
+		return github.Comment{}, errors.New("preview attempted a write")
+	}
+	for issue, comments := range b.comments {
+		for index := range comments {
+			if comments[index].ID != commentID {
+				continue
+			}
+			comments[index].Body = body
+			comments[index].IssueNumber = issue
+			b.comments[issue] = comments
+			return comments[index], nil
+		}
+	}
+	return github.Comment{}, errors.New("missing update target")
 }
 
 func TestFinalizePreviewIsWriteFreeDeterministicAndDetailOmitsBodies(t *testing.T) {
@@ -129,6 +145,174 @@ func TestFinalizePreviewIsWriteFreeDeterministicAndDetailOmitsBodies(t *testing.
 	detail := application.out.(*bytes.Buffer).String()
 	if strings.Contains(detail, "issue-spec:superseded-by") || strings.Contains(detail, `"desired"`) {
 		t.Fatalf("detail leaked mutation bodies: %s", detail)
+	}
+}
+
+func TestFinalizeSevenEdgePreviewApplyWritesOnlyHistoricalOwners(t *testing.T) {
+	backend, intentData, historical, stableBodies := finalizeSevenEdgeFixture(t)
+	application := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	application.selectGitHubBackend = ghSelection
+	application.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	application.resolveFinalizationBaseline = func(context.Context, string, string) (string, error) { return finalizeTestBaseline, nil }
+	directory := t.TempDir()
+	intentPath := filepath.Join(directory, "intent.json")
+	if err := os.WriteFile(intentPath, intentData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preview := func(name string) finalization.Plan {
+		t.Helper()
+		planPath := filepath.Join(directory, name)
+		application.out, application.err = &bytes.Buffer{}, &bytes.Buffer{}
+		code := application.runFinalizePreview(t.Context(), []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--pr", "9",
+			"--intent-file", intentPath, "--plan-out", planPath, "--json"})
+		if code != 0 {
+			t.Fatalf("preview code=%d stderr=%s", code, application.err.(*bytes.Buffer).String())
+		}
+		file, err := os.Open(planPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		plan, err := finalization.ReadPlan(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan
+	}
+	first, second := preview("plan-1.json"), preview("plan-2.json")
+	if backend.writes != 0 || first.PlanDigest != second.PlanDigest {
+		t.Fatalf("preview writes=%d digests=%s/%s", backend.writes, first.PlanDigest, second.PlanDigest)
+	}
+	if len(first.Reconcile.Operations) != len(historical) {
+		t.Fatalf("operations=%+v, want one per historical owner", first.Reconcile.Operations)
+	}
+	for _, operation := range first.Reconcile.Operations {
+		toID, ok := historical[operation.Target.ID]
+		if !ok || operation.Kind != "upsert" || operation.Target.Type != "PROCESS" || operation.Desired.Peer != nil ||
+			operation.Desired.RelationshipUpdate != nil || operation.Desired.CarrierAuthorizedBacklink || len(operation.Precondition.Endpoints) != 0 {
+			t.Fatalf("non-owner finalization operation=%+v", operation)
+		}
+		desired := model.ParseTypedComment(operation.Desired.Body)
+		marker, found, err := model.ParseSupersededBy(operation.Desired.Body, operation.Target.ID)
+		if err != nil || !found || desired.Status != "superseded" || marker.ProcessID != toID {
+			t.Fatalf("combined owner postimage=%s marker=%+v found=%t err=%v", desired.Status, marker, found, err)
+		}
+	}
+
+	backend.writeOK = true
+	apply := func() finalizeApplyResult {
+		t.Helper()
+		application.out, application.err = &bytes.Buffer{}, &bytes.Buffer{}
+		code := application.runFinalizeApply(t.Context(), []string{"--plan", filepath.Join(directory, "plan-1.json"),
+			"--checkpoint", filepath.Join(directory, "checkpoint.json"), "--allow-nonatomic", "--json"})
+		if code != 0 && code != 1 {
+			t.Fatalf("apply code=%d stderr=%s", code, application.err.(*bytes.Buffer).String())
+		}
+		if stderr := application.err.(*bytes.Buffer).String(); stderr != "" {
+			t.Fatalf("apply failed before bounded result: %s", stderr)
+		}
+		var result finalizeApplyResult
+		if err := json.Unmarshal(application.out.(*bytes.Buffer).Bytes(), &result); err != nil {
+			t.Fatalf("decode apply result: %v output=%s", err, application.out.(*bytes.Buffer).String())
+		}
+		return result
+	}
+	result := apply()
+	if backend.writes != len(historical) || !result.Reconcile.OK || result.Reconcile.Updated != len(historical) {
+		t.Fatalf("apply writes=%d result=%+v", backend.writes, result.Reconcile)
+	}
+	for _, comments := range backend.comments {
+		for _, comment := range comments {
+			typed := model.ParseTypedComment(comment.Body)
+			if toID, isHistorical := historical[typed.ID]; isHistorical {
+				marker, found, err := model.ParseSupersededBy(comment.Body, typed.ID)
+				if err != nil || !found || typed.Status != "superseded" || marker.ProcessID != toID {
+					t.Fatalf("applied historical owner %s status=%s marker=%+v found=%t err=%v", typed.ID, typed.Status, marker, found, err)
+				}
+				continue
+			}
+			if before, stable := stableBodies[typed.ID]; stable && comment.Body != before {
+				t.Fatalf("peer %s changed outside its owner: before=%q after=%q", typed.ID, before, comment.Body)
+			}
+		}
+	}
+	writesAfterFirstApply := backend.writes
+	retry := apply()
+	if backend.writes != writesAfterFirstApply || retry.Reconcile.Updated != 0 || retry.Reconcile.Unchanged != len(historical) {
+		t.Fatalf("checkpoint retry wrote again: writes=%d result=%+v", backend.writes, retry.Reconcile)
+	}
+
+	exactOwnerBody := ""
+	for _, operation := range first.Reconcile.Operations {
+		if operation.Target.ID == "PROCESS-001" {
+			exactOwnerBody = operation.Desired.Body
+			break
+		}
+	}
+	if exactOwnerBody == "" {
+		t.Fatal("missing exact PROCESS-001 owner postimage")
+	}
+	setOwnerBody := func(body string) {
+		t.Helper()
+		for issue, comments := range backend.comments {
+			for index := range comments {
+				if model.ParseTypedComment(comments[index].Body).ID != "PROCESS-001" {
+					continue
+				}
+				comments[index].Body = body
+				backend.comments[issue] = comments
+				return
+			}
+		}
+		t.Fatal("missing PROCESS-001 owner fixture")
+	}
+	assertPeersStable := func() {
+		t.Helper()
+		for _, comments := range backend.comments {
+			for _, comment := range comments {
+				typed := model.ParseTypedComment(comment.Body)
+				if before, stable := stableBodies[typed.ID]; stable && comment.Body != before {
+					t.Fatalf("peer %s changed while owner postimage drifted: before=%q after=%q", typed.ID, before, comment.Body)
+				}
+			}
+		}
+	}
+	expectPostimageDrift := func(name, body string) {
+		t.Helper()
+		setOwnerBody(body)
+		writesBefore := backend.writes
+		application.out, application.err = &bytes.Buffer{}, &bytes.Buffer{}
+		code := application.runFinalizeApply(t.Context(), []string{"--plan", filepath.Join(directory, "plan-1.json"),
+			"--checkpoint", filepath.Join(directory, "checkpoint.json"), "--allow-nonatomic", "--json"})
+		if code != 1 || !strings.Contains(application.err.(*bytes.Buffer).String(), "postcondition drifted") ||
+			application.out.(*bytes.Buffer).Len() != 0 {
+			t.Fatalf("%s drift did not fail closed: code=%d stdout=%s stderr=%s", name, code,
+				application.out.(*bytes.Buffer).String(), application.err.(*bytes.Buffer).String())
+		}
+		if backend.writes != writesBefore {
+			t.Fatalf("%s drift triggered a write: before=%d after=%d", name, writesBefore, backend.writes)
+		}
+		assertPeersStable()
+		setOwnerBody(exactOwnerBody)
+	}
+
+	statusDrift := strings.Replace(exactOwnerBody, "Status: superseded", "Status: in-progress", 1)
+	headerDrift := strings.Replace(exactOwnerBody, "Scope: test", "Scope: unrelated-drift", 1)
+	linkDrift, changed, err := model.AddRelatedCommentLink(exactOwnerBody, "https://github.com/o/r/issues/3#issuecomment-999")
+	if err != nil || !changed {
+		t.Fatalf("build link drift: changed=%t err=%v", changed, err)
+	}
+	logicalDrift := strings.TrimRight(exactOwnerBody, "\n") + "\n\nunrelated logical drift\n"
+	for name, body := range map[string]string{
+		"status-only": statusDrift,
+		"header-only": headerDrift,
+		"link-only":   linkDrift,
+		"logical":     logicalDrift,
+	} {
+		if body == exactOwnerBody {
+			t.Fatalf("%s fixture did not change the owner body", name)
+		}
+		expectPostimageDrift(name, body)
 	}
 }
 
@@ -356,6 +540,73 @@ func finalizePreviewFixture() *finalizeCommandBackend {
 			map[string][]string{"Related Comments": {taskURL}, "PR": {prURL}}, "### Execution Class\n\nchange-bearing")},
 	}
 	return backend
+}
+
+func finalizeSevenEdgeFixture(t *testing.T) (*finalizeCommandBackend, []byte, map[string]string, map[string]string) {
+	t.Helper()
+	backend := finalizePreviewFixture()
+	taskURL := backend.comments[1][0].HTMLURL
+	prURL := backend.pr.HTMLURL
+	historical := map[string]string{}
+	stableBodies := map[string]string{}
+	var processURLs []string
+	var comments []github.Comment
+	intent := finalization.Intent{Version: finalization.IntentVersion, BaselineRevision: finalizeTestBaseline}
+	for index := 1; index <= 7; index++ {
+		fromID := fmt.Sprintf("PROCESS-%03d", index)
+		toID := fmt.Sprintf("PROCESS-%03d", index+100)
+		fromCommentID, toCommentID := int64(100+index), int64(200+index)
+		fromURL := fmt.Sprintf("https://github.com/o/r/issues/3#issuecomment-%d", fromCommentID)
+		toURL := fmt.Sprintf("https://github.com/o/r/issues/3#issuecomment-%d", toCommentID)
+		links := map[string][]string{"Related Comments": {taskURL}, "PR": {prURL}}
+		fromBody := finalizeTypedBody("PROCESS", fromID, "in-progress", links,
+			fmt.Sprintf("### Execution Class\n\nchange-bearing\n\nhistorical-%d", index))
+		toBody := finalizeTypedBody("PROCESS", toID, "done", links,
+			fmt.Sprintf("### Execution Class\n\nchange-bearing\n\nsuccessor-%d", index))
+		comments = append(comments,
+			github.Comment{ID: fromCommentID, IssueNumber: 3, HTMLURL: fromURL, URL: fmt.Sprintf("https://api.github.com/comments/%d", fromCommentID), Body: fromBody},
+			github.Comment{ID: toCommentID, IssueNumber: 3, HTMLURL: toURL, URL: fmt.Sprintf("https://api.github.com/comments/%d", toCommentID), Body: toBody})
+		processURLs = append(processURLs, fromURL, toURL)
+		historical[fromID] = toID
+		stableBodies[toID] = toBody
+		intent.SupersededBy = append(intent.SupersededBy, finalization.IntentEdge{From: fromID, To: toID})
+	}
+	backend.comments[3] = comments
+	taskBody := finalizeTypedBody("TASK", "TASK-001", "done", map[string][]string{"Related Comments": processURLs}, "task")
+	backend.comments[1][0].Body = taskBody
+	backend.comments[1][0].IssueNumber = 1
+	stableBodies["TASK-001"] = taskBody
+	specURL := "https://github.com/o/r/issues/1#issuecomment-20"
+	specBody := finalizeTypedBody("SPEC", "SPEC-001", "confirmed", nil,
+		"## Requirement: peer stability\n\nPeer bodies MUST remain stable.\n\n### Scenario: no peer writes\n\n- **WHEN** finalization applies\n- **THEN** only historical owners change")
+	backend.comments[1] = append(backend.comments[1], github.Comment{ID: 20, IssueNumber: 1, HTMLURL: specURL,
+		URL: "https://api.github.com/comments/20", Body: specBody})
+	stableBodies["SPEC-001"] = specBody
+
+	reviewReceipt := testSealedReviewReceipt(t, "approve", nil)
+	reviewBody, err := renderSubmittedReview("REVIEW-001", "PROCESS-101", comments[1].HTMLURL, prURL, []string{specURL}, reviewReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyReceipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/finalization",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	verifyBody, err := renderSubmittedVerification("VERIFY-001", comments[3].HTMLURL, []string{"SPEC-001"}, verifyReceipt,
+		nil, testVerificationSubmission("Verifier"), specURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.comments[3] = append(backend.comments[3],
+		github.Comment{ID: 300, IssueNumber: 3, HTMLURL: "https://github.com/o/r/issues/3#issuecomment-300",
+			URL: "https://api.github.com/comments/300", Body: reviewBody},
+		github.Comment{ID: 301, IssueNumber: 3, HTMLURL: "https://github.com/o/r/issues/3#issuecomment-301",
+			URL: "https://api.github.com/comments/301", Body: verifyBody})
+	stableBodies["REVIEW-001"] = reviewBody
+	stableBodies["VERIFY-001"] = verifyBody
+	data, err := json.Marshal(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return backend, data, historical, stableBodies
 }
 
 func finalizeImplementBoundaryFixture(t *testing.T) *finalizeCommandBackend {

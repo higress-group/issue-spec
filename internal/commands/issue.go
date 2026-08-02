@@ -9,6 +9,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/relationships"
 	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
@@ -289,7 +290,13 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 				a.errorf("read proposal/design issue comments: %v\n", err)
 				return 1
 			}
-			report := model.VerifyTraceability(fullArtifacts)
+			index, indexErr := relationships.BuildIndex(fullArtifacts)
+			if indexErr != nil {
+				a.errorf("implement gate blocked: canonical relationship index: %v\n", indexErr)
+				return 1
+			}
+			report := mergeVerifyReports(model.VerifyTraceability(fullArtifacts),
+				model.VerifyTraceabilityWithRelationships(fullArtifacts, commandTraceabilityEdges(index), nil))
 			if !report.OK {
 				a.errorf("implement gate blocked: proposal/design traceability errors:\n")
 				for _, msg := range report.Errors {

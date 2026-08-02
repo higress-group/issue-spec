@@ -14,6 +14,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/github"
+	workflowtemplates "github.com/higress-group/issue-spec/internal/templates"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
@@ -452,6 +453,45 @@ func TestCheckedInCodexWorkflowSkillsMatchGenerator(t *testing.T) {
 	for name, root := range map[string]string{"generated": generatedRoot, "checked-in": projectRoot} {
 		if _, err := os.Stat(filepath.Join(root, archiveRelative)); !os.IsNotExist(err) {
 			t.Fatalf("%s removed Archive skill exists: %v", name, err)
+		}
+	}
+}
+
+func TestRegenerateCheckedInOwnerWorkflowAssets(t *testing.T) {
+	if os.Getenv("ISSUE_SPEC_REGENERATE_OWNER_WORKFLOWS") != "1" {
+		t.Skip("set ISSUE_SPEC_REGENERATE_OWNER_WORKFLOWS=1 to refresh checked-in managed assets")
+	}
+	projectRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(projectRoot)
+	if _, err := writeWorkflowArtifacts(".", "higress-group/issue-spec", "codex,claude", "both"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGeneratedOwnerGuidanceRejectsAffirmativePeerMutationSequences(t *testing.T) {
+	contents := map[string]string{}
+	for _, skill := range workflowtemplates.IssueSpecSkills("owner/repo") {
+		contents[skill.Name] = skill.Content
+	}
+	provider := workflow.ProviderPlan{ProviderKey: "code.example", DisplayName: "Example Code"}
+	providerSkill := workflowtemplates.IssueSpecProviderSkill("owner/repo", provider)
+	contents[providerSkill.Name] = providerSkill.Content
+	for name, content := range contents {
+		for _, forbidden := range []string{"Link SPEC <->", "Traceability is bidirectional",
+			"repairs only a missing backlink", "After final sync, explicitly link"} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("generated %s retains affirmative peer-mutation guidance %q", name, forbidden)
+			}
+		}
+		for _, line := range strings.Split(content, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "Run these commands after the final review sync") ||
+				(strings.Contains(trimmed, "issue-spec link --repo") && !strings.Contains(trimmed, "Compatibility warning: never")) {
+				t.Fatalf("generated %s emits a repeated generic link sequence: %s", name, trimmed)
+			}
 		}
 	}
 }

@@ -118,6 +118,10 @@ type ProcessEvidenceInput struct {
 	Process          model.Artifact            `json:"process"`
 	RequiredPRURL    string                    `json:"required_pr_url,omitempty"`
 	ActiveAssignment *ActiveAssignmentEvidence `json:"active_assignment,omitempty"`
+	// RelationshipError records a failed canonical relationship-index build.
+	// Relationship-dependent evidence is unknown in this state and must never
+	// be reconstructed from legacy backlinks or prose.
+	RelationshipError string `json:"relationship_error,omitempty"`
 	// RequiredRevision is the authoritative PR/provider head that review
 	// evidence must cover. When present, review satisfaction is evaluated per
 	// SPEC so one current carrier cannot hide another SPEC's stale evidence.
@@ -184,8 +188,16 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 			add(CodeProcessExecutionClassInvalid, SeverityError, true, diagnostic.Message, diagnostic.Element, "known class", "comment generate")
 		}
 	}
-	if parsed.Blocking() {
-		report.Missing = []string{"valid execution class"}
+	if input.RelationshipError != "" {
+		report.Missing = append(report.Missing, "bounded canonical relationship index")
+		add(CodeProcessEvidenceUnknown, SeverityError, true,
+			"canonical relationship index: "+input.RelationshipError,
+			"unknown", "bounded canonical relationship index", "relationship-detail")
+	}
+	if parsed.Blocking() || input.RelationshipError != "" {
+		if parsed.Blocking() {
+			report.Missing = []string{"valid execution class"}
+		}
 		return report
 	}
 

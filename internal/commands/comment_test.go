@@ -1202,6 +1202,18 @@ func generateTaskBody(t *testing.T, id, inputJSON string) string {
 	return genOut.String()
 }
 
+func generateProcessBody(t *testing.T, id, inputJSON string) string {
+	t.Helper()
+	inPath := writeTempInput(t, inputJSON)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	if code := app.runCommentGenerate(t.Context(), []string{"--type", "PROCESS", "--id", id,
+		"--status", "in-progress", "--input-file", inPath}); code != 0 {
+		t.Fatalf("generate PROCESS exit=%d stderr=%q", code, errOut.String())
+	}
+	return out.String()
+}
+
 func taskCoversInput(covers string) string {
 	return `{
   "title": "Do the thing",
@@ -1280,7 +1292,19 @@ func TestCommentUpsertCoversIssueWritesOnlyTaskOwnedForwardLinks(t *testing.T) {
 	}
 }
 
-func TestCommentUpsertCoversIssueUnknownIDWarnsButSucceeds(t *testing.T) {
+func TestCommentUpsertTaskCoverageRequiresCanonicalSourceIssueBeforeAuth(t *testing.T) {
+	taskBody := generateTaskBody(t, "TASK-001", taskCoversInput(`"SPEC-001"`))
+	bodyPath := writeTempInput(t, taskBody)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runCommentUpsert(t.Context(), []string{"--repo", "o/r", "--issue", "5", "--type", "TASK",
+		"--id", "TASK-001", "--body-file", bodyPath})
+	if code != 2 || !strings.Contains(errOut.String(), "--covers-issue is required") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestCommentUpsertCoversIssueUnknownIDFailsBeforeOwnerWrite(t *testing.T) {
 	taskBody := generateTaskBody(t, "TASK-001", taskCoversInput(`"SPEC-999"`))
 	bodyPath := writeTempInput(t, taskBody)
 
@@ -1296,14 +1320,103 @@ func TestCommentUpsertCoversIssueUnknownIDWarnsButSucceeds(t *testing.T) {
 		}
 	})
 	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "TASK", "--id", "TASK-001", "--body-file", bodyPath, "--covers-issue", "100", "--json"})
-	if code != 0 {
-		t.Fatalf("upsert with unresolved covers must still succeed, exit=%d err=%q", code, errOut.String())
+	if code != 1 {
+		t.Fatalf("upsert with unresolved covers must fail, exit=%d err=%q", code, errOut.String())
 	}
-	if createdTask == "" {
-		t.Fatal("TASK should still be written when a covers ID cannot be resolved")
+	if createdTask != "" {
+		t.Fatal("TASK must not be written when a covers ID cannot be resolved")
 	}
 	if !strings.Contains(errOut.String(), "SPEC-999") {
-		t.Fatalf("expected a non-fatal warning naming the unresolved covers ID:\n%s", errOut.String())
+		t.Fatalf("expected a failure naming the unresolved covers ID:\n%s", errOut.String())
+	}
+}
+
+func TestCommentUpsertProcessPublishesParentAndDependenciesOnOwnerOnce(t *testing.T) {
+	ownerBody := generateProcessBody(t, "PROCESS-002", `{"title":"owner links","parent_task":"TASK-001","dependencies":["PROCESS-001"],"execution_class":"external","covers":["SPEC-001"],"handoff":"ready"}`)
+	dependencyBody := generateProcessBody(t, "PROCESS-001", `{"title":"dependency","parent_task":"TASK-001","execution_class":"external","covers":["SPEC-001"],"handoff":"ready"}`)
+	taskBody := generateTaskBody(t, "TASK-001", taskCoversInput(`"SPEC-001"`))
+	bodyPath := writeTempInput(t, ownerBody)
+	const taskURL = "https://github.com/o/r/issues/5#issuecomment-51"
+	const dependencyURL = "https://github.com/o/r/issues/6#issuecomment-61"
+	creates, updates := 0, 0
+	createdBody := ""
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.getIssue = func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			items := map[int]github.Issue{
+				4: {Number: 4, Body: "<!-- issue-spec:issue=proposal change=process-links version=1 -->"},
+				5: {Number: 5, Body: "<!-- issue-spec:issue=design change=process-links version=1 -->\n- Proposal Issue: 4"},
+				6: {Number: 6, Body: "<!-- issue-spec:issue=implement change=process-links version=1 -->\n- Design Issue: 5"},
+			}
+			return items[issue], nil
+		}
+		f.listIssueComments = func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			switch issue {
+			case 5:
+				return []github.Comment{{ID: 51, HTMLURL: taskURL, Body: taskBody}}, nil
+			case 6:
+				return []github.Comment{{ID: 61, HTMLURL: dependencyURL, Body: dependencyBody}}, nil
+			default:
+				return nil, nil
+			}
+		}
+		f.createComment = func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			creates++
+			createdBody = body
+			return github.Comment{ID: 62, HTMLURL: "https://github.com/o/r/issues/6#issuecomment-62", Body: body}, nil
+		}
+		f.updateComment = func(_ context.Context, _ string, _ int64, _ string) (github.Comment, error) {
+			updates++
+			return github.Comment{}, nil
+		}
+	})
+	code := app.runCommentUpsert(t.Context(), []string{"--repo", "o/r", "--issue", "6", "--type", "PROCESS",
+		"--id", "PROCESS-002", "--body-file", bodyPath, "--json"})
+	if code != 0 || creates != 1 || updates != 0 || !strings.Contains(createdBody, taskURL) ||
+		!strings.Contains(createdBody, dependencyURL) {
+		t.Fatalf("exit=%d creates=%d updates=%d stdout=%q stderr=%q body=%q", code, creates, updates,
+			out.String(), errOut.String(), createdBody)
+	}
+}
+
+func TestCommentUpsertProcessMissingDependencyFailsBeforeAnyWrite(t *testing.T) {
+	ownerBody := generateProcessBody(t, "PROCESS-002", `{"title":"owner links","parent_task":"TASK-001","dependencies":["PROCESS-999"],"execution_class":"external","covers":["SPEC-001"],"handoff":"ready"}`)
+	taskBody := generateTaskBody(t, "TASK-001", taskCoversInput(`"SPEC-001"`))
+	bodyPath := writeTempInput(t, ownerBody)
+	writes := 0
+	var errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.getIssue = func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			items := map[int]github.Issue{
+				4: {Number: 4, Body: "<!-- issue-spec:issue=proposal change=process-links version=1 -->"},
+				5: {Number: 5, Body: "<!-- issue-spec:issue=design change=process-links version=1 -->\n- Proposal Issue: 4"},
+				6: {Number: 6, Body: "<!-- issue-spec:issue=implement change=process-links version=1 -->\n- Design Issue: 5"},
+			}
+			return items[issue], nil
+		}
+		f.listIssueComments = func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			if issue == 5 {
+				return []github.Comment{{ID: 51, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-51", Body: taskBody}}, nil
+			}
+			return nil, nil
+		}
+		f.createComment = func(context.Context, string, int, string) (github.Comment, error) {
+			writes++
+			return github.Comment{}, nil
+		}
+		f.updateComment = func(context.Context, string, int64, string) (github.Comment, error) {
+			writes++
+			return github.Comment{}, nil
+		}
+	})
+	if code := app.runCommentUpsert(t.Context(), []string{"--repo", "o/r", "--issue", "6", "--type", "PROCESS",
+		"--id", "PROCESS-002", "--body-file", bodyPath}); code != 1 || writes != 0 ||
+		!strings.Contains(errOut.String(), "PROCESS-999") {
+		t.Fatalf("exit=%d writes=%d stderr=%q", code, writes, errOut.String())
 	}
 }
 

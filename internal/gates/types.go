@@ -10,6 +10,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/relationships"
 )
 
 // Target is the workflow gate a caller wants to evaluate.
@@ -212,6 +213,16 @@ type TraceabilityFacts struct {
 	Report   model.VerifyReport `json:"report"`
 }
 
+// RelationshipFacts is the bounded canonical topology built from the same
+// artifact snapshot. It is candidate coverage only; evidence authority remains
+// in FinalEvidence and ProcessEvidence.
+type RelationshipFacts struct {
+	Required bool                `json:"required,omitempty"`
+	Observed bool                `json:"observed"`
+	Index    relationships.Index `json:"index"`
+	Error    string              `json:"error,omitempty"`
+}
+
 // Snapshot is the complete provider-neutral input to Evaluate. Callers may
 // supply canonical and traceability results from an existing collection pass;
 // when Observed is false the evaluator computes them from Artifacts.
@@ -226,6 +237,7 @@ type Snapshot struct {
 
 	Canonical       CanonicalFacts         `json:"canonical"`
 	Traceability    TraceabilityFacts      `json:"traceability"`
+	Relationships   RelationshipFacts      `json:"relationships"`
 	Workflow        WorkflowFacts          `json:"workflow"`
 	Remote          RemoteFacts            `json:"remote"`
 	ProcessEvidence []ProcessEvidenceInput `json:"process_evidence,omitempty"`

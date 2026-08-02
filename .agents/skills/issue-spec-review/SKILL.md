@@ -11,7 +11,7 @@ metadata:
 
 # Issue Spec Review
 
-Coordinator: follow issue-spec-workflow to prepare the immutable review snapshot, dispatch a real independent reviewer, route repairs to the invariant owner, and link accepted evidence. On GitHub add --pr <number>; on a self-hosted profile omit --pr and add --revision <exact-head>. Sync authoritatively captures current rationale and emits one stable done REVIEW completion even with zero findings. Run these commands after the final review sync: issue-spec link --repo higress-group/issue-spec --from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n> --to-issue <implement-issue>, then issue-spec link --repo higress-group/issue-spec --from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n> --to-issue <proposal-issue>. Do not copy Coordinator lifecycle or provider policy into the review packet.
+Coordinator: follow issue-spec-workflow to prepare the immutable review snapshot, dispatch a real independent reviewer, and route repairs to the invariant owner. On GitHub add --pr <number>; on a self-hosted profile omit --pr and add --revision <exact-head>. Sync authoritatively captures current rationale and emits one stable done REVIEW completion even with zero findings; submit and sync include the review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC on the single REVIEW owner comment. Do not run peer mutation commands after publication. Compatibility warning: never "Run these commands after the final review sync": issue-spec link --repo higress-group/issue-spec --from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n> or issue-spec link --repo higress-group/issue-spec --from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n>. Do not copy Coordinator lifecycle or provider policy into the review packet.
 
 ## Review Role Packet
 
@@ -20,6 +20,10 @@ Coordinator: follow issue-spec-workflow to prepare the immutable review snapshot
 3. Review the invariant end to end at the exact detached revision. Own every finding and post-fix recheck; the author cannot review its own work. Do not expand into unrelated history, DAGs, links, policy, or provider routing.
 4. Outside the snapshot, write only `{"verdict":"approve","findings":[]}` (or `changes-requested` with complete existing-model findings), then run `issue-spec role complete --assignment-file <sealed-packet.json> --decision-file <decision.json> --output <receipt.json> --agent <reviewer-name> --json` from the snapshot.
 5. The command proves immutable Git identity, runs every sealed test, and atomically self-validates v1 evidence. Missing, failed, stale, or substituted evidence blocks output. Return only the bounded completion result and findings; Coordinator review submission/sync, links, and acceptance remain separate.
+
+## Review Publication Paths
+
+Role-owned review submit and provider-derived review sync are alternative publication paths for a REVIEW ID: choose exactly one and never run them sequentially against the same ID. Submit publishes immutable accepted receipt authority; sync must refuse a REVIEW ID that already carries that authority. Either path publishes the complete bounded REVIEW owner coverage, and no peer mutation follows publication.
 
 ## Project Workflow
 
