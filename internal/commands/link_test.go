@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/relationships"
 )
 
 type linkStrictBackend struct {
@@ -123,16 +125,69 @@ func TestExecuteOwnerLinkNormalizesPairWritesOnlyOwnerAndRecoversLostResponse(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Owner.ID != "TASK-001" || result.Action != "updated" || result.ReverseWrites != 0 || !result.Atomic ||
+	if result.Version != relationships.MutationVersion || result.Kind != relationships.TaskCoversSpec ||
+		result.Owner.ID != "TASK-001" || len(result.Add) != 1 || result.Add[0].ID != "SPEC-001" ||
+		result.Action != "updated" || result.ReverseWrites != 0 || !result.Atomic ||
 		result.Guarantee != github.CommentMutationStrictConditional || backend.writes[31] != 1 || backend.writes[11] != 0 {
 		t.Fatalf("result=%+v writes=%+v", result, backend.writes)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"version":1`) ||
+		!strings.Contains(string(raw), `"kind":"task-covers-spec"`) {
+		t.Fatalf("pair JSON omitted versioned registry kind: %s", raw)
+	}
+	var human strings.Builder
+	writeLinkResult(&human, result)
+	if !strings.Contains(human.String(), "task-covers-spec TASK-001 -> SPEC-001") {
+		t.Fatalf("pair human output lost canonical orientation: %q", human.String())
 	}
 	if backend.comments[1][0].Body != peerBefore {
 		t.Fatal("peer representation was changed")
 	}
 	second, err := executeOwnerLink(context.Background(), backend, "o/r", request, true, false, "")
-	if err != nil || second.Action != "unchanged" || backend.writes[31] != 1 {
+	if err != nil || second.Action != "unchanged" || second.Kind != relationships.TaskCoversSpec || backend.writes[31] != 1 {
 		t.Fatalf("idempotent result=%+v writes=%+v err=%v", second, backend.writes, err)
+	}
+}
+
+func TestExecuteOwnerLinkUnsupportedPairFailsBeforeMutation(t *testing.T) {
+	backend := newLinkBackend()
+	backend.comments[3][0].Body = strings.Replace(backend.comments[3][0].Body, "- SPEC-001", "- SPEC-002", 1)
+	request := linkTargets{Version: 1, Owner: linkTarget{Issue: 1, ID: "SPEC-001"},
+		Add: []linkTarget{{Issue: 3, ID: "TASK-001"}}}
+	if _, err := executeOwnerLink(context.Background(), backend, "o/r", request, true, false, ""); !errors.Is(err, relationships.ErrUnsupported) {
+		t.Fatalf("unsupported pair error=%v", err)
+	}
+	if backend.writes[31] != 0 || backend.writes[11] != 0 {
+		t.Fatalf("unsupported pair writes=%+v", backend.writes)
+	}
+}
+
+func TestExecuteOwnerLinkAmbiguousPairFailsBeforeMutation(t *testing.T) {
+	firstURL := "https://example.test/issues/3#issuecomment-31"
+	secondURL := "https://example.test/issues/3#issuecomment-32"
+	firstBody := linkBody("PROCESS", "PROCESS-001", "## Process\n\n### Dependencies\n\n- PROCESS-002")
+	var err error
+	firstBody, _, err = model.StampSupersededBy(firstBody, "PROCESS-001",
+		model.SupersededBy{ProcessID: "PROCESS-002", URL: secondURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &linkStrictBackend{comments: map[int][]github.Comment{3: {
+		{ID: 31, HTMLURL: firstURL, URL: "https://api.example.test/issues/3/comments/31", Body: firstBody},
+		{ID: 32, HTMLURL: secondURL, URL: "https://api.example.test/issues/3/comments/32",
+			Body: linkBody("PROCESS", "PROCESS-002", "## Process\n\n### Dependencies\n\n- N/A")},
+	}}, versions: map[int64]int64{31: 1, 32: 1}, writes: map[int64]int{}}
+	request := linkTargets{Version: 1, Owner: linkTarget{Issue: 3, ID: "PROCESS-001"},
+		Add: []linkTarget{{Issue: 3, ID: "PROCESS-002"}}}
+	if _, err := executeOwnerLink(context.Background(), backend, "o/r", request, true, false, ""); !errors.Is(err, relationships.ErrAmbiguous) {
+		t.Fatalf("ambiguous pair error=%v", err)
+	}
+	if backend.writes[31] != 0 || backend.writes[32] != 0 {
+		t.Fatalf("ambiguous pair writes=%+v", backend.writes)
 	}
 }
 

@@ -30,8 +30,10 @@ type linkTargets struct {
 }
 
 type linkResult struct {
+	Version              int                             `json:"version"`
 	OK                   bool                            `json:"ok"`
 	Action               string                          `json:"action"`
+	Kind                 relationships.Kind              `json:"kind,omitempty"`
 	Owner                model.ArtifactRef               `json:"owner"`
 	Add                  []model.ArtifactRef             `json:"add,omitempty"`
 	Remove               []model.ArtifactRef             `json:"remove,omitempty"`
@@ -114,13 +116,26 @@ func (a *app) runLink(ctx context.Context, args []string) int {
 	if *jsonOut {
 		return a.outputJSON(result)
 	}
-	verb := result.Action
-	if verb == "unchanged" {
-		fmt.Fprintf(a.out, "relationship owner %s unchanged (reverse writes: 0)\n", result.Owner.ID)
-	} else {
-		fmt.Fprintf(a.out, "updated relationship owner %s (reverse writes: 0, guarantee: %s)\n", result.Owner.ID, result.Guarantee)
-	}
+	writeLinkResult(a.out, result)
 	return 0
+}
+
+func writeLinkResult(out io.Writer, result linkResult) {
+	if result.LegacyPairNormalized && result.Kind != "" && len(result.Add) == 1 && len(result.Remove) == 0 {
+		orientation := fmt.Sprintf("%s -> %s", result.Owner.ID, result.Add[0].ID)
+		if result.Action == "unchanged" {
+			fmt.Fprintf(out, "relationship %s %s unchanged (reverse writes: 0)\n", result.Kind, orientation)
+		} else {
+			fmt.Fprintf(out, "updated relationship %s %s (reverse writes: 0, guarantee: %s)\n",
+				result.Kind, orientation, result.Guarantee)
+		}
+		return
+	}
+	if result.Action == "unchanged" {
+		fmt.Fprintf(out, "relationship owner %s unchanged (reverse writes: 0)\n", result.Owner.ID)
+	} else {
+		fmt.Fprintf(out, "updated relationship owner %s (reverse writes: 0, guarantee: %s)\n", result.Owner.ID, result.Guarantee)
+	}
 }
 
 func readLinkTargets(path string, stdin io.Reader) (linkTargets, error) {
@@ -221,11 +236,13 @@ func executeOwnerLink(ctx context.Context, backend github.IssueBackend, repo str
 			return linkResult{}, err
 		}
 	}
+	var kind relationships.Kind
 	if legacyPair {
-		_, normalizedOwner, normalizedTarget, err := relationships.Resolve(artifacts, ownerRef, addRefs[0])
+		rule, normalizedOwner, normalizedTarget, err := relationships.Resolve(artifacts, ownerRef, addRefs[0])
 		if err != nil {
 			return linkResult{}, err
 		}
+		kind = rule.Kind
 		ownerRef, addRefs[0] = normalizedOwner, normalizedTarget
 	}
 
@@ -270,7 +287,8 @@ func executeOwnerLink(ctx context.Context, backend github.IssueBackend, repo str
 	if err != nil {
 		return linkResult{}, err
 	}
-	result := linkResult{OK: true, Action: "unchanged", Owner: ownerRef, Add: frozen.Mutation.Add,
+	result := linkResult{Version: relationships.MutationVersion, OK: true, Action: "unchanged", Kind: kind,
+		Owner: ownerRef, Add: frozen.Mutation.Add,
 		Remove: frozen.Mutation.Remove, LegacyPairNormalized: legacyPair, ReverseWrites: 0, Atomic: strict,
 		BeforeDigest: frozen.BeforeDigest, AfterDigest: frozen.AfterDigest, RepresentationBefore: beforeVersion}
 	if strict {
