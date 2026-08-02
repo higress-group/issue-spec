@@ -34,6 +34,13 @@ are planning-only and fail init before mutation. Legacy `evidence.snapshot`,
 `change.create`, and `change.comment` remain audit/navigation compatibility
 surfaces and do not make a provider merge-capable.
 
+The operator validator also requires both runtime actions to recognize the
+reserved `issue-spec.code-provider-conformance/v1` marker. A bridge intercepts
+that marker before provider-coordinate lookup, makes no upstream request, and
+echoes an action- and nonce-bound `mutation_performed=false` acknowledgement.
+This closes declaration-only activation; it is wire/action conformance, not
+evidence that the platform's production merge primitive is atomic.
+
 ## Jira-like work tracker
 
 Keep issue-spec Server authoritative for the issue workflow. Use either a

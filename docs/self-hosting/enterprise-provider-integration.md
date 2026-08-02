@@ -112,6 +112,13 @@ and contract-test both actions first. Then activate all three capabilities and
 the same generation/build in both `provider_bridge.py` and `providers.json` as
 one immutable release; never activate a partial set.
 
+The generated action parsers recognize the reserved validator probe shape, but
+they still return `not_implemented`. After the real platform mappings and their
+unhappy paths are tested, implement the local probe acknowledgement in both
+actions. It must make no upstream request and must never be a provider dry-run.
+Changing only capability, generation, build, or mapping declarations therefore
+continues to fail validation on both handlers.
+
 ### Map provider objects to neutral facts
 
 | Neutral coordinate | Typical platform value |
@@ -215,7 +222,7 @@ Restart the server and confirm `/api/v1/meta` advertises only the public-safe
 provider description. It must not expose the executable, environment, token
 file, or credential.
 
-### Validate the capabilities handshake
+### Validate the handshake and runtime action dispatch
 
 ```bash
 python3 .agents/skills/configure-enterprise-provider/scripts/validate_provider.py \
@@ -226,11 +233,21 @@ python3 .agents/skills/configure-enterprise-provider/scripts/validate_provider.p
 The validator checks private file mode, strict registry shape, executable
 location, bounded capabilities response, protocol identity, the complete
 three-capability set, semantic generation, immutable build agreement, and the
-operator mapping identity. Empty generated scaffolds validate as inert and are
-not merge-capable. Legacy-only or partial declarations fail with focused
-diagnostics. Exercise `merge_snapshot` and the platform's protected merge in a
-non-production repository before activation; capability validation alone is
-not proof of atomic platform behavior.
+operator mapping identity. For complete declarations it then dispatches bounded
+`merge_snapshot` and `merge_change` runtime probes. Their request marker uses
+schema `issue-spec.code-provider-conformance/v1`, reserved coordinates, an
+action-bound nonce, and `mutation=forbidden`. The bridge must intercept each
+probe locally and return the exact action/nonce with
+`mutation_performed=false`; it must not contact the platform. Errors,
+malformed/extra output, identity mismatch, a mutation claim, or any normal
+snapshot/merge result fail validation. Empty generated scaffolds validate as
+inert and are not merge-capable. Legacy-only or partial declarations fail with
+focused diagnostics.
+
+This result is runtime wire/action conformance, not proof of platform-native
+atomicity. Before activation, separately exercise a real `merge_snapshot` and
+the provider's protected merge against a non-production repository, including
+same-head policy/review/check drift and expected-head races.
 
 ## 5. Bind an issue-spec repository to its source
 
@@ -377,6 +394,8 @@ Validate in a non-production repository:
 - Source Binding authority and canonical URLs are accepted;
 - capability generation/build and the operator principal mapping agree in CLI
   and Server;
+- both reserved local conformance probes echo exact identity and report zero
+  mutation without an upstream request;
 - each advertised action succeeds and every unadvertised action fails closed;
 - `merge_snapshot` rejects another provider, repository, change, revision, or
   check key/owner and returns only one provider-selected current conclusion;

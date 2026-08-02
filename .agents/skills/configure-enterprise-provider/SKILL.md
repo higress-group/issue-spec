@@ -56,11 +56,14 @@ code-host evidence, identity, and Git credentials as separate boundaries.
    runtime and registry advertise no capabilities. Read
    [wrapper-mapping.md](references/wrapper-mapping.md), replace each required
    `not_implemented` branch with platform API calls, and add contract tests.
-   Only after both `merge_snapshot` and native atomic `merge_change` pass may
-   all three required capabilities, `minimal-merge-authority/v1`, and the same
-   immutable build identity be activated in both `provider_bridge.py` and
-   `providers.json`. Preserve exact provider, repository, change, revision,
-   check, actor, and authority-token identity.
+   Implement the reserved conformance marker locally in both actions so it
+   returns the exact non-mutating acknowledgement without an upstream request.
+   Only after both production mappings, their unhappy paths, and the runtime
+   probes pass may all three required capabilities,
+   `minimal-merge-authority/v1`, and the same immutable build identity be
+   activated in both `provider_bridge.py` and `providers.json`. Preserve exact
+   provider, repository, change, revision, check, actor, and authority-token
+   identity.
 6. Store the generated `providers.json` as a private operator file. Point both
    the server and relevant CLI process at it with
    `ISSUE_SPEC_CODE_PROVIDERS_FILE`, or use the self-hosted profile's trusted
@@ -77,6 +80,13 @@ code-host evidence, identity, and Git credentials as separate boundaries.
      --registry "$HOME/.config/issue-spec/providers/code.example/providers.json" \
      --provider-key code.example
    ```
+
+   For a complete provider, validation dispatches bounded `merge_snapshot` and
+   `merge_change` probes with reserved coordinates and `mutation=forbidden`.
+   The bridge must intercept them locally and echo the exact action/nonce with
+   `mutation_performed=false`. Errors, normal action success, malformed output,
+   or identity drift fail validation. This proves only runtime wire/action
+   conformance; it does not prove the provider's native merge is atomic.
 
 9. Exercise each advertised capability against a non-production repository at
    an exact revision. Verify timeouts, output bounds, secret redaction,
@@ -98,6 +108,9 @@ code-host evidence, identity, and Git credentials as separate boundaries.
 - Bridge emits exactly one strict response and echoes protocol/request identity.
 - Runtime capabilities, semantic generation, and immutable provider build match
   the operator description exactly.
+- Both merge actions pass the reserved local conformance probe within the
+  validator bound. The probe performs no upstream request or mutation, and a
+  normal snapshot or merge result is rejected rather than treated as proof.
 - A merge-capable bridge advertises all of `evidence.review-decision`,
   `evidence.authoritative-check-conclusion`, and
   `change.merge-conditional`; partial or legacy-only declarations fail closed.

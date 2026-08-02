@@ -486,9 +486,11 @@ workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-s
 5. 当 code-provider bridge 广告 `change.create` 时，确认 Agent 通过该 provider 创建 PR/MR，
    并把变更 URL 回写到 Issue。未提供该能力时，把推送证据作为终点，在沙箱外创建变更；不要
    为此向 bubblewrap 挂载任意宿主 CLI；
-6. 运行当前 Provider Validator 与只读 Preflight，再对准确 Head 执行一次非生产
-   `merge_snapshot`；确认 Provider 返回 Policy-complete 的原生 Review/Check Authority 和
-   Token，同时 Runner Dispatch 不会同步 Legacy Evidence，也不会执行 Pre-gate；
+6. 运行当前 Provider Validator，确认两个保留的本地 Action Probe 均报告零 Mutation；
+   随后运行只读 Preflight，并对准确 Head 执行一次真实的非生产 `merge_snapshot`。确认
+   Provider 返回 Policy-complete 的原生 Review/Check Authority 和 Token，同时 Runner
+   Dispatch 不会同步 Legacy Evidence，也不会执行 Pre-gate。这个本地 Probe 只能证明
+   Wire/Action Conformance，不能证明平台 Merge 的原子性；
 7. 让另一位被授权维护者执行 `/resume`，然后撤销测试凭据并删除测试 Workspace。
 
 | 现象 | 优先检查 |

@@ -43,6 +43,8 @@ PROTOCOL = "issue-spec.code-provider/v1"
 PROVIDER_KEY = __PROVIDER_KEY__
 SEMANTIC_GENERATION = "minimal-merge-authority/v1"
 PROVIDER_BUILD_IDENTITY = __PROVIDER_BUILD_IDENTITY__
+CONFORMANCE_PROTOCOL = "issue-spec.code-provider-conformance/v1"
+CONFORMANCE_SENTINEL = "__issue_spec_conformance_probe__"
 MERGE_AUTHORITY_CAPABILITIES = {
     "evidence.review-decision",
     "evidence.authoritative-check-conclusion",
@@ -93,8 +95,46 @@ def validate_reference(reference):
     require_text(reference["change_id"], "change identity is invalid")
 
 
+def validate_conformance_probe(payload, action):
+    probe = payload.get("conformance_probe")
+    if probe is None:
+        return None
+    require_keys(probe, {"schema_version", "action", "nonce", "mutation"})
+    require_text(probe["nonce"], "conformance nonce is invalid")
+    if (
+        probe["schema_version"] != CONFORMANCE_PROTOCOL
+        or probe["action"] != action
+        or probe["mutation"] != "forbidden"
+    ):
+        raise BridgeError("invalid_request", "conformance probe identity is invalid")
+    sentinel = f"{CONFORMANCE_SENTINEL}:{probe['nonce']}"
+    reference = payload["reference"]
+    if reference["external_repository"] != sentinel or reference["change_id"] != sentinel:
+        raise BridgeError("invalid_request", "conformance reference is not reserved")
+    if action == "merge_snapshot":
+        if payload["expected_subject_revision"] != sentinel or len(payload["required_checks"]) != 1:
+            raise BridgeError("invalid_request", "snapshot conformance coordinates are not reserved")
+        check = payload["required_checks"][0]
+        if check["key"] != sentinel or check["owner"] != sentinel:
+            raise BridgeError("invalid_request", "snapshot conformance check is not reserved")
+    elif payload["expected_head"] != sentinel or payload["authority_token"] != sentinel:
+        raise BridgeError("invalid_request", "merge conformance coordinates are not reserved")
+    return probe["nonce"]
+
+
+def conformance_probe_ack(action, nonce):
+    return {
+        "conformance_probe": {
+            "schema_version": CONFORMANCE_PROTOCOL,
+            "action": action,
+            "nonce": nonce,
+            "mutation_performed": False,
+        }
+    }
+
+
 def merge_snapshot(payload):
-    require_keys(payload, {"reference", "expected_subject_revision", "required_checks"})
+    require_keys(payload, {"reference", "expected_subject_revision", "required_checks"}, {"conformance_probe"})
     validate_reference(payload["reference"])
     require_text(payload["expected_subject_revision"], "expected subject revision is invalid")
     checks = payload["required_checks"]
@@ -111,6 +151,7 @@ def merge_snapshot(payload):
         if identity in seen:
             raise BridgeError("invalid_request", "required check is duplicated")
         seen.add(identity)
+    probe_nonce = validate_conformance_probe(payload, "merge_snapshot")
 
     # TODO: Fetch one coherent provider-native authority generation for exactly
     # expected_subject_revision. Return the closed author set, effective review
@@ -118,19 +159,27 @@ def merge_snapshot(payload):
     # provider-selected conclusion per requested check, and an opaque token.
     # Report source actor IDs only. issue-spec replaces canonical principals
     # from the operator-owned registry mapping.
+    # After the platform implementation and its unhappy paths are tested,
+    # intercept probe_nonce locally and return conformance_probe_ack without
+    # making an upstream request. The validator never accepts a normal snapshot
+    # as a probe acknowledgement.
     raise BridgeError("not_implemented", "merge snapshot mapping is not implemented")
 
 
 def merge_change(payload):
-    require_keys(payload, {"reference", "expected_head", "authority_token"})
+    require_keys(payload, {"reference", "expected_head", "authority_token"}, {"conformance_probe"})
     validate_reference(payload["reference"])
     require_text(payload["expected_head"], "expected head is invalid")
     require_text(payload["authority_token"], "authority token is invalid")
+    probe_nonce = validate_conformance_probe(payload, "merge_change")
 
     # TODO: Use a native protected-merge primitive that atomically validates
     # expected_head and every review/check/policy fact bound by authority_token.
     # A bridge-side lock, read/read comparison, or expected-head-only merge is
     # not sufficient and must never advertise change.merge-conditional.
+    # After that native implementation and its unhappy paths are tested,
+    # intercept probe_nonce locally and return conformance_probe_ack. Never
+    # forward the reserved reference or probe token to the provider.
     raise BridgeError("not_implemented", "conditional merge mapping is not implemented")
 
 
@@ -491,11 +540,12 @@ def main() -> None:
         "activation": [
             "implement and contract-test merge_snapshot for one coherent exact-head native authority generation",
             "implement merge_change with native atomic expected-head and authority-token enforcement",
+            "implement the reserved conformance probe acknowledgement locally in both actions with no upstream request or mutation",
             "prove every provider actor returned by merge_snapshot is covered by the operator principal mapping",
             "move implemented values into provider_bridge.py CAPABILITIES",
             "copy semantic generation and immutable provider build identity into providers.json description",
             "copy the same values into providers.json description.capabilities",
-            "run validate_provider.py and non-production action tests",
+            "run validate_provider.py, confirm both runtime action probes pass, and run provider-native non-production action tests",
         ],
     }
     plan_path = output / "implementation-plan.json"

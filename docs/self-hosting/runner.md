@@ -498,11 +498,13 @@ team workflow:
    URL back to the issue. Without that capability, treat push evidence as the
    endpoint and create the change outside the sandbox; do not mount arbitrary
    host CLIs into bubblewrap;
-6. run the current provider validator and read-only preflight, then exercise a
+6. run the current provider validator and confirm both reserved local action
+   probes report zero mutation, then run read-only preflight and exercise a real
    non-production `merge_snapshot` at the exact head; confirm the provider
    returns policy-complete native review/check authority and a token, and that
    Runner dispatch neither synchronizes legacy evidence nor executes a
-   pre-gate;
+   pre-gate. Treat the local probes as wire/action conformance, not proof of
+   platform merge atomicity;
 7. verify `/resume` by a different authorized maintainer, then revoke the test
    credential and remove the test workspace.
 

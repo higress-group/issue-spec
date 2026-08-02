@@ -240,6 +240,54 @@ every fact covered by the token: effective policy, decisions, findings,
 conversations, and required conclusions. Expected-head-only or read-then-merge
 implementations must not advertise `change.merge-conditional`.
 
+### Validator conformance probe
+
+A complete operator registration is not accepted from declarations alone. The
+public validator dispatches both `merge_snapshot` and `merge_change` with an
+optional marker reserved for runtime wire/action conformance:
+
+```json
+{
+  "conformance_probe": {
+    "schema_version": "issue-spec.code-provider-conformance/v1",
+    "action": "merge_change",
+    "nonce": "validator-generated-nonce",
+    "mutation": "forbidden"
+  }
+}
+```
+
+The request's `external_repository`, `change_id`, revision, check key/owner,
+and authority token are all the exact sentinel
+`__issue_spec_conformance_probe__:<nonce>`. Those values are protocol-reserved,
+not provider coordinates. A bridge MUST recognize the marker before coordinate
+resolution, platform lookup, or any upstream request. It MUST NOT forward the
+sentinel or translate the probe into a provider dry-run.
+
+After the production action and its unhappy paths have been implemented and
+tested, the local probe branch returns the normal action envelope
+(`merge_snapshot` or `merge`) containing only:
+
+```json
+{
+  "conformance_probe": {
+    "schema_version": "issue-spec.code-provider-conformance/v1",
+    "action": "merge_change",
+    "nonce": "validator-generated-nonce",
+    "mutation_performed": false
+  }
+}
+```
+
+Each action receives a separate nonce and at most five seconds. The validator
+requires exact protocol, request, action, and nonce identity. It rejects every
+error (including `unsupported_action` and `not_implemented`), malformed or
+extra output, `mutation_performed=true`, and a normal snapshot or merge result.
+The acknowledgement proves bounded runtime dispatch and local non-mutation; it
+does not prove that the platform-native production merge is atomic. Activation
+still requires operator-reviewed native API implementation and non-production
+platform tests.
+
 ### Unsupported-provider boundary
 
 There is no issue-native fallback, external check attestation, or external

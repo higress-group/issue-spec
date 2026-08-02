@@ -61,6 +61,29 @@ finding, conversation, or required-check drift. A local mutex, double read,
 saved snapshot, expected-head-only API, or read-then-unprotected merge cannot
 implement `change.merge-conditional`.
 
+## Runtime conformance probe
+
+The public validator sends both actions an optional `conformance_probe` marker
+with schema `issue-spec.code-provider-conformance/v1`, the exact action, a
+per-request nonce, and `mutation: forbidden`. Every accompanying repository,
+change, revision, check, and token coordinate is the reserved sentinel
+`__issue_spec_conformance_probe__:<nonce>`.
+
+Intercept this marker locally before treating the sentinel as a provider
+coordinate or making any upstream request. After the production action and its
+unhappy paths have been implemented and tested, return the normal action
+envelope containing only an exact `conformance_probe` acknowledgement with the
+same schema, action, and
+nonce plus `mutation_performed: false`. Never forward the sentinel, turn the
+probe into a platform dry-run, or return a real snapshot/merge result. The
+generated scaffold remains `not_implemented`, so declarations alone fail both
+probes.
+
+The acknowledgement proves bounded runtime dispatch, strict request/response
+identity, and local non-mutation only. Operator-reviewed platform tests must
+still prove that production `merge_change` atomically enforces the complete
+native authority token and expected head.
+
 ## Errors
 
 Return stable lowercase codes such as `unauthorized`, `forbidden`,
@@ -81,5 +104,8 @@ headers, tokens, cookies, or filesystem paths.
   configuration drift, and provider-selected retry;
 - merge: expected-head race, same-head policy/review/check drift, stale token,
   unknown native result, and exact response identity;
+- conformance: both reserved action acknowledgements, declarations-only
+  `not_implemented`, unsupported action, malformed output, action/nonce/request
+  mismatch, mutation claim, and normal action success rejection;
 - operations: timeout, cancellation, output overflow, upstream 401/403/404/429/5xx;
 - security: no inherited ambient token, no shell invocation, no secret on stderr.

@@ -100,6 +100,11 @@ python3 .agents/skills/configure-enterprise-provider/scripts/scaffold_provider.p
 Action，再把三项 Capability 及同一 Generation/Build 作为一个不可变发布集，同时启用到
 `provider_bridge.py` 与 `providers.json`；禁止启用部分集合。
 
+生成的 Action Parser 能识别 Validator 的保留 Probe 结构，但仍会返回
+`not_implemented`。只有真实平台映射及其失败路径已经测试后，才在两个 Action 中实现本地
+Probe Acknowledgement；它不得发起上游请求，也不能转换成平台 Dry-run。因此，只修改
+Capability、Generation、Build 或 Mapping 声明时，两个 Handler 仍会使校验失败。
+
 ### 把平台对象映射为中性证据
 
 | 中性坐标 | 常见平台字段 |
@@ -190,7 +195,7 @@ Registry。
 重启 Server 后，确认 `/api/v1/meta` 只公开安全的 Provider 描述，不得出现 Bridge
 路径、环境变量、Token File 或凭据。
 
-### 验证 Capability 握手
+### 验证 Capability 握手与 Runtime Action Dispatch
 
 ```bash
 python3 .agents/skills/configure-enterprise-provider/scripts/validate_provider.py \
@@ -199,10 +204,17 @@ python3 .agents/skills/configure-enterprise-provider/scripts/validate_provider.p
 ```
 
 校验器会检查私有文件权限、严格 Registry 结构、可执行文件位置、响应大小、协议身份、
-完整三项 Capability、语义代际、不可变 Build 一致性及运维 Mapping Identity。空的初始
-脚手架会被识别为 Inert，不能 Merge；Legacy-only 或部分声明会给出聚焦错误。启用前还必须
-在非生产仓库实测 `merge_snapshot` 和平台 Protected Merge；Capability 握手本身不能证明
-平台具备原子语义。
+完整三项 Capability、语义代际、不可变 Build 一致性及运维 Mapping Identity。对于完整
+声明，它还会有界调用 `merge_snapshot` 和 `merge_change` Runtime Probe。请求 Marker 使用
+`issue-spec.code-provider-conformance/v1`、保留坐标、绑定 Action 的 Nonce 以及
+`mutation=forbidden`。Bridge 必须在本地拦截 Probe，不得访问平台，并回显准确的
+Action/Nonce 和 `mutation_performed=false`。Error、格式错误/额外输出、Identity 不匹配、
+Mutation 声明或正常 Snapshot/Merge 结果都会导致校验失败。空的初始脚手架会被识别为
+Inert，不能 Merge；Legacy-only 或部分声明会给出聚焦错误。
+
+这个结果只证明 Runtime Wire/Action Conformance，不证明平台原生 Merge 的原子性。启用前
+还必须在非生产仓库分别实测真实 `merge_snapshot` 和平台 Protected Merge，包括同 Head 的
+Policy/Review/Check 漂移以及 Expected-head Race。
 
 ## 5. 为 issue-spec 仓库绑定源码
 
@@ -328,6 +340,8 @@ Runner Clone/Push 优先使用实现
 - Server 与 CLI 加载相同的 Provider 描述；
 - Source Binding Authority 与规范 URL 可以通过校验；
 - CLI 与 Server 使用同一 Capability Generation/Build 和运维 Principal Mapping；
+- 两个保留的本地 Conformance Probe 都回显准确 Identity、报告零 Mutation，且不发起上游
+  请求；
 - 所有声明的 Action 成功，所有未声明的 Action Fail Closed；
 - `merge_snapshot` 拒绝错误的 Provider、Repo、Change、Revision 或 Check Key/Owner，且只
   返回一个由 Provider 选择的当前结论；
