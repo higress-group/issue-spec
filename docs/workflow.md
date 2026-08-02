@@ -26,8 +26,6 @@ external_code:
         key: app:42/context:unit
         owner: app:42
         display_name: unit
-    review_fallback:
-      enabled: false
 ```
 
 A bare display name is not an identity. The old `external_code.evidence` keys are rejected; they are not mapped into the new model.
@@ -46,15 +44,10 @@ issue-spec workflow preflight \
   --generated-digest sha256:... \
   --provider-generation minimal-merge-authority/v1 \
   --provider-build code-example@sha256:... \
-  --canonical-principals operator-map@sha256:... \
-  --review-mode provider_native \
-  --reconciliation-mode post-merge-idempotent \
-  --enforcement-mode provider-authority-token \
-  --external-authority-mode disabled \
   --json
 ```
 
-Preflight is read-only. It validates `issue-spec.code-provider/v1`, semantic generation `minimal-merge-authority/v1`, the immutable bridge build, `evidence.review-decision`, `evidence.authoritative-check-conclusion`, `change.merge-conditional`, generated-asset release/digest, configured key/owner pairs, canonical-principal mapping identity, review mode, reconciliation mode, and complete authority-token enforcement. Missing, unknown, or mixed identities fail before authority is consumed or anything mutates.
+Preflight is read-only. It validates `issue-spec.code-provider/v1`, semantic generation `minimal-merge-authority/v1`, the immutable bridge build, `evidence.review-decision`, `evidence.authoritative-check-conclusion`, `change.merge-conditional`, generated-asset release/digest, configured key/owner pairs, the operator-owned canonical-principal mapping source, fixed `post-merge-idempotent` reconciliation, and fixed `provider-authority-token` enforcement. These modes are reported invariants, not caller-selected flags. Missing, unknown, or mixed identities fail before authority is consumed or anything mutates.
 
 ## Review and checks stay provider-owned
 
@@ -62,7 +55,7 @@ The provider returns one policy-complete exact-subject review snapshot. Reviewer
 
 For every configured check, the provider chooses exactly one current conclusion for the opaque key, owner, exact subject, and provider configuration generation. Historical attempts and same-name checks from another owner are audit data only. Only `success` passes.
 
-Issue-native review fallback is disabled by default. It is eligible only when the provider explicitly requires it, repository policy enables it, identities map through an operator-owned canonical source, and conditional merge atomically validates the external-authority generation.
+There is no issue-native review fallback or external authority generation. A provider that cannot return the complete review/check snapshot and atomically validate its authority token is not merge-capable and fails closed.
 
 ## Read-only readiness
 

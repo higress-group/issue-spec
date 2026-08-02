@@ -131,7 +131,11 @@ func commandTestProvider(t *testing.T, mode string, limit int64, timeout time.Du
 	provider, err := NewCommandProvider(CommandConfig{Path: os.Args[0],
 		Args:        []string{"-test.run=^TestCommandProviderHelper$"},
 		Environment: []string{"ISSUE_SPEC_PROVIDER_HELPER=1", "ISSUE_SPEC_PROVIDER_MODE=" + mode},
-		MaxOutput:   limit, Timeout: timeout})
+		MaxOutput:   limit, Timeout: timeout, PrincipalMappingIdentity: "operators:test:v1",
+		PrincipalMappings: []PrincipalMapping{
+			{Provider: "code.example", StableID: "user:7", Principal: PrincipalIdentity{Realm: "people.example", StableID: "person:7"}},
+			{Provider: "code.example", StableID: "user:9", Principal: PrincipalIdentity{Realm: "people.example", StableID: "person:9"}},
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}

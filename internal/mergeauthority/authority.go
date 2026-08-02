@@ -123,7 +123,6 @@ func (e *Engine) Merge(ctx context.Context, request Request) (MergeResult, error
 	}
 	merged, err := codereview.MergeChange(ctx, e.provider, codereview.ConditionalMergeRequest{
 		Reference: request.Reference, ExpectedHead: request.ExpectedHead, AuthorityToken: collection.snapshot.AuthorityToken,
-		ExternalAuthorityGeneration: collection.snapshot.ExternalAuthorityGeneration,
 	})
 	if err != nil {
 		// A transport failure may hide a committed merge. Re-observe before

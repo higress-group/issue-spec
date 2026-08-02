@@ -85,7 +85,6 @@ const (
 	BlockerCheckMissing           BlockerCode = "check_missing"
 	BlockerCheckNotSuccessful     BlockerCode = "check_not_successful"
 	BlockerReviewAuthorityInvalid BlockerCode = "review_authority_invalid"
-	BlockerReviewFallbackRequired BlockerCode = "review_fallback_required"
 	BlockerReviewApprovalCount    BlockerCode = "review_approval_count"
 	BlockerReviewChangesRequested BlockerCode = "review_changes_requested"
 	BlockerReviewIndependence     BlockerCode = "review_independence"

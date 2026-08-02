@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define operator-controlled provider contracts, external references, immutable revision-bound evidence, fail-closed synchronization, and authoritative current-revision assertions at terminal workflow gates.
+Define operator-controlled provider contracts, navigation references, ephemeral exact-head merge authority, and fail-closed current-revision assertions at the provider merge boundary.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/160
@@ -22,14 +22,14 @@ Core MUST keep vendor behavior behind issue-spec.code-provider/v1, MUST strictly
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
 
-### Requirement: External links and trusted evidence have separate lifecycle and provenance
+### Requirement: navigation links and merge authority remain separate
 
-The Server MUST keep navigation references separate from immutable exact-subject external-check and fallback-review attestations, MUST preserve authenticated executor or reviewer provenance, trusted canonical-principal mapping, tenant visibility, idempotency, concurrent-fork detection, external-authority generation, and audit, and MUST NOT treat URL, ingest writer identity, legacy PROCESS/SPEC fields, or mutable workflow carriers as proof.
+The Server and CLI MUST keep navigation references and historical evidence separate from the provider's ephemeral exact-head review/check snapshot, MUST obtain every canonical principal from an operator-owned mapping source, and MUST NOT treat URL, ingest writer identity, legacy PROCESS/SPEC fields, mutable workflow carriers, or caller assertions as proof. No fallback attestation or external-authority generation is produced.
 
-#### Scenario: trusted fallback preserves the deciding identity
+#### Scenario: historical evidence remains audit-only
 
-- **WHEN** an authorized external executor or fallback reviewer publishes an exact-subject attestation
-- **THEN** the Server records the authenticated deciding identity and assurance while navigation metadata and legacy linkage remain non-authoritative
+- **WHEN** legacy evidence or navigation metadata remains stored after cutover
+- **THEN** explicit audit reads preserve it while merge-check and conditional merge consume only freshly mapped provider-native authority
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764761
@@ -50,25 +50,25 @@ The workflow MUST compute merge readiness with zero writes from only the selecte
 
 #### Scenario: head movement cannot race merge
 
-- **WHEN** the provider head or same-head policy, review, finding, conversation, required-check, or supported external-authority generation changes after merge-check, or the provider cannot prove complete conditional merge
-- **THEN** provider merge or preflight fails closed through authority-token/generation validation and issue-spec does not repair evidence or create a merge lifecycle
+- **WHEN** the provider head or same-head policy, review, finding, conversation, or required-check authority changes after merge-check, or the provider cannot prove complete conditional merge
+- **THEN** provider merge or preflight fails closed through complete authority-token validation and issue-spec does not repair evidence or create a merge lifecycle
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764772
 
 ### Requirement: checks consume one current authoritative conclusion across attempts
 
-The workflow MUST allow CI retries and reruns, MUST consume only the provider-normalized current authoritative conclusion for each configured provider-native opaque check key, owner/integration identity, exact current subject, and configuration generation, MUST keep display name and historical attempts non-conflicting and non-authoritative, and MUST use a trusted exact-subject external attestation only when the configured check cannot run at the code provider and conditional merge can atomically validate its external-authority generation.
+The workflow MUST allow CI retries and reruns, MUST consume only the provider-normalized current authoritative conclusion for each configured provider-native opaque check key, owner/integration identity, exact current subject, and configuration generation, and MUST keep display names and historical attempts non-conflicting and non-authoritative. A check that cannot be represented by the selected provider makes that provider ineligible; Core MUST NOT substitute an external attestation.
 
 #### Scenario: reruns replace current authority without erasing history
 
 - **WHEN** a required check has multiple attempts for the exact subject
 - **THEN** the provider selects one current authoritative conclusion for the exact key and owner, while older attempts and same-name checks from another owner neither satisfy nor conflict with merge-check
 
-#### Scenario: external fallback preserves executor assurance
+#### Scenario: missing provider-native check support fails closed
 
-- **WHEN** a configured required check cannot run through the code provider and its trusted executor completes it
-- **THEN** one immutable attestation records exact subject, stable key, executor, protocol or command, relevant environment, conclusion, and bounded diagnostics, and preflight rejects the source unless conditional merge atomically validates its external generation
+- **WHEN** a configured required check cannot be returned and conditionally enforced by the selected provider
+- **THEN** preflight fails before authority collection or mutation and does not accept a caller or issue-server attestation
 
 #### Scenario: merge evaluation never executes checks
 
@@ -80,17 +80,17 @@ Source SPEC comments:
 
 ### Requirement: v1 review decisions are policy-complete exact-subject authority
 
-The v1 workflow MUST represent review with the exact subject, stable authenticated source reviewer identity distinct from ingest writer identity, operator-trusted canonical principals comparable across reviewer and author identity domains, a closed opener/commit-author/coauthor/committer set, verdict and dismissal state, finding ownership and reviewer-owned resolution, and configured provider review-policy state; it MUST require reviewer independence and the configured reviewer count, CODEOWNERS or equivalent, stale-dismissal, and conversation-resolution rules, while PROCESS/SPEC linkage is deprecated and non-authoritative and fallback is eligible only when conditional merge atomically validates its external-authority generation.
+The v1 workflow MUST represent provider-native review with the exact subject, stable authenticated source reviewer identity distinct from bridge identity, operator-trusted canonical principals comparable across reviewer and author identity domains, a closed opener/commit-author/coauthor/committer set, verdict and dismissal state, finding ownership and reviewer-owned resolution, and configured provider review-policy state; it MUST require reviewer independence and the configured reviewer count, CODEOWNERS or equivalent, stale-dismissal, and conversation-resolution rules, while PROCESS/SPEC linkage is deprecated and non-authoritative and no issue-native fallback is eligible.
 
 #### Scenario: provider-native review satisfies configured policy
 
 - **WHEN** the exact current subject has review decisions whose mapped canonical principals, verdicts, findings, and conversation state satisfy the configured provider policy and include a principal outside the complete author set
 - **THEN** merge-check accepts the provider decisions without REVIEW PROCESS, sync, coverage projection, or a copied receipt
 
-#### Scenario: provider without review uses per-reviewer exact-subject fallbacks
+#### Scenario: provider without policy-complete review is unsupported
 
-- **WHEN** the mandatory v1 review-decision capability explicitly reports that the provider lacks a review primitive
-- **THEN** Core may accept one immutable issue-native decision per authenticated reviewer and exact subject only after trusted canonical-principal mapping and proof that conditional merge atomically validates the external-authority generation; it aggregates current decisions under the configured policy, including reviewer counts greater than one, or preflight rejects fallback
+- **WHEN** a provider cannot return policy-complete provider-native review with stable actors and a closed author set
+- **THEN** preflight fails before authority collection or mutation and Core does not synthesize decisions from issue comments
 
 #### Scenario: stale dismissed or self-authored review blocks
 
@@ -102,7 +102,7 @@ Source SPEC comments:
 
 ### Requirement: v1 capability cutover removes legacy authority as one pinned release set
 
-The workflow MUST keep the issue-spec.code-provider/v1 protocol and built-in issue-spec schema while supporting a bounded simple-Issue path or a selected Proposal/Design/Implement path and requiring evidence.review-decision, provider-native keyed evidence.authoritative-check-conclusion when checks are configured, and complete authority-token/generation change.merge-conditional at the merge boundary; new and old components MUST fail fast on missing or unknown capabilities, unsupported fallback atomicity, or unmapped principals, legacy fields MUST be read-only and non-authoritative, deprecated evidence writers MUST return deprecated_workflow with zero writes, and CLI, Server, Runner, bridge, and generated skills MUST switch and roll back as one pinned immutable release set with no dual gate or legacy adapter.
+The workflow MUST keep the issue-spec.code-provider/v1 protocol and built-in issue-spec schema while supporting a bounded simple-Issue path or a selected Proposal/Design/Implement path and requiring evidence.review-decision, provider-native keyed evidence.authoritative-check-conclusion when checks are configured, and complete authority-token change.merge-conditional at the merge boundary; new and old components MUST fail fast on missing or unknown capabilities, any non-atomic provider, or unmapped principals, legacy fields MUST be read-only and non-authoritative, deprecated evidence writers MUST return deprecated_workflow with zero writes, and CLI, Server, Runner, bridge, and generated skills MUST switch and roll back as one pinned immutable release set with no dual gate or legacy adapter.
 
 #### Scenario: mixed releases fail before authority is consumed
 

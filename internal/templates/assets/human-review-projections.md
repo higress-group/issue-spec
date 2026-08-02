@@ -142,7 +142,7 @@ The top level must show:
 - the critical path and safe parallel groups;
 - suggested Agent allocation and the reason for each distinct role;
 - actual typed blockers;
-- shared touchpoints and independent review/verify obligations.
+- shared touchpoints and provider-review/configured-check obligations.
 
 Before PROCESS records exist, label work packages and dependencies `Candidate planning`. After they exist, replace candidates with the current typed PROCESS records and links; never leave a conflicting candidate DAG looking authoritative.
 

@@ -29,8 +29,6 @@ external_code:
         key: app:42/context:unit
         owner: app:42
         display_name: unit
-    review_fallback:
-      enabled: false
 ```
 
 Repository configuration containing an executable, arguments, environment, or
@@ -197,8 +195,8 @@ including services. Login, email, display, logical agent, comment writer, and
 bridge process identity are never heuristic substitutes. Missing, ambiguous,
 or conflicting mappings fail closed.
 
-Review mode is `provider_native` or `issue_fallback_required`. The policy
-contains approval count and explicit CODEOWNER, stale-dismissal, and
+Review mode is always `provider_native`; any other value is rejected. The
+policy contains approval count and explicit CODEOWNER, stale-dismissal, and
 conversation-resolution rules. Verdicts are `approved`, `changes_requested`,
 `dismissed`, or `stale`. Findings have P0/P1/P2 severity and open/resolved/
 dismissed state; resolution or dismissal must be owned by the finding reviewer.
@@ -219,9 +217,8 @@ and token are never persisted as REVIEW, VERIFY, a receipt, or a merge plan.
 ### Conditional merge
 
 The `merge_change` action is distinct from legacy `mutate`. Its request repeats
-the exact reference, caller-required `expected_head`, fresh opaque
-`authority_token`, and, only for supported fallback, the exact
-`external_authority_generation`. Its response field is `merge` and returns the
+the exact reference, caller-required `expected_head`, and fresh opaque
+`authority_token`. Its response field is `merge` and returns the
 same reference/head plus provider merge ID, merged revision, and canonical URL.
 
 At the write boundary the provider must atomically validate expected head and
@@ -229,27 +226,13 @@ every fact covered by the token: effective policy, decisions, findings,
 conversations, and required conclusions. Expected-head-only or read-then-merge
 implementations must not advertise `change.merge-conditional`.
 
-### Issue-native fallback boundary
+### Unsupported-provider boundary
 
-Fallback is disabled by default and exists only when the selected provider
-cannot represent a configured fact. Review fallback stores one authenticated,
-exact-subject immutable decision stream per reviewer. External check fallback
-stores one stream per configured executor and stable check identity. The new
-types are `review-decision-fallback/v1` and `check-attestation/v1`; legacy
-`review` and `check` rows can never decode as these types.
-
-Each changed record explicitly supersedes the caller's current record. Exact
-replay is idempotent; conflicting replay, concurrent roots, forked successors,
-multiple active leaves, wrong reviewer/executor, wrong head, or malformed
-fields fail closed. Source identity is derived from the authenticated server
-user and counts only after trusted canonical-principal mapping.
-
-The append-only evidence collection version supplies an opaque external
-authority generation. Fallback access is usable only when the selected
-conditional-merge provider declares provider-authority-token enforcement for
-that generation. An expected-head-only provider is rejected before fallback
-authority is read. No lease, pending merge, receipt, or database migration is
-introduced.
+There is no issue-native fallback, external check attestation, or external
+authority generation. A provider that cannot supply every configured fact in
+one policy-complete exact-head snapshot and atomically validate the returned
+token is ineligible for merge authority. Legacy Aone capabilities and ordinary
+GitHub REST read-then-write therefore remain explicit fail-closed cases.
 
 ### Legacy evidence snapshot (audit only)
 
@@ -289,13 +272,12 @@ readers, while a `maintainers` row is omitted entirely for non-maintainers.
 Wrappers must therefore keep credentials, request headers, cookies, and raw
 provider responses out of repository-visible evidence.
 
-Every `review` record additionally carries canonical `finding_id`,
-`process_id`, and `spec_id` fields (for example `FINDING-030`, `PROCESS-020`,
-and `SPEC-010`). Core validates their type-specific shapes together with the
-neutral severity and state, and writes the consumed linkage into the canonical
-REVIEW artifact. The external platform continues to own the line-level body;
-the neutral record preserves the workflow identity and optional HTTPS
-`canonical_url` only.
+Historical `review` records may carry canonical `finding_id`, `process_id`, and
+`spec_id` fields (for example `FINDING-030`, `PROCESS-020`, and `SPEC-010`).
+Audit readers validate their shapes but never project them into REVIEW,
+PROCESS, readiness, or merge authority. The external platform continues to own
+the line-level body; the neutral record preserves only audit identity and an
+optional HTTPS `canonical_url`.
 
 ### Legacy mutation
 
@@ -303,28 +285,11 @@ Mutation actions are `create_change` and `comment`. Requests and responses use
 the same neutral `provider_key`, `external_repository`, and `change_id`
 reference. A `comment` response must repeat the entire request reference;
 `create_change` alone may introduce a new `change_id`. Capability discovery
-runs first. Every comment request has a non-empty `head_revision`. Before
-writing a rationale comment, the bridge MUST require that the change's current
-HEAD equals that exact revision and return a stable `revision_mismatch` failure
-without writing when it does not. A returned canonical URL and external ID are
-navigation/traceability values; they are not trusted workflow evidence.
-
-Code-author rationale uses the existing `comment` mutation with
-`metadata.kind=rationale`. Its metadata contains the stable `rationale_id`,
-canonical `process`, `spec`, `reference_version`, `subject_revision`, and
-logical `agent`. The body is a stable human-readable projection and does not
-contain Issue comment identity, publication state, external receipts,
-credentials, or runtime session identity.
-
-For rationale, exact replay of the same `rationale_id`, body, entire reference,
-and `head_revision` MUST return the original external ID and canonical URL
-without creating another comment. Reuse of a `rationale_id` with a conflicting
-body, reference, or head MUST fail. This is an idempotency rule of the existing
-`change.comment` capability, not a new protocol field, capability, mutation
-kind, or evidence kind. Core durably records a pending Issue carrier before the
-first call and may replay after a lost provider or Issue acknowledgement.
-Bridges that advertise `change.comment` must implement this contract; providers
-without that capability use issue-spec's explicit issue-only rationale fallback.
+runs first. Every comment request has a non-empty `head_revision`; returned
+canonical URLs and external IDs are navigation/traceability values, never
+trusted workflow evidence. The removed code-author rationale workflow cannot
+invoke this surface: `metadata.kind=rationale` is deprecated and rejected
+before provider mutation.
 
 ## Versioning and compatibility
 
@@ -334,6 +299,6 @@ intentional closed semantic-generation cutover inside
 `issue-spec.code-provider/v1`, not v2 and not a dual gate. New Core rejects old
 bridges before authority; old Core rejects the new values/fields. CLI, Server,
 Runner, generated assets, and bridge must be deployed as one pinned release
-set. GitHub mode uses the same strict normalized types in process, and rejects
-external fallback when its native merge primitive cannot atomically validate
-the issue-server generation.
+set. GitHub mode uses the same strict normalized types in process, and remains
+fail-closed when its native merge primitive cannot atomically validate the
+complete provider token.

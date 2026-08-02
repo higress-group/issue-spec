@@ -51,7 +51,7 @@ func TestIssueTemplatesScaffoldProjectionTimingAndAuthority(t *testing.T) {
 		},
 		{
 			name: "implement", body: implement, nextChild: "PROCESS",
-			content: []string{"latest effective ANSWER remain authoritative", "concrete acceptance case", "PROCESS sequence", "human-visible, verified outcome", "build a coverage ledger", "complete current invariant DAG", "SPEC/scenario coverage", "independent review/verify obligations", "do not emit only the increment since Design", "estimates and complexity do not define workflow semantics"},
+			content: []string{"latest effective ANSWER remain authoritative", "concrete acceptance case", "PROCESS sequence", "human-visible, verified outcome", "build a coverage ledger", "complete current invariant DAG", "SPEC/scenario coverage", "provider-review/configured-check obligations", "do not emit only the increment since Design", "estimates and complexity do not define workflow semantics"},
 		},
 	}
 	for _, tc := range tests {

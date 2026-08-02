@@ -151,7 +151,7 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 		OperatorSkillDirs: input.Runner.OperatorSkillDirs,
 		RequiredOperations: []capability.Operation{capability.OperationIssueRead, capability.OperationIssueCommentWrite,
 			capability.OperationArtifactWrite, capability.OperationGitClone, capability.OperationGitPush},
-		EvidencePreGate: newRunnerEvidencePreGate(profile)}
+	}
 	return runnerserver.NewRuntime(runnerserver.RuntimeConfig{HTTP: input.HTTP, Reconciler: reconciler,
 		Dispatcher: dispatcher, MaxConcurrentJobs: input.Runner.MaxConcurrentJobs})
 }

@@ -224,20 +224,12 @@ func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 	}
 	proc, err := ProcessComment(ProcessCommentOptions{
 		Common: CommonOptions{ID: "PROCESS-001", Status: "ready"},
-		Input:  ProcessInput{Title: "impl", Owner: "Worker", ParentTask: "TASK-001", ExecutionClass: model.ProcessExecutionReview, Scope: "x", Dependencies: []string{"PROCESS-000"}, WriteOwnership: []string{"internal/x"}, Covers: []string{"TASK-001"}, Handoff: "state.json contract fixed"},
+		Input:  ProcessInput{Title: "impl", Owner: "Worker", ParentTask: "TASK-001", ExecutionClass: model.ProcessExecutionChangeBearing, Scope: "x", Dependencies: []string{"PROCESS-000"}, WriteOwnership: []string{"internal/x"}, Covers: []string{"TASK-001"}, Handoff: "state.json contract fixed"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	verify, err := VerifyComment(VerifyCommentOptions{
-		Common: CommonOptions{ID: "VERIFY-001", Status: "done"},
-		Input: VerifyInput{Title: "final", Summary: "s", Tests: []VerifyTestEvidence{{ID: "unit",
-			Command: "go test ./...", Outcome: "passed", Assurance: "self-reported"}}, SpecRefs: []string{"SPEC-001"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, body := range map[string]string{"TASK": task, "PROCESS": proc, "VERIFY": verify} {
+	for name, body := range map[string]string{"TASK": task, "PROCESS": proc} {
 		tc := model.ParseTypedComment(body)
 		if len(tc.Errors) != 0 {
 			t.Fatalf("%s generated body has parse errors: %v", name, tc.Errors)
@@ -254,7 +246,7 @@ func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 			t.Fatalf("task missing %q:\n%s", want, task)
 		}
 	}
-	for _, want := range []string{"### Parent TASK", "- TASK-001", "### Execution Class", "- review", "### Handoff", "state.json contract fixed"} {
+	for _, want := range []string{"### Parent TASK", "- TASK-001", "### Execution Class", "- change-bearing", "### Handoff", "state.json contract fixed"} {
 		if !strings.Contains(proc, want) {
 			t.Fatalf("process missing %q:\n%s", want, proc)
 		}
@@ -453,50 +445,5 @@ func TestProcessGeneratorRejectsEmptyAssignmentInput(t *testing.T) {
 	}})
 	if err == nil || !strings.Contains(err.Error(), "at least one structured field") {
 		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestReviewCommentDoesNotUseReviewSyncSummaryShape(t *testing.T) {
-	body, err := ReviewComment(ReviewCommentOptions{
-		Common: CommonOptions{ID: "REVIEW-002", Status: "done"},
-		Input:  ReviewInput{Title: "manual review", Summary: "looks good", Findings: []string{"none"}, Verdict: "approve"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(body, "## Review Sync Summary") {
-		t.Fatalf("generic REVIEW template must not emit the review sync shape:\n%s", body)
-	}
-	if !strings.Contains(body, "## Review Summary") {
-		t.Fatalf("generic REVIEW template missing its own summary heading:\n%s", body)
-	}
-	if tc := model.ParseTypedComment(body); len(tc.Errors) != 0 {
-		t.Fatalf("review body has parse errors: %v", tc.Errors)
-	}
-}
-
-func TestVerifyCommentRendersStructuredRevisionBoundEvidenceAdditively(t *testing.T) {
-	body, err := VerifyComment(VerifyCommentOptions{Common: CommonOptions{ID: "VERIFY-101", Agent: "Verifier",
-		SubjectRevision: "head-abc", Status: "done", Scope: "role-owned verification submission"}, Input: VerifyInput{
-		Title: "role-owned receipt", Summary: "Exact revision verified.", SubjectRevision: "head-abc",
-		Evidence: []string{"PROCESS-999 readiness forecast must not persist."}, Tests: []VerifyTestEvidence{{ID: "unit",
-			Command: "go test ./internal/gates", Outcome: "passed", Assurance: "self-reported"}},
-		Checks: []VerifyCheckEvidence{{Provider: "github", Name: "unit", State: "success",
-			SubjectRevision: "head-abc", Source: "github-check-run:42"}}, SpecRefs: []string{"SPEC-005"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"Subject Revision: head-abc", "### Revision\n\n`head-abc`", "### Local Tests",
-		"go test ./internal/gates", "self-reported", "### Provider Checks", "github-check-run:42", "SPEC-005"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("missing %q in:\n%s", want, body)
-		}
-	}
-	if strings.Contains(body, "### Evidence") || strings.Contains(body, "PROCESS-999") || strings.Contains(body, "readiness forecast") {
-		t.Fatalf("generated VERIFY retained recomputable readiness prose:\n%s", body)
-	}
-	parsed := model.ParseTypedComment(body)
-	if len(parsed.Errors) != 0 || parsed.SubjectRevision != "head-abc" || parsed.Status != "done" {
-		t.Fatalf("parsed VERIFY=%+v", parsed)
 	}
 }

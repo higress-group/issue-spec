@@ -95,7 +95,7 @@ func ImplementIssueWithOptions(change, designRef string, options WorkflowAuthori
 - Timing: after the first QUESTION discovery/create pass and before complete PROCESS planning.
 - Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.
 - Presentation: lead with a concrete acceptance case and show how the PROCESS sequence carries it from trigger to a human-visible, verified outcome.
-- Coverage: build a coverage ledger and present the complete current invariant DAG, state counts, critical path, safe parallelism, roles, blockers, shared touchpoints, SPEC/scenario coverage, tests, generators, estimates, and independent review/verify obligations; do not emit only the increment since Design.
+- Coverage: build a coverage ledger and present the complete current invariant DAG, state counts, critical path, safe parallelism, roles, blockers, shared touchpoints, SPEC/scenario coverage, tests, generators, estimates, and provider-review/configured-check obligations; do not emit only the increment since Design.
 - Semantics: estimates and complexity do not define workflow semantics.
 - Context: projection HTML source is excluded from default Agent context.
 `

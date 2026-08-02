@@ -77,6 +77,9 @@ func TestLoadOperatorRegistryFailsClosedForUnsafeOrMalformedConfig(t *testing.T)
 			if err := os.WriteFile(path, []byte(test.raw), test.mode); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.Chmod(path, test.mode); err != nil {
+				t.Fatal(err)
+			}
 			t.Setenv(OperatorProvidersFileEnv, path)
 			if _, err := LoadOperatorRegistryFromEnvironment(); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)

@@ -91,6 +91,64 @@ func (m PrincipalMapper) Map(provider, stableID string) (PrincipalIdentity, erro
 	return principal, nil
 }
 
+// MapMergeSnapshot replaces every bridge-supplied actor principal with the
+// immutable operator mapping. A bridge reports only provider + stable actor
+// identity; repository content and provider output cannot choose the
+// cross-domain principal used for independence.
+func (m PrincipalMapper) MapMergeSnapshot(snapshot *MergeSnapshot) error {
+	if snapshot == nil {
+		return fmt.Errorf("%w: merge snapshot is missing", ErrInvalidProviderData)
+	}
+	mapActor := func(actor *ActorIdentity) error {
+		if actor == nil {
+			return fmt.Errorf("%w: provider actor is missing", ErrInvalidProviderData)
+		}
+		principal, err := m.Map(actor.Provider, actor.StableID)
+		if err != nil {
+			return err
+		}
+		if actor.CanonicalPrincipal != (PrincipalIdentity{}) && actor.CanonicalPrincipal != principal {
+			return fmt.Errorf("%w: provider actor conflicts with the operator canonical principal", ErrInvalidProviderData)
+		}
+		actor.CanonicalPrincipal = principal
+		return nil
+	}
+	for index := range snapshot.Review.Authors {
+		if err := mapActor(&snapshot.Review.Authors[index]); err != nil {
+			return err
+		}
+	}
+	for index := range snapshot.Review.Decisions {
+		if err := mapActor(&snapshot.Review.Decisions[index].Reviewer); err != nil {
+			return err
+		}
+	}
+	for index := range snapshot.Review.Findings {
+		finding := &snapshot.Review.Findings[index]
+		if err := mapActor(&finding.Owner); err != nil {
+			return err
+		}
+		if finding.StateOwner != nil {
+			if err := mapActor(finding.StateOwner); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+type PrincipalMappingSource interface {
+	CanonicalPrincipalMappingSource() string
+}
+
+func RequireCanonicalPrincipalMapping(provider any) (string, error) {
+	source, ok := provider.(PrincipalMappingSource)
+	if !ok || !validOpaqueIdentity(source.CanonicalPrincipalMappingSource(), 256) {
+		return "", fmt.Errorf("%w: operator-owned canonical-principal mapping is unavailable", ErrCapabilityMissing)
+	}
+	return source.CanonicalPrincipalMappingSource(), nil
+}
+
 type CheckIdentity struct {
 	Provider    string `json:"provider"`
 	Key         string `json:"key"`
@@ -148,8 +206,7 @@ func (c CheckConclusion) Validate() error {
 type ReviewMode string
 
 const (
-	ReviewProviderNative        ReviewMode = "provider_native"
-	ReviewIssueFallbackRequired ReviewMode = "issue_fallback_required"
+	ReviewProviderNative ReviewMode = "provider_native"
 )
 
 type ReviewPolicy struct {
@@ -322,7 +379,7 @@ func (r *ReviewAuthority) UnmarshalJSON(raw []byte) error {
 }
 
 func (r ReviewAuthority) Validate(subject string) error {
-	if r.Mode != ReviewProviderNative && r.Mode != ReviewIssueFallbackRequired {
+	if r.Mode != ReviewProviderNative {
 		return fmt.Errorf("%w: unsupported review mode %q", ErrInvalidProviderData, r.Mode)
 	}
 	if !r.AuthorSetComplete || len(r.Authors) == 0 || r.Decisions == nil || r.Findings == nil ||
@@ -377,9 +434,6 @@ func (r ReviewAuthority) Validate(subject string) error {
 		}
 		seenConversations[conversation] = true
 	}
-	if r.Mode == ReviewIssueFallbackRequired && (len(r.Decisions) != 0 || len(r.Findings) != 0) {
-		return fmt.Errorf("%w: issue fallback mode cannot carry provider decisions or findings", ErrInvalidProviderData)
-	}
 	return nil
 }
 
@@ -424,17 +478,16 @@ func (r MergeSnapshotRequest) Validate() error {
 }
 
 type MergeSnapshot struct {
-	ProtocolVersion             string            `json:"protocol_version"`
-	SemanticGeneration          string            `json:"semantic_generation"`
-	ProviderBuildIdentity       string            `json:"provider_build_identity"`
-	Reference                   Reference         `json:"reference"`
-	SubjectRevision             string            `json:"subject_revision"`
-	ChangeState                 ChangeState       `json:"change_state"`
-	CapturedAt                  time.Time         `json:"captured_at"`
-	Review                      ReviewAuthority   `json:"review"`
-	Checks                      []CheckConclusion `json:"checks"`
-	AuthorityToken              string            `json:"authority_token"`
-	ExternalAuthorityGeneration string            `json:"external_authority_generation,omitempty"`
+	ProtocolVersion       string            `json:"protocol_version"`
+	SemanticGeneration    string            `json:"semantic_generation"`
+	ProviderBuildIdentity string            `json:"provider_build_identity"`
+	Reference             Reference         `json:"reference"`
+	SubjectRevision       string            `json:"subject_revision"`
+	ChangeState           ChangeState       `json:"change_state"`
+	CapturedAt            time.Time         `json:"captured_at"`
+	Review                ReviewAuthority   `json:"review"`
+	Checks                []CheckConclusion `json:"checks"`
+	AuthorityToken        string            `json:"authority_token"`
 }
 
 func ValidateMergeSnapshot(snapshot MergeSnapshot, request MergeSnapshotRequest) error {
@@ -446,9 +499,6 @@ func ValidateMergeSnapshot(snapshot MergeSnapshot, request MergeSnapshotRequest)
 	}
 	if snapshot.ChangeState != ChangeOpen && snapshot.ChangeState != ChangeClosed && snapshot.ChangeState != ChangeMerged {
 		return fmt.Errorf("%w: unsupported change state %q", ErrInvalidProviderData, snapshot.ChangeState)
-	}
-	if snapshot.ExternalAuthorityGeneration != "" && !validOpaqueIdentity(snapshot.ExternalAuthorityGeneration, 512) {
-		return fmt.Errorf("%w: external authority generation is invalid", ErrInvalidProviderData)
 	}
 	if err := snapshot.Review.Validate(snapshot.SubjectRevision); err != nil {
 		return err
@@ -478,15 +528,13 @@ func ValidateMergeSnapshot(snapshot MergeSnapshot, request MergeSnapshotRequest)
 }
 
 type ConditionalMergeRequest struct {
-	Reference                   Reference `json:"reference"`
-	ExpectedHead                string    `json:"expected_head"`
-	AuthorityToken              string    `json:"authority_token"`
-	ExternalAuthorityGeneration string    `json:"external_authority_generation,omitempty"`
+	Reference      Reference `json:"reference"`
+	ExpectedHead   string    `json:"expected_head"`
+	AuthorityToken string    `json:"authority_token"`
 }
 
 func (r ConditionalMergeRequest) Validate() error {
-	if r.Reference.Validate() != nil || !validOpaqueIdentity(r.ExpectedHead, 512) || !validOpaqueIdentity(r.AuthorityToken, 4096) ||
-		(r.ExternalAuthorityGeneration != "" && !validOpaqueIdentity(r.ExternalAuthorityGeneration, 512)) {
+	if r.Reference.Validate() != nil || !validOpaqueIdentity(r.ExpectedHead, 512) || !validOpaqueIdentity(r.AuthorityToken, 4096) {
 		return fmt.Errorf("%w: conditional merge request is incomplete", ErrInvalidProviderData)
 	}
 	return nil
@@ -562,6 +610,9 @@ func FetchMergeSnapshot(ctx context.Context, provider MergeAuthorityProvider, re
 	if err != nil {
 		return MergeSnapshot{}, err
 	}
+	if _, err := RequireCanonicalPrincipalMapping(provider); err != nil {
+		return MergeSnapshot{}, err
+	}
 	if err := request.Validate(); err != nil {
 		return MergeSnapshot{}, err
 	}
@@ -598,29 +649,4 @@ func MergeChange(ctx context.Context, provider MergeAuthorityProvider, request C
 		return ConditionalMergeResult{}, err
 	}
 	return result, nil
-}
-
-type CheckAttestation struct {
-	ID                  string               `json:"id"`
-	SupersedesID        string               `json:"supersedes_id,omitempty"`
-	SubjectRevision     string               `json:"subject_revision"`
-	Check               CheckIdentity        `json:"check"`
-	Executor            ActorIdentity        `json:"executor"`
-	CommandIdentity     string               `json:"command_identity"`
-	ProtocolIdentity    string               `json:"protocol_identity"`
-	EnvironmentIdentity string               `json:"environment_identity"`
-	Conclusion          CheckConclusionValue `json:"conclusion"`
-	Diagnostics         string               `json:"diagnostics,omitempty"`
-}
-
-func (a CheckAttestation) Validate() error {
-	conclusion := CheckConclusion{Identity: a.Check, SubjectRevision: a.SubjectRevision,
-		CurrentAttemptID: a.ID, ConfigurationGeneration: a.EnvironmentIdentity,
-		Conclusion: a.Conclusion, Diagnostics: a.Diagnostics}
-	if conclusion.Validate() != nil || a.Executor.Validate() != nil ||
-		(a.SupersedesID != "" && !validOpaqueIdentity(a.SupersedesID, 256)) || a.ID == a.SupersedesID ||
-		!validOpaqueIdentity(a.CommandIdentity, 512) || !validOpaqueIdentity(a.ProtocolIdentity, 256) {
-		return fmt.Errorf("%w: external check attestation is invalid", ErrInvalidProviderData)
-	}
-	return nil
 }

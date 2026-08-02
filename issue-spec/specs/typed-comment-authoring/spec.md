@@ -53,7 +53,7 @@ Typed-comment generation, upsert, workflow validation, and phase status MUST rej
 #### Scenario: legacy typed evidence is inert at merge
 
 - **WHEN** a malformed historical REVIEW or VERIFY comment remains on the change
-- **THEN** merge-check ignores it and uses only provider authority and configured safe fallbacks
+- **THEN** merge-check ignores it and uses only provider-native authority
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
@@ -70,7 +70,7 @@ The CLI MUST provide an explicit migration escape hatch, such as `--allow-noncan
 #### Scenario: escape hatch preserves migration visibility
 
 - **WHEN** a caller uses the migration escape hatch to create or update a noncanonical typed comment
-- **THEN** the CLI SHALL make the noncanonical state visible in command output and later validation/status/verify diagnostics.
+- **THEN** the CLI SHALL make the noncanonical state visible in command output and later validation/planning-status diagnostics.
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/12#issuecomment-4850690808
 

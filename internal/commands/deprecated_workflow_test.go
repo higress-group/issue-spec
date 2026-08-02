@@ -11,6 +11,8 @@ func TestDeprecatedWorkflowCommandsStopAtZeroWriteFrontDoor(t *testing.T) {
 	commands := [][]string{
 		{"review", "submit"},
 		{"review", "sync"},
+		{"review", "finding"},
+		{"review", "reply"},
 		{"verify"},
 		{"verify", "submit"},
 		{"pr", "rationale"},
@@ -42,7 +44,7 @@ func TestDeprecatedWorkflowCommandsStopAtZeroWriteFrontDoor(t *testing.T) {
 
 func TestDeprecatedWorkflowSelectionDoesNotCaptureSupportedSurfaces(t *testing.T) {
 	for _, args := range [][]string{
-		{"review", "finding"}, {"review", "reply"}, {"code-change", "merge"},
+		{"code-change", "merge"},
 		{"merge-check"}, {"durable-spec", "check"}, {"status", "--gate", "implement"},
 	} {
 		if result, deprecated := deprecatedWorkflowSelection(args); deprecated {

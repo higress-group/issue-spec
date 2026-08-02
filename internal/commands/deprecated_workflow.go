@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 )
@@ -26,8 +27,9 @@ func deprecatedWorkflowSelection(args []string) (deprecatedWorkflowResult, bool)
 	command, replacement := "", ""
 	switch args[0] {
 	case "review":
-		if len(args) > 1 && (args[1] == "submit" || args[1] == "sync") {
-			command, replacement = "review "+args[1], "provider review decisions or configured review decide fallback"
+		command, replacement = "review", "provider-native review"
+		if len(args) > 1 {
+			command += " " + args[1]
 		}
 	case "verify":
 		command, replacement = "verify", "merge-check"
@@ -35,20 +37,30 @@ func deprecatedWorkflowSelection(args []string) (deprecatedWorkflowResult, bool)
 			command = "verify submit"
 		}
 	case "pr":
-		if len(args) > 1 && args[1] == "rationale" {
-			command, replacement = "pr rationale", "provider-native discussion"
+		if len(args) > 1 && (args[1] == "rationale" || args[1] == "verify-closure") {
+			command = "pr " + args[1]
+			replacement = "provider-native discussion"
+			if args[1] == "verify-closure" {
+				replacement = "post-merge close reconciliation"
+			}
 		}
 	case "code-change":
 		if len(args) > 1 && args[1] == "rationale" {
 			command, replacement = "code-change rationale", "provider-native discussion"
 		}
 	case "finalize":
-		if len(args) > 1 && (args[1] == "preview" || args[1] == "apply" || args[1] == "detail") {
-			command, replacement = "finalize "+args[1], "code-change merge"
+		command, replacement = "finalize", "code-change merge"
+		if len(args) > 1 {
+			command += " " + args[1]
 		}
 	case "archive":
-		if len(args) > 1 && args[1] == "durable-spec" {
-			command, replacement = "archive durable-spec", "durable-spec preview|apply|check|detail"
+		command, replacement = "archive", "durable-spec preview|apply|check|detail"
+		if len(args) > 1 {
+			command += " " + args[1]
+		}
+	case "issue":
+		if len(args) > 1 && args[1] == "close-change" {
+			command, replacement = "issue close-change", "post-merge close reconciliation"
 		}
 	case "status":
 		if selectedFinalStatusGate(args[1:]) {
@@ -61,6 +73,30 @@ func deprecatedWorkflowSelection(args []string) (deprecatedWorkflowResult, bool)
 	return deprecatedWorkflowResult{OK: false, Code: deprecatedWorkflowCode, Command: command,
 		Message:     command + " belongs to the retired final-evidence workflow and performs no mutation",
 		Replacement: replacement}, true
+}
+
+func (a *app) runReview(_ context.Context, args []string) int {
+	return a.outputDeprecatedWorkflow(deprecatedResultFor("review", args, "provider-native review"), append([]string{"review"}, args...))
+}
+
+func (a *app) runVerify(_ context.Context, args []string) int {
+	return a.outputDeprecatedWorkflow(deprecatedResultFor("verify", args, "merge-check"), append([]string{"verify"}, args...))
+}
+
+func (a *app) runArchive(_ context.Context, args []string) int {
+	return a.outputDeprecatedWorkflow(deprecatedResultFor("archive", args, "durable-spec preview|apply|check|detail"), append([]string{"archive"}, args...))
+}
+
+func (a *app) runIssueCloseChange(_ context.Context, args []string) int {
+	return a.outputDeprecatedWorkflow(deprecatedResultFor("issue close-change", args, "post-merge close reconciliation"), append([]string{"issue", "close-change"}, args...))
+}
+
+func deprecatedResultFor(command string, args []string, replacement string) deprecatedWorkflowResult {
+	if len(args) > 0 {
+		command += " " + args[0]
+	}
+	return deprecatedWorkflowResult{OK: false, Code: deprecatedWorkflowCode, Command: command,
+		Message: command + " belongs to the retired final-evidence workflow and performs no mutation", Replacement: replacement}
 }
 
 func selectedFinalStatusGate(args []string) bool {

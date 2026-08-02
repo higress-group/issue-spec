@@ -34,14 +34,20 @@ var ErrAdapterOutputLimit = errors.New("code provider output exceeded its config
 // without a shell, receives one JSON request on stdin, and returns one strict
 // JSON response on stdout.
 type CommandConfig struct {
-	Path        string
-	Args        []string
-	Environment []string
-	Timeout     time.Duration
-	MaxOutput   int64
+	Path                     string
+	Args                     []string
+	Environment              []string
+	Timeout                  time.Duration
+	MaxOutput                int64
+	PrincipalMappings        []PrincipalMapping
+	PrincipalMappingIdentity string
 }
 
-type CommandProvider struct{ config CommandConfig }
+type CommandProvider struct {
+	config                 CommandConfig
+	principalMapper        PrincipalMapper
+	principalMappingSource string
+}
 
 func NewCommandProvider(config CommandConfig) (*CommandProvider, error) {
 	config.Path = strings.TrimSpace(config.Path)
@@ -88,7 +94,23 @@ func NewCommandProvider(config CommandConfig) (*CommandProvider, error) {
 	}
 	config.Args = append([]string(nil), config.Args...)
 	config.Environment = append([]string(nil), config.Environment...)
-	return &CommandProvider{config: config}, nil
+	mapper, err := NewPrincipalMapper(config.PrincipalMappings)
+	if err != nil {
+		return nil, fmt.Errorf("code provider canonical principals: %w", err)
+	}
+	mappingSource := strings.TrimSpace(config.PrincipalMappingIdentity)
+	if len(config.PrincipalMappings) > 0 && !validOpaqueIdentity(mappingSource, 256) {
+		return nil, errors.New("code provider canonical-principal mapping identity is required")
+	}
+	if len(config.PrincipalMappings) == 0 && mappingSource != "" {
+		return nil, errors.New("code provider canonical-principal mapping identity has no mappings")
+	}
+	config.PrincipalMappings = append([]PrincipalMapping(nil), config.PrincipalMappings...)
+	return &CommandProvider{config: config, principalMapper: mapper, principalMappingSource: mappingSource}, nil
+}
+
+func (p *CommandProvider) CanonicalPrincipalMappingSource() string {
+	return p.principalMappingSource
 }
 
 type protocolRequest struct {
@@ -194,6 +216,9 @@ func (p *CommandProvider) MergeSnapshot(ctx context.Context, request MergeSnapsh
 	if response.MergeSnapshot == nil || response.Capabilities != nil || response.Snapshot != nil ||
 		response.Mutation != nil || response.Merge != nil {
 		return MergeSnapshot{}, fmt.Errorf("%w: merge snapshot response shape", ErrInvalidProviderData)
+	}
+	if err := p.principalMapper.MapMergeSnapshot(response.MergeSnapshot); err != nil {
+		return MergeSnapshot{}, err
 	}
 	if err := ValidateMergeSnapshot(*response.MergeSnapshot, request); err != nil {
 		return MergeSnapshot{}, err

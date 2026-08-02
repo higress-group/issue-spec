@@ -27,7 +27,7 @@ func TestWorkflowPreflightAcceptsOneImmutableSetWithoutWrites(t *testing.T) {
 		"--repo", "o/r", "--release-set", release, "--server-release", release, "--runner-release", release,
 		"--generated-digest", manifest.ContentDigest,
 		"--provider-build", "bridge@sha256:1234",
-		"--canonical-principals", "people-directory@sha256:0123456789abcdef", "--json",
+		"--json",
 	})
 	if code != 0 || errOut.Len() != 0 || !strings.Contains(out.String(), `"ok": true`) {
 		t.Fatalf("preflight exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
@@ -77,7 +77,7 @@ func TestWorkflowPreflightFailsMixedReleaseAndTamperedAssetsWithoutWrites(t *tes
 				"--repo", "o/r", "--release-set", release, "--server-release", serverRelease, "--runner-release", release,
 				"--generated-digest", manifest.ContentDigest,
 				"--provider-build", "bridge@sha256:1234",
-				"--canonical-principals", "people-directory@sha256:0123456789abcdef", "--json",
+				"--json",
 			})
 			if code != 1 || !strings.Contains(out.String(), `"ok": false`) {
 				t.Fatalf("preflight exit=%d stdout=%q", code, out.String())

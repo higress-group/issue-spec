@@ -29,12 +29,14 @@ type operatorConfigFile struct {
 }
 
 type operatorCommandConfig struct {
-	Path        string              `json:"path"`
-	Args        []string            `json:"args,omitempty"`
-	Environment []string            `json:"environment,omitempty"`
-	Timeout     string              `json:"timeout,omitempty"`
-	MaxOutput   int64               `json:"max_output_bytes,omitempty"`
-	Description ProviderDescription `json:"description,omitempty"`
+	Path                     string              `json:"path"`
+	Args                     []string            `json:"args,omitempty"`
+	Environment              []string            `json:"environment,omitempty"`
+	Timeout                  string              `json:"timeout,omitempty"`
+	MaxOutput                int64               `json:"max_output_bytes,omitempty"`
+	PrincipalMappings        []PrincipalMapping  `json:"principal_mappings,omitempty"`
+	PrincipalMappingIdentity string              `json:"principal_mapping_identity,omitempty"`
+	Description              ProviderDescription `json:"description,omitempty"`
 }
 
 // LoadOperatorRegistryFromEnvironment constructs the immutable provider
@@ -97,7 +99,8 @@ func LoadOperatorRegistry(profileReference string) (Registry, string, error) {
 			}
 		}
 		provider, err := NewCommandProvider(CommandConfig{Path: entry.Path, Args: entry.Args,
-			Environment: entry.Environment, Timeout: timeout, MaxOutput: entry.MaxOutput})
+			Environment: entry.Environment, Timeout: timeout, MaxOutput: entry.MaxOutput,
+			PrincipalMappings: entry.PrincipalMappings, PrincipalMappingIdentity: entry.PrincipalMappingIdentity})
 		if err != nil {
 			return Registry{}, source, fmt.Errorf("read %s: provider %q: %w", OperatorProvidersFileEnv, key, err)
 		}

@@ -11,7 +11,7 @@ Proposal Issues:
 
 ### Requirement: Every self-hosted capability has an executable end-to-end acceptance case
 
-The project MUST provide a reproducible conformance and security harness that boots the production server, database, identity fixtures, Runner, external source repository, code-provider bridge, and configured external-authority stub, drives production CLI and browser surfaces, proves every active SPEC through executable tests, and evaluates delivery readiness only through read-only merge-check, provider-issued complete authority-token conditional merge, and idempotent post-merge issue reconciliation rather than final, evidence, VERIFY, or Archive gates.
+The project MUST provide a reproducible conformance and security harness that boots the production server, database, identity fixtures, Runner, external source repository, and code-provider bridge, drives production CLI and browser surfaces, proves every active SPEC through executable tests, and evaluates delivery readiness only through read-only merge-check, provider-issued complete authority-token conditional merge, and idempotent post-merge issue reconciliation rather than final, evidence, VERIFY, or Archive gates.
 
 #### Scenario: issue workflow and protocol run without external GitHub
 
@@ -20,7 +20,7 @@ The project MUST provide a reproducible conformance and security harness that bo
 
 #### Scenario: authority and merge fail and pass for the right generation
 
-- **WHEN** the harness supplies valid and invalid exact-subject review, check, finding, conversation, policy, external-authority, and merge generations
+- **WHEN** the harness supplies valid and invalid exact-subject review, check, finding, conversation, policy, provider-token, and merge generations
 - **THEN** only the current trusted complete authority generation passes read-only merge-check and conditional merge, while stale, untrusted, mismatched, pending, failed, same-head-drifted, or incomplete authority blocks deterministically and no legacy evidence or Archive artifact can satisfy it
 
 #### Scenario: post-merge bookkeeping is independently retryable

@@ -178,6 +178,10 @@ func (f *fakeMergeAuthorityProvider) Capabilities(context.Context) (Capabilities
 	return f.capabilities, nil
 }
 
+func (*fakeMergeAuthorityProvider) CanonicalPrincipalMappingSource() string {
+	return "operators:test:v1"
+}
+
 func (f *fakeMergeAuthorityProvider) MergeSnapshot(_ context.Context, request MergeSnapshotRequest) (MergeSnapshot, error) {
 	f.snapshots.Add(1)
 	return validMergeSnapshot(request), nil

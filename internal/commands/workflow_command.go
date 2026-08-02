@@ -20,7 +20,7 @@ type workflowCommandResult struct {
 
 func (a *app) runWorkflow(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec workflow validate|which|preflight|reconcile|workspace ...\n")
+		a.errorf("usage: issue-spec workflow validate|which|preflight|workspace ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -32,8 +32,6 @@ func (a *app) runWorkflow(ctx context.Context, args []string) int {
 		return a.runWorkflowInspect(ctx, args[1:], true)
 	case "preflight":
 		return a.runWorkflowPreflight(ctx, args[1:])
-	case "reconcile":
-		return a.runWorkflowReconcile(ctx, args[1:])
 	default:
 		a.errorf("unknown workflow command %q\n", args[0])
 		return 2
@@ -60,11 +58,9 @@ type workflowPreflightResult struct {
 	Provider                    workflowPreflightProvider `json:"provider"`
 	PinnedProviderGeneration    string                    `json:"pinned_provider_generation"`
 	PinnedProviderBuild         string                    `json:"pinned_provider_build"`
-	ReviewMode                  string                    `json:"review_mode"`
 	CanonicalPrincipalSource    string                    `json:"canonical_principal_source"`
 	ReconciliationMode          string                    `json:"reconciliation_mode"`
 	ConditionalMergeEnforcement string                    `json:"conditional_merge_enforcement"`
-	ExternalAuthorityMode       string                    `json:"external_authority_mode"`
 	Errors                      []string                  `json:"errors,omitempty"`
 }
 
@@ -79,11 +75,6 @@ func (a *app) runWorkflowPreflight(ctx context.Context, args []string) int {
 	generatedDigest := fs.String("generated-digest", "", "pinned generated workflow content digest")
 	providerGeneration := fs.String("provider-generation", codereview.MergeAuthorityGeneration, "pinned provider semantic generation")
 	providerBuild := fs.String("provider-build", "", "pinned immutable provider bridge build identity")
-	principalSource := fs.String("canonical-principals", "", "operator-owned canonical-principal mapping identity")
-	reviewMode := fs.String("review-mode", "provider_native", "provider_native or issue_fallback_required")
-	reconciliationMode := fs.String("reconciliation-mode", "post-merge-idempotent", "post-merge reconciliation enforcement")
-	enforcementMode := fs.String("enforcement-mode", "provider-authority-token", "conditional-merge enforcement mode")
-	externalAuthorityMode := fs.String("external-authority-mode", "disabled", "disabled or provider-atomic-generation")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -94,11 +85,10 @@ func (a *app) runWorkflowPreflight(ctx context.Context, args []string) int {
 	}
 	result := workflowPreflightResult{Repository: repo, ReleaseSet: strings.TrimSpace(*releaseSet),
 		ServerRelease: strings.TrimSpace(*serverRelease), RunnerRelease: strings.TrimSpace(*runnerRelease),
-		CLI: buildinfo.Current(), ReviewMode: strings.TrimSpace(*reviewMode),
+		CLI: buildinfo.Current(), ReconciliationMode: "post-merge-idempotent",
 		PinnedGeneratedDigest:    strings.TrimSpace(*generatedDigest),
 		PinnedProviderGeneration: strings.TrimSpace(*providerGeneration), PinnedProviderBuild: strings.TrimSpace(*providerBuild),
-		CanonicalPrincipalSource: strings.TrimSpace(*principalSource), ReconciliationMode: strings.TrimSpace(*reconciliationMode),
-		ConditionalMergeEnforcement: strings.TrimSpace(*enforcementMode), ExternalAuthorityMode: strings.TrimSpace(*externalAuthorityMode)}
+		ConditionalMergeEnforcement: "provider-authority-token"}
 	manifest, err := readWorkflowReleaseManifest(".", *manifestPath)
 	if err != nil {
 		result.Errors = append(result.Errors, err.Error())
@@ -124,31 +114,8 @@ func (a *app) runWorkflowPreflight(ctx context.Context, args []string) int {
 		manifest.RequirementsSkillContentID != result.CLI.RequirementsSkillContentID {
 		result.Errors = append(result.Errors, "CLI, Server, Runner, and generated assets do not identify one pinned release set")
 	}
-	if result.CanonicalPrincipalSource == "" {
-		result.Errors = append(result.Errors, "canonical-principal mapping identity is required")
-	}
 	if result.PinnedProviderGeneration != codereview.MergeAuthorityGeneration || result.PinnedProviderBuild == "" {
 		result.Errors = append(result.Errors, "pinned provider semantic generation and immutable bridge build are required")
-	}
-	if result.ReconciliationMode != "post-merge-idempotent" {
-		result.Errors = append(result.Errors, "reconciliation mode must be post-merge-idempotent")
-	}
-	if result.ConditionalMergeEnforcement != "provider-authority-token" {
-		result.Errors = append(result.Errors, "conditional merge must enforce the provider authority token")
-	}
-	if result.ReviewMode != string(codereview.ReviewProviderNative) && result.ReviewMode != string(codereview.ReviewIssueFallbackRequired) {
-		result.Errors = append(result.Errors, "review mode is unsupported")
-	}
-	if result.ReviewMode == string(codereview.ReviewIssueFallbackRequired) && result.ExternalAuthorityMode != "provider-atomic-generation" {
-		result.Errors = append(result.Errors, "review fallback requires provider-atomic-generation external authority")
-	}
-	if result.ReviewMode == string(codereview.ReviewProviderNative) && result.ExternalAuthorityMode != "disabled" {
-		result.Errors = append(result.Errors, "provider-native review must not enable external authority fallback")
-	}
-	fallbackConfigured := plan.Config.ExternalCode != nil && plan.Config.ExternalCode.Merge != nil &&
-		plan.Config.ExternalCode.Merge.ReviewFallback != nil && plan.Config.ExternalCode.Merge.ReviewFallback.Enabled
-	if fallbackConfigured != (result.ReviewMode == string(codereview.ReviewIssueFallbackRequired)) {
-		result.Errors = append(result.Errors, "review mode does not match external_code.merge.review_fallback")
 	}
 	if providerKey != "" {
 		profile, _, profileErr := auth.ResolveProfile(a.profileName, *host)
@@ -166,6 +133,11 @@ func (a *app) runWorkflowPreflight(ctx context.Context, args []string) int {
 				result.Provider.SemanticGeneration = capabilities.SemanticGeneration
 				result.Provider.ImmutableBuild = capabilities.ProviderBuildIdentity
 				result.Provider.Capabilities = append([]codereview.Capability(nil), capabilities.Values...)
+				if source, mappingErr := codereview.RequireCanonicalPrincipalMapping(authority); mappingErr != nil {
+					result.Errors = append(result.Errors, mappingErr.Error())
+				} else {
+					result.CanonicalPrincipalSource = source
+				}
 			}
 		}
 	}

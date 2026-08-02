@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the long-lived safety and readiness contract for issue-native workflow execution: one explainable gate policy across forecast and authoritative verification, conflict-aware typed-artifact mutation and resumable reconciliation, fail-closed delegated-operation capability checks, and evidence requirements proportional to each PROCESS execution class.
+Define the long-lived safety contract for optional issue-native planning and implementation execution: explainable planning forecasts, conflict-aware typed-artifact mutation, recoverable implementation workspaces, and fail-closed delegated-operation capability checks, all separate from provider merge authority.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/166
@@ -10,9 +10,9 @@ Proposal Issues:
 
 ## Requirements
 
-### Requirement: Typed artifacts support conflict-aware transitions and resumable reconciliation
+### Requirement: typed planning transitions and implementation recovery are conflict-aware
 
-The CLI MUST provide optimistic, link-preserving typed-artifact transitions and an idempotent reconciliation mode that applies a declared set of creates, updates, links and state changes without requiring callers to rewrite complete comment bodies.
+The CLI MUST provide optimistic, link-preserving TASK/PROCESS transitions and an idempotent implementation-workspace recovery command without requiring callers to rewrite complete comment bodies. The removed generic workflow reconciliation writer MUST NOT project receipts or apply caller-declared lifecycle batches.
 
 #### Scenario: state transition preserves authored content
 
@@ -26,19 +26,19 @@ The CLI MUST provide optimistic, link-preserving typed-artifact transitions and 
 
 #### Scenario: unsupported conditional mutation is explicit
 
-- **WHEN** a strict transition or reconcile plan targets a backend such as GitHub that does not provide conditional PATCH for issue comments
+- **WHEN** a strict planning transition targets a backend such as GitHub that does not provide conditional PATCH for issue comments
 - **THEN** the command MUST fail before mutation unless the caller explicitly accepts non-atomic single-writer mode, and any accepted result MUST report that atomicity was not provided
 
-#### Scenario: batch reconciliation resumes idempotently
+#### Scenario: workspace reconciliation resumes local implementation safety
 
-- **WHEN** a network or rate-limit failure interrupts a multi-artifact plan
-- **THEN** a rerun MUST report created, updated, unchanged, conflicted and pending operations and MUST continue without duplicate artifacts or lost backlinks
+- **WHEN** interruption leaves an implementation lease between prepare, complete, and integrate
+- **THEN** the coordinator MUST inspect or reconcile that exact owned lease and continue without producing review, verification, receipt-projection, or merge authority
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/166#issuecomment-4951036404
 
 ### Requirement: Delegated work starts only after scoped agent capability preflight
 
-The workflow runner MUST preflight authentication source, token safety, network reachability and required repository operations before dispatching delegated review or implementation work. A self-hosted runner MAY satisfy the gate with its origin-bound private profile PAT when that credential grants the requested repository and includes the required scopes; unrelated repository grants and additional scopes MUST NOT invalidate that credential. Strict GitHub delegated mode MUST still use short-lived credentials scoped to the approved host, repository and operation set; explicitly enabled legacy host credentials remain migration-only and MUST NOT satisfy that gate.
+The workflow runner MUST preflight authentication source, token safety, network reachability and required repository operations before dispatching delegated implementation work. A self-hosted runner MAY satisfy the gate with its origin-bound private profile PAT when that credential grants the requested repository and includes the required scopes; unrelated repository grants and additional scopes MUST NOT invalidate that credential. Strict GitHub delegated mode MUST still use short-lived credentials scoped to the approved host, repository and operation set; explicitly enabled legacy host credentials remain migration-only and MUST NOT satisfy that gate.
 
 #### Scenario: failed preflight consumes no worker execution
 

@@ -507,8 +507,8 @@ func TestCommentGenerateProcessExecutionClass(t *testing.T) {
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
 	code := app.runCommentGenerate(context.Background(), []string{"--type", "PROCESS", "--id", "PROCESS-008", "--input-file", inPath})
-	if code != 0 || !strings.Contains(out.String(), "### Execution Class\n\n- review") {
-		t.Fatalf("generate exit=%d stderr=%q body=%q", code, errOut.String(), out.String())
+	if code == 0 || !strings.Contains(errOut.String(), "was removed") {
+		t.Fatalf("removed review class exit=%d stderr=%q body=%q", code, errOut.String(), out.String())
 	}
 
 	badPath := writeTempInput(t, `{"title":"bad","parent_task":"TASK-005","execution_class":"deploy"}`)

@@ -54,16 +54,16 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/121#issu
 
 ### Requirement: authoring-completeness diagnostics stay advisory and non-blocking
 
-issue-spec status and verify MAY emit an advisory diagnostic when a required background or context section is empty or still contains placeholder text such as a literal `TBD`, but such a diagnostic MUST NOT fail a stage gate or block the workflow on subjective judgments of depth or richness.
+issue-spec planning status MAY emit an advisory diagnostic when a required background or context section is empty or still contains placeholder text such as a literal `TBD`, but such a diagnostic MUST NOT fail a planning gate or block the workflow on subjective judgments of depth or richness.
 
 #### Scenario: placeholder background produces an advisory diagnostic
 
-- **WHEN** status or verify evaluates a proposal or design whose required background or context section is empty or contains literal placeholder text such as `TBD`
+- **WHEN** planning status evaluates a proposal or design whose required background or context section is empty or contains literal placeholder text such as `TBD`
 - **THEN** it SHALL report an advisory diagnostic that identifies the section and the affected issue
 
 #### Scenario: advisory diagnostic does not block gates
 
 - **WHEN** the only outstanding signal for a change is an advisory authoring-completeness diagnostic
-- **THEN** status and verify MUST NOT fail the corresponding stage gate or block the workflow on that diagnostic alone
+- **THEN** status MUST NOT fail the corresponding planning gate or block the workflow on that diagnostic alone
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/121#issuecomment-4888785840

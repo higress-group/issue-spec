@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG through bounded role assignments, compact targeted reads, exact-revision results, independent review and verification, issue-native evidence projection, and generated guidance while preserving real non-coordinator execution, bounded context, invariant-shaped planning, resumable coordinator-managed workspaces, genuinely external or human-owned independent workspaces, and auditable final gates.
+Define the long-lived behavior contract for how the optional implement phase plans and executes a PROCESS DAG through bounded implementation assignments, compact targeted reads, exact-revision results, and generated guidance while preserving real non-coordinator execution, bounded context, invariant-shaped planning, resumable coordinator-managed workspaces, genuinely external or human-owned work, and strict separation from provider-owned review, checks, and merge authority.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/144
@@ -196,9 +196,9 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/295#issu
 
 Generated workflow instructions MUST remain role-bounded and concise by relying on executable CLI validation and the addressable instruction contract rather than repeating the complete workflow protocol in every agent context.
 
-#### Scenario: Worker and reviewer packets exclude coordinator policy
+#### Scenario: Worker packets exclude coordinator policy
 
-- **WHEN** the coordinator prepares an implementation or review assignment
+- **WHEN** the coordinator prepares an implementation assignment
 - **THEN** the packet excludes phase bodies, full PROCESS graphs, link matrices, closure and archive policy, provider routing, and typed-comment authoring instructions
 
 #### Scenario: Coordinator plans PROCESS nodes by design invariant
@@ -228,19 +228,19 @@ Generated workflow instructions MUST remain role-bounded and concise by relying 
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/295#issuecomment-5011082327
 
-### Requirement: Role-owned completion creates canonical receipts without manual framing
+### Requirement: implementation completion creates a canonical receipt without manual framing
 
-The issue-spec CLI MUST provide a role-owned completion operation that derives every mechanical receipt fact from the sealed assignment and authoritative workspace or snapshot, executes exactly the sealed required tests, combines only closed role-specific semantic input, and emits one atomically written self-validating receipt whose digest uses the shared canonical logical representation and is independent of output-file framing. Coordinator-owned acceptance MUST remain separate, MUST recompute all applicable invariants, and MUST NOT repair, reseal, or strengthen rejected role evidence.
+The issue-spec CLI MUST provide an implementation-only completion operation that derives every mechanical receipt fact from the sealed assignment and authoritative worktree, executes exactly the sealed required tests, combines only closed implementation semantic input, and emits one atomically written self-validating receipt whose digest uses the shared canonical logical representation and is independent of output-file framing. Coordinator-owned acceptance MUST remain separate, MUST recompute all applicable invariants, and MUST NOT repair, reseal, or strengthen a rejected result. Review and verification role completion MUST return `deprecated_workflow` without mutation.
 
 #### Scenario: implementation role completes with one command
 
 - **WHEN** an implementation Worker has a valid active assignment, a clean managed worktree with one DCO result commit, owned changed paths, and passing sealed required tests
 - **THEN** one role-owned completion command derives the assignment identity, generation, base and result revisions, changed paths, exact test evidence, and provenance, and emits a receipt accepted by independent workspace completion validation
 
-#### Scenario: review and verification preserve role decisions
+#### Scenario: removed role types fail before receipt production
 
-- **WHEN** a Reviewer or Verifier supplies the closed semantic fields allowed for its role while completing an immutable assigned subject
-- **THEN** the CLI preserves those role-owned decisions, derives all mechanical identity and test fields from the sealed packet and snapshot, and rejects unknown or role-incompatible input fields
+- **WHEN** a caller supplies a historical review or verification assignment to role completion
+- **THEN** the CLI returns `deprecated_workflow` and emits no new receipt
 
 #### Scenario: sealed tests cannot be replaced by the caller
 
@@ -264,7 +264,7 @@ The issue-spec CLI MUST provide a role-owned completion operation that derives e
 
 #### Scenario: Coordinator validation does not repair role evidence
 
-- **WHEN** workspace complete, review submit, verify submit, or read-only receipt verification observes a missing field, bad digest, stale generation, mismatched revision, or altered test result
+- **WHEN** workspace complete or read-only receipt inspection observes a missing field, bad digest, stale generation, mismatched revision, or altered test result
 - **THEN** the validator reports the mismatch and remediation without editing, resealing, or replacing the role-owned receipt
 
 #### Scenario: existing receipt contracts remain compatible
@@ -274,25 +274,25 @@ The issue-spec CLI MUST provide a role-owned completion operation that derives e
 
 #### Scenario: generated role guidance uses the bounded command
 
-- **WHEN** Apply, Review, or Verify role instructions are generated after the role-owned completion operation is available
+- **WHEN** Apply role instructions are generated after the implementation completion operation is available
 - **THEN** the instructions invoke the bounded CLI operation, omit hand-written receipt schema and shell hashing recipes, and ask the role to return only the compact command result and human summary
 
 #### Scenario: instruction compaction is regression tested
 
-- **WHEN** representative generated Apply, Review, and Verify packets and handoffs are measured before and after adoption
+- **WHEN** representative generated Apply packets and handoffs are measured before and after adoption
 - **THEN** fixture-based byte or token estimates demonstrate reduced normal role context and output while every receipt, provenance, revision, test, and acceptance invariant remains enforced by the CLI
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/396#issuecomment-5152395123
 
-### Requirement: typed artifact relationships have one canonical owner
+### Requirement: planning relationships have one canonical owner
 
-Every built-in planning, review, verification, and directional lifecycle relationship MUST resolve to exactly one canonical owning typed artifact. Creating or updating the relationship MUST mutate only that owner and MUST NOT create or refresh a reverse backlink on the target artifact. Unsupported or ambiguous ownership MUST fail before any write.
+Every active planning relationship MUST resolve to exactly one canonical owning typed artifact. Creating or updating the relationship MUST mutate only that owner and MUST NOT create or refresh a reverse backlink on the target artifact. Unsupported or ambiguous ownership MUST fail before any write. Historical REVIEW/VERIFY relationships are read-only navigation and cannot become authority.
 
-#### Scenario: shared review fan-out writes only the review
+#### Scenario: planning fan-out writes only its owner
 
-- **WHEN** one REVIEW is related to multiple PROCESS nodes and SPECs
-- **THEN** the relationship operation writes the REVIEW owner at most once and performs zero PROCESS or SPEC backlink writes
+- **WHEN** one TASK or PROCESS is related to multiple planning targets
+- **THEN** the relationship operation writes the canonical planning owner at most once and performs zero target backlink writes
 
 #### Scenario: known artifact pair resolves one owner
 
@@ -316,9 +316,9 @@ Source SPEC comments:
 
 A canonical relationship owner update MUST merge a bounded target set through one idempotent mutation, preserve every previously accepted canonical target outside an explicit removal plan, detect stale observations, and verify the exact postcondition. A backend without atomic conditional comment updates MUST require an explicit guarded single-writer fallback and MUST NOT report success when concurrent or partial-write drift is observed.
 
-#### Scenario: bounded fan-out is one owner mutation
+#### Scenario: bounded planning fan-out is one owner mutation
 
-- **WHEN** a caller adds several PROCESS and SPEC targets owned by one REVIEW or VERIFY
+- **WHEN** a caller adds several TASK or SPEC targets owned by one planning artifact
 - **THEN** the CLI merges the complete bounded set and writes the owner once while preserving existing canonical targets
 
 #### Scenario: stale owner observation fails explicitly
@@ -350,7 +350,7 @@ Compact reads, status, traceability diagnostics, generated workflow guidance, an
 
 #### Scenario: reverse lookup finds canonical owners
 
-- **WHEN** a reader asks which REVIEW, VERIFY, PROCESS, or TASK artifacts refer to a target artifact
+- **WHEN** a reader asks which historical or active planning artifacts refer to a target artifact
 - **THEN** the read model returns the matching canonical owners without requiring the target to contain backlinks
 
 #### Scenario: reverse lookup performs no writes
@@ -361,11 +361,11 @@ Compact reads, status, traceability diagnostics, generated workflow guidance, an
 #### Scenario: stale legacy backlink does not affect readiness
 
 - **WHEN** a legacy reverse backlink is missing, extra, partial, or stale while canonical owner references are valid
-- **THEN** authoring and final readiness use the canonical relationships and may expose the legacy difference only as bounded compatibility information
+- **THEN** planning authoring uses the canonical relationships and may expose the legacy difference only as bounded compatibility information; merge readiness does not read either edge
 
 #### Scenario: generated workflows use canonical orientation
 
-- **WHEN** issue-spec generates coordinator, review, verification, and recovery guidance
+- **WHEN** issue-spec generates coordinator, implementation, and recovery guidance
 - **THEN** the guidance uses owner-oriented bounded relationship commands and never instructs callers to create required bidirectional backlinks
 
 #### Scenario: reverse output remains bounded

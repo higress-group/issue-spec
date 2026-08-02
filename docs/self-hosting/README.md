@@ -48,9 +48,10 @@ server ambient source credentials.
 ### Issues keep the full decision history
 
 Proposal, design, and implementation issues carry the current artifact in the
-issue body. SPEC, QUESTION, TASK, PROCESS, REVIEW, and VERIFY records are typed
-comments in the same timeline. Ordinary human comments remain available for
-discussion and notifications.
+issue body. SPEC, QUESTION, TASK, and PROCESS records are active typed comments
+in the same timeline. Historical REVIEW and VERIFY records remain visible for
+audit only. Ordinary human comments remain available for discussion and
+notifications.
 
 ![Issue detail with typed workflow comments](assets/self-hosted-issue-detail.png)
 

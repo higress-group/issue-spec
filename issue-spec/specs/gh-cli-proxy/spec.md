@@ -65,7 +65,7 @@ Issue-spec MUST define the CLI-backed GitHub integration through a backend abstr
 #### Scenario: adding another CLI backend
 
 - **WHEN** issue-spec adds support for another provider CLI such as `glab`
-- **THEN** the backend abstraction MUST allow that backend to implement provider operations through the same selection, execution, error handling, and diagnostics boundaries without rewriting proposal, design, implement, review, or archive command workflows.
+- **THEN** the backend abstraction MUST allow that backend to implement provider operations through the same selection, execution, error handling, and diagnostics boundaries without rewriting planning, provider-authority, or merge orchestration.
 
 #### Scenario: selecting the gh backend
 

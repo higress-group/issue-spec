@@ -41,9 +41,9 @@ Server 是以下数据的权威来源：
 
 ### Issue 保留完整决策历史
 
-Proposal、Design 和 Implement Issue 的正文保存当前产物；SPEC、QUESTION、TASK、
-PROCESS、REVIEW 和 VERIFY 以类型化评论出现在同一时间线。普通人的评论仍可用于
-讨论与通知。
+Proposal、Design 和 Implement Issue 的正文保存当前产物；SPEC、QUESTION、TASK 与
+PROCESS 是同一时间线中的活跃类型化评论，历史 REVIEW 与 VERIFY 只保留审计展示。
+普通人的评论仍可用于讨论与通知。
 
 ![包含类型化工作流评论的 Issue 详情](assets/self-hosted-issue-detail.zh-CN.png)
 

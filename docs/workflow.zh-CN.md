@@ -26,8 +26,6 @@ external_code:
         key: app:42/context:unit
         owner: app:42
         display_name: unit
-    review_fallback:
-      enabled: false
 ```
 
 仅有展示名称不能充当检查身份。旧的 `external_code.evidence` 配置会被拒绝，不会自动映射到新模型。
@@ -46,15 +44,10 @@ issue-spec workflow preflight \
   --generated-digest sha256:... \
   --provider-generation minimal-merge-authority/v1 \
   --provider-build code-example@sha256:... \
-  --canonical-principals operator-map@sha256:... \
-  --review-mode provider_native \
-  --reconciliation-mode post-merge-idempotent \
-  --enforcement-mode provider-authority-token \
-  --external-authority-mode disabled \
   --json
 ```
 
-预检只读。它会验证 `issue-spec.code-provider/v1`、语义代际 `minimal-merge-authority/v1`、不可变桥接构建身份、`evidence.review-decision`、`evidence.authoritative-check-conclusion`、`change.merge-conditional`、生成制品发布与摘要、检查 key/owner、规范主体映射来源、评审模式、协调模式以及完整权威令牌的执行方式。任何缺失、未知或混合身份都会在读取可用权威或发生写入前失败。
+预检只读。它会验证 `issue-spec.code-provider/v1`、语义代际 `minimal-merge-authority/v1`、不可变桥接构建身份、`evidence.review-decision`、`evidence.authoritative-check-conclusion`、`change.merge-conditional`、生成制品发布与摘要、检查 key/owner、运维方管理的规范主体映射来源、固定的 `post-merge-idempotent` 协调模式以及固定的 `provider-authority-token` 执行方式。这些模式是只读报告的不变量，不是调用方可选标志。任何缺失、未知或混合身份都会在读取可用权威或发生写入前失败。
 
 ## 评审与检查归提供方所有
 
@@ -62,7 +55,7 @@ issue-spec workflow preflight \
 
 对于每个已配置检查，提供方只选择一个绑定不透明 key、owner、精确版本及提供方配置代际的当前结论。历史尝试和来自其他 owner 的同名检查仅供审计。只有 `success` 通过。
 
-议题原生评审回退默认关闭。只有提供方明确要求、仓库策略显式启用、身份通过运维方管理的规范映射解析，并且条件合并能原子验证外部权威代际时才可使用。
+不存在议题原生评审回退或外部权威代际。无法返回完整评审/检查快照并原子验证其权威令牌的提供方不具备合并能力，必须失败关闭。
 
 ## 零写入就绪检查
 

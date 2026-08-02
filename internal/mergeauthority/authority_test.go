@@ -121,6 +121,8 @@ func (f *fakeProvider) Capabilities(context.Context) (codereview.Capabilities, e
 	return codereview.Capabilities{ProtocolVersion: codereview.ProtocolVersion, SemanticGeneration: codereview.MergeAuthorityGeneration,
 		ProviderBuildIdentity: "bridge@sha256:1234", Values: codereview.RequiredMergeAuthorityCapabilities()}, nil
 }
+
+func (*fakeProvider) CanonicalPrincipalMappingSource() string { return "operators:test:v1" }
 func (f *fakeProvider) MergeSnapshot(context.Context, codereview.MergeSnapshotRequest) (codereview.MergeSnapshot, error) {
 	if f.snapshotsRead >= len(f.snapshots) {
 		return codereview.MergeSnapshot{}, errors.New("no snapshot")

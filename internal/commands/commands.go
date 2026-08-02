@@ -41,7 +41,6 @@ type app struct {
 	runnerDispatch                  func(context.Context, commentrunner.Config) (jobs.Result, error)
 	runnerCancellationDrain         func(context.Context, commentrunner.Config) (jobs.Result, error)
 	runnerDiagnostics               *runnerLogger
-	newNativeEvidenceProvider       func(auth.Profile, string) (nativeEvidenceProvider, error)
 	newNativeSearchProvider         func(auth.Profile, string) (nativeSearchProvider, error)
 	newNativeQuestionAnswerProvider func(auth.Profile, string) (github.NativeQuestionAnswerOperations, error)
 	newNativeCodeChangeBackend      func(auth.Profile, string) (nativeCodeChangeBackend, error)
@@ -181,7 +180,6 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		selectRunnerBackend:             defaultSelectRunnerBackend,
 		newGitHubBackend:                defaultNewGitHubBackend,
 		gitHubBackendToken:              defaultGitHubBackendToken,
-		newNativeEvidenceProvider:       defaultNewNativeEvidenceProvider,
 		newNativeSearchProvider:         defaultNewNativeSearchProvider,
 		newNativeQuestionAnswerProvider: defaultNewNativeQuestionAnswerProvider,
 		newNativeCodeChangeBackend:      defaultNewNativeCodeChangeBackend,
@@ -222,7 +220,6 @@ Usage:
   issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary "what changed"]
   issue-spec issue list --repo owner/repo [--state open|closed|all] --json
   issue-spec issue close|reopen --repo owner/repo --issue N [--json]
-  issue-spec issue close-change --repo owner/repo --proposal N --design N --implement N --revision REV [--json]
   issue-spec comment create --repo owner/repo --issue N --body-file reply.md [--json]
   issue-spec comment edit --repo owner/repo --comment-id N --body-file reply.md [--json]
   issue-spec comment delete --repo owner/repo --comment-id N [--json]
@@ -236,13 +233,8 @@ Usage:
     new typed IDs use <TYPE>-<issue><three-digit sequence>; allocate the sequence within that Issue and type
   issue-spec projection upsert --repo owner/repo --issue N --phase proposal-choice-brief --source-digest SHA256 --body-file file.md [--allow-nonatomic --expected-absence|--allow-nonatomic --expected-digest SHA256]
     non-atomic first create uses --expected-absence; replacement uses the observed-body --expected-digest SHA256
-  issue-spec pr rationale --repo owner/repo --pr 4 --path file.go --line 42 --process PROCESS-3001 --spec SPEC-1001 --spec-url URL --body "why"
   issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-3001 --pr 4
   issue-spec pr link-issues --repo owner/repo --pr N --proposal N --design N --implement N
-  issue-spec pr verify-closure --repo owner/repo --pr N --proposal N --design N --implement N [--json]
-  issue-spec review finding --repo owner/repo --pr 4 --path file.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-3001 --spec SPEC-1001 --spec-url URL --body "what to fix"
-  issue-spec review reply --repo owner/repo --pr 4 --comment-id COMMENT_ID --finding FINDING-001 --process PROCESS-3001 --status resolved --body "fixed"
-  issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-3001
   issue-spec durable-spec preview|apply|check|detail --repo owner/repo --proposal N [options]
   issue-spec workflow validate --repo owner/repo [--json]
   issue-spec workflow which --repo owner/repo [--schema name] [--json]
@@ -251,7 +243,6 @@ Usage:
   issue-spec link --repo owner/repo --from SPEC-001 --from-issue N --to TASK-001 --to-issue M [--allow-nonatomic --expected-digest SHA256]
   issue-spec status --repo owner/repo --proposal N [--design N] [--implement N]
 	issue-spec merge-check --repo owner/repo (--issue N|--proposal N [--design N] [--implement N]) (--pr N|--change-id ID --head REV)
-  issue-spec verify --repo owner/repo --proposal N --design N --implement N
   issue-spec verify-links --repo owner/repo --proposal N --design N --implement N
   issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only]
   issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]
@@ -259,14 +250,9 @@ Usage:
   issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
 	issue-spec code-change merge --repo owner/repo (--issue N|--proposal N [--design N] [--implement N]) (--pr N|--change-id ID) --expected-head REV
   issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
-	issue-spec code-change rationale --repo owner/repo --implement N --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why" --agent Worker [--json]
-	issue-spec finalize preview --repo owner/repo --proposal N --design N --implement N --pr N --intent-file file.json --plan-out /absolute/plan.json [--json]
-	issue-spec finalize apply --plan /absolute/plan.json --checkpoint /absolute/checkpoint.json [--allow-nonatomic] [--json]
-	issue-spec finalize detail --plan /absolute/plan.json [--json]
 	issue-spec requirements setup --server URL [--token-stdin] [--yes] [--json]
   issue-spec requirements status [--repo owner/repo] [--json]
 	issue-spec role complete --assignment-file /absolute/packet.json --decision-file /absolute/decision.json --output /absolute/receipt.json --agent Worker --json
-	issue-spec role verify-receipt --receipt-file /absolute/receipt.json --json
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
   issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE (--git-credential-command /absolute/provider|--allow-host-ssh)
 	issue-spec runner preflight --repo owner/repo --runner login`)

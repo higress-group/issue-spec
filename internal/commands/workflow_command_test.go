@@ -11,7 +11,6 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
-	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/templates"
 )
 
@@ -264,44 +263,11 @@ artifacts:
 }
 
 func TestArchiveSelectsExistingLegacyDurableSpecPath(t *testing.T) {
-	root := t.TempDir()
-	t.Chdir(root)
-	writeWorkflowTestFile(t, filepath.Join(root, "openspec", "specs", "compat", "spec.md"), "# Existing Legacy\n")
-	specBody, err := model.EnsureTypedBody("SPEC", "SPEC-001", `## Requirement: Legacy durable path
-
-The archive command MUST update existing openspec durable specs.
-
-### Scenario: Existing legacy spec
-
-- **WHEN** archive runs without --output and openspec/specs/compat/spec.md exists
-- **THEN** it updates that legacy path.
-`, model.BodyOptions{Status: "confirmed", Scope: "archive"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
-	app.selectGitHubBackend = ghSelection
-	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
-		return fakeGitHubBackend{
-			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
-			getIssue: func(context.Context, string, int) (github.Issue, error) {
-				return github.Issue{Number: 9, HTMLURL: "https://github.com/o/r/issues/9"}, nil
-			},
-			listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
-				return []github.Comment{{ID: 1, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-1", Body: specBody}}, nil
-			},
-		}, nil
-	}
-	code := app.runArchive(context.Background(), []string{"durable-spec", "--repo", "o/r", "--proposal", "9", "--capability", "compat"})
-	if code != 0 {
-		t.Fatalf("archive failed code=%d", code)
-	}
-	if _, err := os.Stat(filepath.Join(root, "openspec", "specs", "compat", "spec.md")); err != nil {
-		t.Fatalf("legacy durable spec not written: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "issue-spec", "specs", "compat", "spec.md")); !os.IsNotExist(err) {
-		t.Fatalf("new issue-spec path should not be written when legacy exists, err=%v", err)
+	var out bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
+	if code := app.runArchive(context.Background(), []string{"durable-spec", "--repo", "o/r", "--json"}); code == 0 ||
+		!strings.Contains(out.String(), deprecatedWorkflowCode) {
+		t.Fatalf("retired archive code=%d out=%q", code, out.String())
 	}
 }
 

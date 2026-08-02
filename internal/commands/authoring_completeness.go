@@ -7,6 +7,11 @@ import (
 	"github.com/higress-group/issue-spec/internal/templates"
 )
 
+func isEmptyOrNA(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || strings.EqualFold(value, "N/A")
+}
+
 // authoringRequiredSections lists the self-contained-authoring sections that a
 // cross-agent reader needs populated, keyed by issue kind. These are advisory
 // only: a placeholder here never blocks status or verify.

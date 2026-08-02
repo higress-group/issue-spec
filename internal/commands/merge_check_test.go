@@ -73,7 +73,7 @@ func withMergeWorkflow(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "issue-spec"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	config := "schema: issue-spec\nexternal_code:\n  provider_key: code.example\n  merge:\n    required_checks:\n      - source: provider\n        provider: code.example\n        key: app:7/context:unit\n        owner: app:7\n        display_name: unit\n    review_fallback:\n      enabled: false\n"
+	config := "schema: issue-spec\nexternal_code:\n  provider_key: code.example\n  merge:\n    required_checks:\n      - source: provider\n        provider: code.example\n        key: app:7/context:unit\n        owner: app:7\n        display_name: unit\n"
 	if err := os.WriteFile(filepath.Join(root, "issue-spec", "config.yaml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +153,7 @@ func (p *mergeCommandProvider) Capabilities(context.Context) (codereview.Capabil
 	return codereview.Capabilities{ProtocolVersion: codereview.ProtocolVersion, SemanticGeneration: codereview.MergeAuthorityGeneration,
 		ProviderBuildIdentity: "bridge@sha256:1234", Values: codereview.RequiredMergeAuthorityCapabilities()}, nil
 }
+func (*mergeCommandProvider) CanonicalPrincipalMappingSource() string { return "operators:test:v1" }
 func (*mergeCommandProvider) Snapshot(context.Context, codereview.SnapshotRequest) (codereview.Snapshot, error) {
 	return codereview.Snapshot{}, errors.New("legacy evidence snapshot must not be called")
 }

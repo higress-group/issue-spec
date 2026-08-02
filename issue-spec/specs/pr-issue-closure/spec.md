@@ -2,24 +2,13 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for how issue-spec makes an implementation
-PR's issue-closure links tamper-proof. GitHub auto-close depends on `Closes #N`
-keywords stored in a managed block inside the mutable PR body, where a later
-full-body edit can silently erase or reduce the block. This capability owns three
-coupled surfaces: the completeness contract for that managed closure block (it must
-cover exactly the declared set of expected issues — one or more of proposal, design,
-and implement — and be verified before merge, not discovered after); a CLI
-verification check (`pr verify-closure`) that reuses the same closure-block routine
-as the post-merge archive path so pre-merge and post-merge verdicts stay consistent,
-and that is callable by both an agent and a CI gate; and workflow guidance that orders
-`pr link-issues` as the final PR-body write and makes the clobber failure mode
-explicit.
+Define the long-lived behavior contract for closing the exact selected Issue set
+only after a fresh provider observation proves that the code change merged. Mutable
+GitHub `Closes #N` blocks may remain useful navigation, but they are never pre-merge
+authority and no closure-verification or archive gate is produced.
 
-This durable spec is organized by stable capability surfaces. Future changes that
-adjust closure-block completeness rules, the verification check, or the ordering
-guidance should update the relevant requirement module below (matched by requirement
-title, newest wins) instead of appending a one-to-one copy of new proposal
-requirements.
+Future changes to selected-set reconciliation should update the requirement below
+rather than restoring mutable closing-link or final-evidence authority.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/155

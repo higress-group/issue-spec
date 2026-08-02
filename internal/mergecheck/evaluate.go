@@ -86,10 +86,6 @@ func evaluateReview(input Input, decision *Decision) {
 		decision.Blockers = append(decision.Blockers, blocker(BlockerReviewAuthorityInvalid, "review", err.Error()))
 		return
 	}
-	if input.Review.Mode != codereview.ReviewProviderNative {
-		decision.Blockers = append(decision.Blockers, blocker(BlockerReviewFallbackRequired, "review", "provider requires configured issue-native review authority"))
-		return
-	}
 	authors := map[string]bool{}
 	for _, author := range input.Review.Authors {
 		authors[principalKey(author.CanonicalPrincipal)] = true

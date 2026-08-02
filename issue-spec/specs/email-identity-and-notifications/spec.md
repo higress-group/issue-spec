@@ -136,10 +136,10 @@ The server MUST allow an eligible active human user to opt in to or out of one r
 - **WHEN** a newly created issue projects as a valid proposal, design, or implement artifact
 - **THEN** each current eligible subscriber other than the actor receives at most one logical change-milestone delivery identifying the change, new stage, triggering artifact, bounded content, and link, and the same issue creation does not also create a generic issue-created delivery
 
-#### Scenario: Completed change sends one terminal milestone
+#### Scenario: deprecated completed lifecycle is not produced
 
-- **WHEN** a relevant mutation causes the authoritative change projection to transition from a non-completed lifecycle to completed
-- **THEN** each current eligible subscriber other than the actor receives at most one logical completed-milestone delivery with the change identity and canonical link
+- **WHEN** issues close or post-merge reconciliation repeats after the closed-only lifecycle cutover
+- **THEN** the change projection does not synthesize the deprecated completed lifecycle or a completed-milestone delivery
 
 #### Scenario: Milestones and subscriptions do not replay history
 

@@ -15,7 +15,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
-	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
@@ -39,19 +38,6 @@ func TestGeneratedExternalCodeWorkflowDoesNotPreGateFirstRunnerDispatch(t *testi
 		t.Fatalf("generated provider-bound policy =\n%s", config)
 	}
 
-	// A first /new dispatch has no code-change reference yet. The generated
-	// policy must therefore skip the runner pre-gate before it reads evidence
-	// credentials or attempts to resolve an external change.
-	result, err := (&runnerEvidencePreGate{}).BeforeDispatch(t.Context(), jobs.EvidencePreGateRequest{
-		WorkflowRoot:   root,
-		CredentialFile: filepath.Join(root, "missing-first-dispatch-credential"),
-	})
-	if err != nil {
-		t.Fatalf("first runner dispatch evidence pre-gate: %v", err)
-	}
-	if !result.Skipped {
-		t.Fatalf("first runner dispatch evidence pre-gate = %+v, want skipped", result)
-	}
 }
 
 func TestExternalCodeWorkflowConfigRejectsLegacyEvidenceWithoutOverwrite(t *testing.T) {

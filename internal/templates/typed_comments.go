@@ -329,6 +329,9 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 	if executionClass, err = model.ParseProcessExecutionClassValue(string(executionClass)); err != nil {
 		return "", err
 	}
+	if executionClass == model.ProcessExecutionReview || executionClass == model.ProcessExecutionVerification {
+		return "", fmt.Errorf("execution class %q was removed; use provider review and configured checks", executionClass)
+	}
 	workspaceManagement := opts.Input.WorkspaceManagement
 	if workspaceManagement == "" {
 		workspaceManagement = model.ProcessWorkspaceManaged
@@ -373,109 +376,6 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 	writeBulletRefs(&b, opts.Input.Covers)
 	fmt.Fprintf(&b, "\n### Handoff\n\n%s\n", valueOr(strings.TrimSpace(opts.Input.Handoff), "N/A"))
 	return model.EnsureTypedBody("PROCESS", opts.Common.ID, b.String(), opts.Common.bodyOptions())
-}
-
-// ReviewInput is the structured input for generated (manual) REVIEW bodies.
-// This template intentionally uses `## Review Summary` and never touches the
-// established `## Review Sync Summary` shape produced by `review sync`.
-type ReviewInput struct {
-	Title    string   `json:"title"`
-	Summary  string   `json:"summary"`
-	Findings []string `json:"findings"`
-	Verdict  string   `json:"verdict"`
-}
-
-type ReviewCommentOptions struct {
-	Common CommonOptions
-	Input  ReviewInput
-}
-
-func ReviewComment(opts ReviewCommentOptions) (string, error) {
-	title := strings.TrimSpace(opts.Input.Title)
-	if title == "" {
-		return "", fmt.Errorf("title is required")
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "## Review Summary: %s\n", title)
-	if summary := strings.TrimSpace(opts.Input.Summary); summary != "" {
-		fmt.Fprintf(&b, "\n%s\n", summary)
-	}
-	b.WriteString("\n### Findings\n\n")
-	writeBulletRefs(&b, opts.Input.Findings)
-	fmt.Fprintf(&b, "\n### Verdict\n\n%s\n", valueOr(strings.TrimSpace(opts.Input.Verdict), "Pending."))
-	return model.EnsureTypedBody("REVIEW", opts.Common.ID, b.String(), opts.Common.bodyOptions())
-}
-
-// VerifyInput is the structured input for generated VERIFY bodies.
-type VerifyInput struct {
-	Title           string `json:"title"`
-	Summary         string `json:"summary"`
-	SubjectRevision string `json:"subject_revision,omitempty"`
-	// Evidence remains accepted as a legacy generator input. New VERIFY bodies
-	// render only the short summary and structured revision-bound evidence.
-	Evidence []string              `json:"evidence"`
-	Tests    []VerifyTestEvidence  `json:"tests,omitempty"`
-	Checks   []VerifyCheckEvidence `json:"checks,omitempty"`
-	SpecRefs []string              `json:"spec_refs"`
-}
-
-// VerifyTestEvidence is a role-owned local test result. Assurance remains
-// explicit so generated evidence never implies coordinator or runtime trust.
-type VerifyTestEvidence struct {
-	ID        string `json:"id"`
-	Command   string `json:"command"`
-	Outcome   string `json:"outcome"`
-	Assurance string `json:"assurance"`
-}
-
-// VerifyCheckEvidence is a provider-owned observation at an exact revision.
-type VerifyCheckEvidence struct {
-	Provider        string `json:"provider"`
-	Name            string `json:"name"`
-	State           string `json:"state"`
-	SubjectRevision string `json:"subject_revision"`
-	Source          string `json:"source"`
-}
-
-type VerifyCommentOptions struct {
-	Common CommonOptions
-	Input  VerifyInput
-}
-
-func VerifyComment(opts VerifyCommentOptions) (string, error) {
-	title := strings.TrimSpace(opts.Input.Title)
-	if title == "" {
-		return "", fmt.Errorf("title is required")
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "## Verification Summary: %s\n", title)
-	if summary := strings.TrimSpace(opts.Input.Summary); summary != "" {
-		fmt.Fprintf(&b, "\n%s\n", summary)
-	}
-	if revision := strings.TrimSpace(opts.Input.SubjectRevision); revision != "" {
-		fmt.Fprintf(&b, "\n### Revision\n\n`%s`\n", revision)
-	}
-	if len(opts.Input.Tests) > 0 {
-		b.WriteString("\n### Local Tests\n\n")
-		for _, test := range opts.Input.Tests {
-			fmt.Fprintf(&b, "- %s: %s (%s) — %s\n", inlineValue(test.ID), inlineValue(test.Outcome),
-				inlineValue(test.Assurance), inlineValue(test.Command))
-		}
-	}
-	if len(opts.Input.Checks) > 0 {
-		b.WriteString("\n### Provider Checks\n\n")
-		for _, check := range opts.Input.Checks {
-			fmt.Fprintf(&b, "- %s/%s: %s at `%s` (%s)\n", inlineValue(check.Provider), inlineValue(check.Name),
-				inlineValue(check.State), strings.TrimSpace(check.SubjectRevision), inlineValue(check.Source))
-		}
-	}
-	b.WriteString("\n### Covered SPECs\n\n")
-	writeBulletRefs(&b, opts.Input.SpecRefs)
-	return model.EnsureTypedBody("VERIFY", opts.Common.ID, b.String(), opts.Common.bodyOptions())
-}
-
-func inlineValue(value string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
 func writeChecklist(b *strings.Builder, items []string) {

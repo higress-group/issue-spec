@@ -48,17 +48,17 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issu
 
 ### Requirement: One workflow board card per issue-spec change
 
-The server MUST continue to project caller-visible artifacts sharing a repository and change key into one permission-filtered card with deterministic stage and anomaly reporting, while completed lifecycle MUST derive from freshly observed provider merge plus successful idempotent reconciliation of the selected issue set and MUST NOT require final VERIFY, Archive, or closure-evidence artifacts.
+The server MUST continue to project caller-visible artifacts sharing a repository and change key into one permission-filtered card with deterministic stage and anomaly reporting. `closed` is the only produced terminal board lifecycle; the historical `completed` enum remains decodeable but inert and MUST NOT be derived from VERIFY, Archive, closure evidence, or a reconstructed provider observation.
 
-#### Scenario: merged change completes after bookkeeping reconciliation
+#### Scenario: reconciled issues remain closed
 
 - **WHEN** the provider reports the selected code change merged and exact post-merge issue reconciliation succeeds
-- **THEN** the card reports completed independently of optional planning artifacts or historical REVIEW and VERIFY state
+- **THEN** the selected issues and their card report closed independently of optional planning artifacts or historical REVIEW and VERIFY state
 
-#### Scenario: legacy final evidence cannot complete a card
+#### Scenario: legacy final evidence cannot produce a terminal variant
 
 - **WHEN** historical VERIFY, Archive, receipt, or closure-evidence artifacts exist without observed provider merge
-- **THEN** the card does not derive completed lifecycle from those artifacts
+- **THEN** the card does not derive completed lifecycle from those artifacts and reports only lifecycle observable from current Issue state
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
