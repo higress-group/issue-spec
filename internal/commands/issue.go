@@ -291,11 +291,12 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 				return 1
 			}
 			index, indexErr := relationships.BuildIndex(fullArtifacts)
-			report := model.VerifyTraceability(fullArtifacts)
-			if indexErr == nil {
-				report = mergeVerifyReports(report,
-					model.VerifyTraceabilityWithRelationships(fullArtifacts, commandTraceabilityEdges(index), nil))
+			if indexErr != nil {
+				a.errorf("implement gate blocked: canonical relationship index: %v\n", indexErr)
+				return 1
 			}
+			report := mergeVerifyReports(model.VerifyTraceability(fullArtifacts),
+				model.VerifyTraceabilityWithRelationships(fullArtifacts, commandTraceabilityEdges(index), nil))
 			if !report.OK {
 				a.errorf("implement gate blocked: proposal/design traceability errors:\n")
 				for _, msg := range report.Errors {
