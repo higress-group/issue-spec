@@ -70,7 +70,15 @@ JSON; unknown/duplicate fields and unsupported versions fail closed:
       "args": ["serve-stdio"],
       "environment": ["CODE_EXAMPLE_TOKEN_FILE=/run/secrets/code-example"],
       "timeout": "30s",
-      "max_output_bytes": 1048576
+      "max_output_bytes": 1048576,
+      "principal_mapping_identity": "employee-directory@sha256:0123456789abcdef",
+      "principal_mappings": [
+        {
+          "provider": "code.example",
+          "stable_id": "provider-user-42",
+          "principal": {"realm": "employees", "stable_id": "person-42"}
+        }
+      ]
     }
   }
 }
@@ -78,6 +86,12 @@ JSON; unknown/duplicate fields and unsupported versions fail closed:
 
 This process-owned file is never discovered from the repository, and workflow
 configuration cannot replace any registered executable or credential input.
+`principal_mappings` is the operator-owned mapping from provider source actors
+to the canonical principals used for reviewer independence. Its immutable
+`principal_mapping_identity` identifies the exact mapping release. A non-empty
+mapping requires that identity, and the identity without mappings is invalid.
+Repository content, bridge responses, and CLI flags cannot add or override a
+mapping.
 
 ## Process boundary
 

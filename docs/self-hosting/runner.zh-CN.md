@@ -486,9 +486,9 @@ workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-s
 5. 当 code-provider bridge 广告 `change.create` 时，确认 Agent 通过该 provider 创建 PR/MR，
    并把变更 URL 回写到 Issue。未提供该能力时，把推送证据作为终点，在沙箱外创建变更；不要
    为此向 bubblewrap 挂载任意宿主 CLI；
-6. 对变更的准确当前 Revision 同步一次 `evidence.snapshot`，确认 Server 在校验显式
-   `evidence:write`、准确仓库范围和实时 `write` 或更高权限后，把证据归因到已认证的
-   Runner 身份；
+6. 运行当前 Provider Validator 与只读 Preflight，再对准确 Head 执行一次非生产
+   `merge_snapshot`；确认 Provider 返回 Policy-complete 的原生 Review/Check Authority 和
+   Token，同时 Runner Dispatch 不会同步 Legacy Evidence，也不会执行 Pre-gate；
 7. 让另一位被授权维护者执行 `/resume`，然后撤销测试凭据并删除测试 Workspace。
 
 | 现象 | 优先检查 |
@@ -497,7 +497,7 @@ workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-s
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
 | Profile PAT 认证失败 | 与 Origin 绑定的 Profile 是否仍解析到预期 Runner 身份，以及 PAT 是否包含 `read:user`、`issues:read`、`issues:write`、`evidence:write` |
-| 证据发布返回 `403` | 有效 PAT 是否显式包含 `evidence:write`、允许访问准确仓库，且认证身份仍具有实时 `write` 或更高权限；`repo`、`admin:repo`、`issues:write`、站点管理员或仓库角色都不能替代证据 Scope |
+| Legacy 审计证据发布返回 `403` | 该路径仅供审计，不能满足 Merge Authority。若固定回滚窗口仍保留它，请确认有效 PAT 显式包含 `evidence:write`、允许访问准确仓库，且认证身份仍具有实时 `write` 或更高权限 |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | 提交时报作者身份未知 | 同时配置 `--git-author-name` 与 `--git-author-email`，并使用代码平台认可的值；不要恢复宿主全局 Git 配置 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |

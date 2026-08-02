@@ -22,11 +22,17 @@ The same registry description should be available to:
 
 - issue-spec Server, so `/api/v1/meta` advertises the provider and Source
   Binding validation recognizes its remote authority;
-- issue-spec CLI processes that run init, review, verify, or archive against
-  that provider.
+- issue-spec CLI processes that run init, read-only merge checks, or protected
+  provider merge against that provider.
 
-Start with `evidence.snapshot`. Add `change.create` and `change.comment`
-independently. A provider may be useful with only one capability.
+A current merge-capable provider is one indivisible contract: semantic
+generation `minimal-merge-authority/v1`, an immutable provider build identity,
+`evidence.review-decision`, `evidence.authoritative-check-conclusion`,
+`change.merge-conditional`, provider-native `merge_snapshot` and
+`merge_change`, and an operator-owned canonical-principal mapping. Partial sets
+are planning-only and fail init before mutation. Legacy `evidence.snapshot`,
+`change.create`, and `change.comment` remain audit/navigation compatibility
+surfaces and do not make a provider merge-capable.
 
 ## Jira-like work tracker
 
@@ -59,6 +65,12 @@ Record:
 - authority per surface;
 - external stable identifiers and canonical URLs;
 - advertised capabilities and intentionally unsupported operations;
+- semantic generation, immutable provider build, mapping identity, and mapping
+  coverage owner;
+- stable provider-native reviewer, author, finding, conversation, and check
+  key/owner identities;
+- the native primitive that atomically validates expected head and the complete
+  authority token;
 - credential issuer, scope, lifetime, storage, and revocation;
 - retry, idempotency, reconciliation, and loop prevention;
 - test environment and rollback path.

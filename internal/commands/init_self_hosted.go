@@ -215,6 +215,11 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 	if err != nil {
 		return a.selfHostedInitError("resolve external code provider", err)
 	}
+	if providerPlan != nil {
+		if err := validateMinimalProviderPlan(*providerPlan); err != nil {
+			return a.selfHostedInitError("validate external code provider", err)
+		}
+	}
 	plan := selfHostedInitPlan{Mode: "self-hosted", Profile: profile.Name, Registry: registrySource,
 		Server: metadata, Organization: organization, Source: source, Provider: providerPlan,
 		Repository: selfHostedRepositoryPlan{Key: organization.Name + "/" + options.ServerRepo,

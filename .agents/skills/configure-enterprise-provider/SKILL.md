@@ -15,8 +15,9 @@ code-host evidence, identity, and Git credentials as separate boundaries.
 - Use `example.test` placeholders in committed documentation and tests.
 - Keep executable paths and credential inputs only in operator-owned private
   configuration. Never put them in repository `issue-spec/config.yaml`.
-- Start with read-only evidence. Add mutation capabilities only after exact
-  repository, change, and revision checks are tested.
+- Start platform API assessment read-only. Advertise no merge capability until
+  exact repository/change/head authority and the native token-bound merge
+  mutation have both passed conformance tests.
 
 ## Workflow
 
@@ -44,24 +45,29 @@ code-host evidence, identity, and Git credentials as separate boundaries.
      --provider-key code.example \
      --display-name "Example Code" \
      --remote-authority git.example.test \
-     --capability evidence.snapshot \
-     --recommended-evidence change \
-     --recommended-evidence check \
+     --provider-build-identity code-example@sha256:0123456789abcdef \
+     --principal-mappings-file "$HOME/.config/issue-spec/principal-mappings.json" \
      --output "$HOME/.config/issue-spec/providers/code.example"
    ```
 
-5. Treat the generated bridge as inert. The requested capabilities and
-   evidence are targets recorded in `implementation-plan.json`; the generated
-   runtime and registry advertise none. Read
+5. Treat the generated bridge as inert. The complete provider-native authority
+   capability set, semantic generation, immutable provider build, and mapping
+   identity are targets recorded in `implementation-plan.json`; the generated
+   runtime and registry advertise no capabilities. Read
    [wrapper-mapping.md](references/wrapper-mapping.md), replace each required
    `not_implemented` branch with platform API calls, and add contract tests.
-   Only then copy completed capabilities into both `provider_bridge.py` and
-   `providers.json`. Preserve exact provider, repository, change, and revision
-   identity.
+   Only after both `merge_snapshot` and native atomic `merge_change` pass may
+   all three required capabilities, `minimal-merge-authority/v1`, and the same
+   immutable build identity be activated in both `provider_bridge.py` and
+   `providers.json`. Preserve exact provider, repository, change, revision,
+   check, actor, and authority-token identity.
 6. Store the generated `providers.json` as a private operator file. Point both
    the server and relevant CLI process at it with
    `ISSUE_SPEC_CODE_PROVIDERS_FILE`, or use the self-hosted profile's trusted
    `operator_registry_file`. Keep the same provider description on both sides.
+   Maintain `principal_mappings` and `principal_mapping_identity` only in this
+   operator registry; never accept canonical principals from a repository,
+   bridge response, CLI flag, login, email, or display name.
 7. Configure the Source Binding with canonical credential-free HTTPS clone and
    web URLs. Run `issue-spec init --plan` before any remote or repository write.
 8. Validate locally before deployment:
@@ -90,10 +96,20 @@ code-host evidence, identity, and Git credentials as separate boundaries.
 - Provider registry is strict JSON, absolute, private, and contains no secret
   values.
 - Bridge emits exactly one strict response and echoes protocol/request identity.
-- Runtime capabilities match the operator description.
-- Snapshot facts are bound to the requested head revision and use stable IDs.
-- Review evidence uses real canonical FINDING/PROCESS/SPEC linkage; otherwise
-  the bridge does not advertise review evidence.
+- Runtime capabilities, semantic generation, and immutable provider build match
+  the operator description exactly.
+- A merge-capable bridge advertises all of `evidence.review-decision`,
+  `evidence.authoritative-check-conclusion`, and
+  `change.merge-conditional`; partial or legacy-only declarations fail closed.
+- `merge_snapshot` is bound to the requested head, returns a closed author set,
+  effective native policy, current reviewer decisions/findings/conversations,
+  one provider-selected conclusion per stable check key/owner, and an opaque
+  authority token.
+- Every provider actor is covered by the operator-owned principal mapping;
+  bridge-supplied canonical principals are never authority.
+- `merge_change` atomically validates expected head and every native fact bound
+  by the token. A bridge-side lock, double read, or expected-head-only merge is
+  ineligible.
 - Mutations are idempotent and cannot target another repository or change.
 - Source Binding contains coordinates only, never credentials.
 - issue-spec remains authoritative for Jira-like synchronization; the adapter
@@ -107,3 +123,7 @@ code-host evidence, identity, and Git credentials as separate boundaries.
 - Runner credential contract: `docs/self-hosting/bridges/git-credential-v1.md`
 - Authentication: `docs/self-hosting/authentication/README.md`
 - Work-tracker adapter: [work-tracker-adapter.md](references/work-tracker-adapter.md)
+
+Legacy `evidence.snapshot`, `change.create`, and `change.comment` bridges remain
+available only for their pinned audit/navigation compatibility surfaces. They
+must not be selected by current self-hosted init or described as merge-capable.

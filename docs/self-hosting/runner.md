@@ -498,10 +498,11 @@ team workflow:
    URL back to the issue. Without that capability, treat push evidence as the
    endpoint and create the change outside the sandbox; do not mount arbitrary
    host CLIs into bubblewrap;
-6. sync an `evidence.snapshot` for the exact current change revision and confirm
-   that the Server attributes it to the authenticated Runner identity after
-   checking explicit `evidence:write`, exact repository access, and live
-   `write`-or-higher permission;
+6. run the current provider validator and read-only preflight, then exercise a
+   non-production `merge_snapshot` at the exact head; confirm the provider
+   returns policy-complete native review/check authority and a token, and that
+   Runner dispatch neither synchronizes legacy evidence nor executes a
+   pre-gate;
 7. verify `/resume` by a different authorized maintainer, then revoke the test
    credential and remove the test workspace.
 
@@ -511,7 +512,7 @@ team workflow:
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
 | Profile PAT authentication fails | Confirm the origin-bound profile still resolves the intended Runner identity and includes `read:user`, `issues:read`, `issues:write`, and `evidence:write` |
-| Evidence publication returns `403` | The active PAT explicitly includes `evidence:write`, allows the exact repository, and its authenticated identity still has live `write`-or-higher permission; `repo`, `admin:repo`, `issues:write`, site-admin, and repository roles do not replace the evidence scope |
+| Legacy audit evidence publication returns `403` | This path is audit-only and cannot satisfy merge authority. If retained during a pinned rollback window, the active PAT explicitly includes `evidence:write`, allows the exact repository, and its authenticated identity still has live `write`-or-higher permission |
 | Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
 | Commit reports an unknown author | Configure both `--git-author-name` and `--git-author-email` with values accepted by the code host; do not restore the host global Git config |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |

@@ -45,8 +45,10 @@ Registry。设计工作项集成前请先阅读[对接 Jira 类工作项平台](
 - API 限流、分页、最终一致性与幂等能力；
 - 哪个系统分别负责 Issue 文本、类型化产物、代码证据与工作项状态。
 
-首期只选择最小能力。先接入只读的 Check 与 Merge 证据，通常比一开始就开放 MR
-创建和评论更安全。
+启用 Onboarding 前必须评估完整的 Merge Authority Contract。只有 Provider 能对一个
+精确 Head 返回 Policy-complete 的原生 Review/Check 权威，并通过原生条件 Merge 原子
+校验该权威时，才具备 Merge 资格。旧的只读审计或 MR 导航仍可保留，但不能宣传成
+Merge Capability。
 
 ## 3. 实现 Code Provider Bridge
 
@@ -65,10 +67,25 @@ python3 .agents/skills/configure-enterprise-provider/scripts/scaffold_provider.p
   --provider-key code.example \
   --display-name "Example Code" \
   --remote-authority git.example.test \
-  --capability evidence.snapshot \
-  --recommended-evidence change \
-  --recommended-evidence check \
+  --provider-build-identity code-example@sha256:0123456789abcdef \
+  --principal-mappings-file "$HOME/.config/issue-spec/principal-mappings.json" \
   --output "$HOME/.config/issue-spec/providers/code.example"
+```
+
+私有 Principal Mapping 文件使用以下严格结构。数据必须来自运维方维护的身份目录，
+不能来自仓库或 Bridge 响应：
+
+```json
+{
+  "principal_mapping_identity": "employee-directory@sha256:0123456789abcdef",
+  "principal_mappings": [
+    {
+      "provider": "code.example",
+      "stable_id": "provider-user-42",
+      "principal": {"realm": "employees", "stable_id": "person-42"}
+    }
+  ]
+}
 ```
 
 命令会生成：
@@ -77,11 +94,11 @@ python3 .agents/skills/configure-enterprise-provider/scripts/scaffold_provider.p
 - `providers.json`：私有运维注册信息和可公开的 Provider 描述；
 - `implementation-plan.json`：目标 Capability 和启用检查清单。
 
-脚手架会故意对 Snapshot 和 Mutation 返回 `not_implemented`，因此运行时和
-`providers.json` 默认都不启用任何 Capability。`--capability` 和
-`--recommended-evidence` 只会把实施目标写入 `implementation-plan.json`，不会提前
-宣称能力。部署前必须替换对应分支、补齐协议测试，再把已经完成的值同时写入
-`provider_bridge.py` 与 `providers.json`。
+脚手架会故意对 `merge_snapshot` 和 `merge_change` 返回 `not_implemented`，因此运行时
+和 `providers.json` 默认都不启用任何 Capability。`implementation-plan.json` 会记录
+完整的三项 Capability、语义代际、不可变 Build 和 Mapping Identity。先实现并测试两个
+Action，再把三项 Capability 及同一 Generation/Build 作为一个不可变发布集，同时启用到
+`provider_bridge.py` 与 `providers.json`；禁止启用部分集合。
 
 ### 把平台对象映射为中性证据
 
@@ -90,7 +107,7 @@ python3 .agents/skills/configure-enterprise-provider/scripts/scaffold_provider.p
 | `provider_key` | 运维注册 Key |
 | `external_repository` | 稳定 Project ID 或规范 Namespace |
 | `change_id` | 有明确仓库作用域的 PR/MR ID |
-| `subject_revision` | 精确 Head Commit SHA |
+| `expected_subject_revision` / `expected_head` | 精确 Head Commit SHA |
 | `canonical_url` | 不含凭据的规范 HTTPS 页面地址 |
 
 外部 Reference 的 metadata 与该 Reference 使用相同的可见性：`repository` Reference
@@ -98,16 +115,20 @@ python3 .agents/skills/configure-enterprise-provider/scripts/scaffold_provider.p
 整条隐藏。metadata 只能保存非敏感的流程坐标；Token、Cookie、Authorization Header 和
 Provider 凭据必须保存在 Operator Bridge 或委派凭据通道中。
 
-处理 `snapshot` 时必须查询请求指定的 `subject_revision`，不能静默替换成最新 Head。
-平台对象需要规范化为 `change`、`review`、`check`、`merge` 和 `archive` Fact，并使用
-稳定 ID 与规范 Payload Digest。是否通过流程 Gate 由 issue-spec 判断，Wrapper 不得
-合成一个 `approved` 结论。
+`merge_snapshot` 必须针对请求 Head 读取一个一致的 Provider Generation，不能替换成
+最新 Head。响应需要包含完整的 Opener/Author/Coauthor/Committer 集合、有效的 Approval/
+CODEOWNER/Stale/Conversation Policy、当前 Reviewer Decision、Provider-owned Finding 与
+Resolution、未解决 Conversation ID，并为每个稳定 Check Key/Owner/Configuration 返回
+唯一一个由 Provider 选择的当前结论，同时返回绑定全部事实的不透明 Authority Token。
 
-Review Fact 必须带真实的 `FINDING-*`、`PROCESS-*` 与 `SPEC-*` 关联。如果平台无法
-保留这些元数据，就不要把普通 Review 文本声明为流程证据。
+Bridge 只返回稳定的来源 Actor Identity。issue-spec 使用运维 Registry 中的
+`principal_mappings` 覆盖 Canonical Principal；Login、Email、Display Name、逻辑 Agent、
+Comment Writer 和 Bridge 身份都不能代替该映射。
 
-`create_change` 只有响应可以引入新的 `change_id`；`comment` 必须回显完全相同的请求
-Reference。两类 Mutation 都应使用平台 Idempotency Key 或本地 Ledger 保证幂等。
+`merge_change` 必须接收同一 Reference、调用方要求的 Head 和新鲜 Token，并通过平台原生
+操作在 Merge 时原子校验 Head 及 Token 绑定的所有 Review/Check/Policy 事实。Bridge 本地
+锁、Double Read 或 Expected-head-only API 均不合格。`change.create` 和
+`change.comment` 可继续作为可选导航 Mutation，但不能替代三项 Merge Contract。
 
 ## 4. 注册与配置 Provider
 
@@ -126,12 +147,26 @@ Registry 必须位于代码仓库外，由服务运维方持有，权限为 `060
       ],
       "timeout": "30s",
       "max_output_bytes": 1048576,
+      "principal_mapping_identity": "employee-directory@sha256:0123456789abcdef",
+      "principal_mappings": [
+        {
+          "provider": "code.example",
+          "stable_id": "provider-user-42",
+          "principal": {"realm": "employees", "stable_id": "person-42"}
+        }
+      ],
       "description": {
+        "provider_key": "code.example",
         "display_name": "Example Code",
         "remote_authorities": ["git.example.test"],
         "code_change_label": "Merge request",
-        "capabilities": ["evidence.snapshot"],
-        "recommended_evidence": ["change", "check"]
+        "semantic_generation": "minimal-merge-authority/v1",
+        "provider_build_identity": "code-example@sha256:0123456789abcdef",
+        "capabilities": [
+          "evidence.review-decision",
+          "evidence.authoritative-check-conclusion",
+          "change.merge-conditional"
+        ]
       }
     }
   }
@@ -163,8 +198,11 @@ python3 .agents/skills/configure-enterprise-provider/scripts/validate_provider.p
   --provider-key code.example
 ```
 
-校验器会检查私有文件权限、严格 Registry 结构、可执行文件位置、响应大小、协议身份，
-以及运行时 Capability 是否与公开描述一致。
+校验器会检查私有文件权限、严格 Registry 结构、可执行文件位置、响应大小、协议身份、
+完整三项 Capability、语义代际、不可变 Build 一致性及运维 Mapping Identity。空的初始
+脚手架会被识别为 Inert，不能 Merge；Legacy-only 或部分声明会给出聚焦错误。启用前还必须
+在非生产仓库实测 `merge_snapshot` 和平台 Protected Merge；Capability 握手本身不能证明
+平台具备原子语义。
 
 ## 5. 为 issue-spec 仓库绑定源码
 
@@ -289,9 +327,15 @@ Runner Clone/Push 优先使用实现
 
 - Server 与 CLI 加载相同的 Provider 描述；
 - Source Binding Authority 与规范 URL 可以通过校验；
+- CLI 与 Server 使用同一 Capability Generation/Build 和运维 Principal Mapping；
 - 所有声明的 Action 成功，所有未声明的 Action Fail Closed；
-- Snapshot 会拒绝错误的 Provider、Repo、Change 或 Revision；
-- Stale、Duplicate、Pending、Failed、Merged 与 Superseded Fact 行为正确；
+- `merge_snapshot` 拒绝错误的 Provider、Repo、Change、Revision 或 Check Key/Owner，且只
+  返回一个由 Provider 选择的当前结论；
+- 未映射或冲突的 Author/Reviewer Fail Closed；
+- Changes-requested、Stale/Dismissed Decision、未解决 P0/P1 Finding、Conversation 以及
+  Pending/Failed Check 行为正确；
+- `merge_change` 在平台原生边界拒绝 Head、Policy、Review、Finding、Conversation、Check
+  或 Authority Token 漂移；
 - 重试不会创建重复 Change 或 Comment；
 - 401、403、404、429、Timeout、Cancellation 与 5xx 被映射为安全稳定的错误；
 - 响应大小限制、Secret Redaction、凭据轮转和回滚已经演练；
@@ -299,19 +343,17 @@ Runner Clone/Push 优先使用实现
 - 重复的创建、关联和状态流转请求保持幂等，工作项更新失败可重试且不会回滚
   issue-spec。
 
-### Aone Code 脱敏一致性记录
+### Legacy Aone 兼容边界
 
-首次 Operator Bridge 一致性冒烟使用 Aone Code。这里只保留有界的 Provider-neutral
-结果；文档示例及后续复现仍必须使用 `code.example`、`example.test` 等虚构标识。
+现有运维侧 Aone Bridge 固定在旧的不可变发布集以及 `evidence.snapshot`、
+`change.create`、`change.comment` 接口。这些值仅用于审计/导航兼容；当前 self-hosted init
+会在任何本地或远端 Mutation 前拒绝它们。不能只修改 Registry 声明来伪装兼容。
 
-| 检查项 | 脱敏结果 |
-|---|---|
-| `issue-spec.code-provider/v1` Capability Discovery | 通过：Operator Bridge 完成严格协议与 Capability 握手。 |
-| Exact-revision `evidence.snapshot` | 通过：顶层 Identity 与请求 Revision 精确匹配，只返回一个 `change` Fact，Canonical URL 安全。 |
-| 故意传入错误 Revision | 通过：Bridge 稳定返回 `revision_mismatch`，且不返回 Snapshot Payload。 |
-
-本仓库不记录该次冒烟的内部域名、仓库或 Change 标识、Commit Revision、用户身份、
-可执行路径、请求/响应 Payload 或任何凭据。
+只有经过脱敏的稳定平台 API 与一致性测试证明完整当前 Contract 后，Aone 才能具备资格：
+精确 Author 和逐 Reviewer Decision、有效原生 Policy 与 Discussion/Finding、稳定且由
+Provider 选择的 Check Key/Owner 结论、运维 Principal Mapping 覆盖，以及能够校验完整
+新鲜 Authority Token 的原子 Expected-head Merge。在此之前必须固定整个 Aone 发布集，
+不得解析 Verbose CLI 原始输出，也不得宣传部分新 Capability。
 
 企业具体配置和详细证据只保存在获批的内部系统。公开文档、Issue 与 PR 只使用通用
 示例和脱敏后的通过/失败摘要。

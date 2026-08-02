@@ -15,8 +15,15 @@ from pathlib import Path
 
 PROVIDER_KEY = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
-CAPABILITIES = {"evidence.snapshot", "change.create", "change.comment"}
-EVIDENCE = {"change", "review", "check", "merge", "archive"}
+MERGE_AUTHORITY_CAPABILITIES = {
+    "evidence.review-decision",
+    "evidence.authoritative-check-conclusion",
+    "change.merge-conditional",
+}
+OPTIONAL_CAPABILITIES = {"change.create", "change.comment"}
+CAPABILITIES = MERGE_AUTHORITY_CAPABILITIES | OPTIONAL_CAPABILITIES
+SEMANTIC_GENERATION = "minimal-merge-authority/v1"
+MAXIMUM_MAPPING_BYTES = 1024 * 1024
 
 
 BRIDGE_TEMPLATE = r'''#!/usr/bin/env python3
@@ -34,6 +41,13 @@ import sys
 
 PROTOCOL = "issue-spec.code-provider/v1"
 PROVIDER_KEY = __PROVIDER_KEY__
+SEMANTIC_GENERATION = "minimal-merge-authority/v1"
+PROVIDER_BUILD_IDENTITY = __PROVIDER_BUILD_IDENTITY__
+MERGE_AUTHORITY_CAPABILITIES = {
+    "evidence.review-decision",
+    "evidence.authoritative-check-conclusion",
+    "change.merge-conditional",
+}
 # Keep the scaffold inert. Move values from PLANNED_CAPABILITIES into
 # CAPABILITIES only after the corresponding handler and contract tests exist,
 # then make the same change in providers.json.
@@ -66,16 +80,58 @@ def require_keys(value, required, optional=()):
         raise BridgeError("invalid_request", "request shape is invalid")
 
 
-def snapshot(payload):
-    require_keys(payload, {"reference", "subject_revision"})
-    reference = payload["reference"]
+def require_text(value, message):
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise BridgeError("invalid_request", message)
+
+
+def validate_reference(reference):
     require_keys(reference, {"provider_key", "external_repository", "change_id"})
     if reference["provider_key"] != PROVIDER_KEY:
         raise BridgeError("reference_mismatch", "provider reference does not match")
+    require_text(reference["external_repository"], "external repository is invalid")
+    require_text(reference["change_id"], "change identity is invalid")
 
-    # TODO: Fetch the change, reviews, checks, and merge state for exactly
-    # payload["subject_revision"]. Return stable facts; never infer approval.
-    raise BridgeError("not_implemented", "snapshot mapping is not implemented")
+
+def merge_snapshot(payload):
+    require_keys(payload, {"reference", "expected_subject_revision", "required_checks"})
+    validate_reference(payload["reference"])
+    require_text(payload["expected_subject_revision"], "expected subject revision is invalid")
+    checks = payload["required_checks"]
+    if not isinstance(checks, list):
+        raise BridgeError("invalid_request", "required checks must be an array")
+    seen = set()
+    for check in checks:
+        require_keys(check, {"provider", "key", "owner"}, {"display_name"})
+        if check["provider"] != PROVIDER_KEY:
+            raise BridgeError("reference_mismatch", "check provider does not match")
+        require_text(check["key"], "check key is invalid")
+        require_text(check["owner"], "check owner is invalid")
+        identity = (check["provider"], check["key"], check["owner"])
+        if identity in seen:
+            raise BridgeError("invalid_request", "required check is duplicated")
+        seen.add(identity)
+
+    # TODO: Fetch one coherent provider-native authority generation for exactly
+    # expected_subject_revision. Return the closed author set, effective review
+    # policy, current reviewer decisions, findings, conversations, exactly one
+    # provider-selected conclusion per requested check, and an opaque token.
+    # Report source actor IDs only. issue-spec replaces canonical principals
+    # from the operator-owned registry mapping.
+    raise BridgeError("not_implemented", "merge snapshot mapping is not implemented")
+
+
+def merge_change(payload):
+    require_keys(payload, {"reference", "expected_head", "authority_token"})
+    validate_reference(payload["reference"])
+    require_text(payload["expected_head"], "expected head is invalid")
+    require_text(payload["authority_token"], "authority token is invalid")
+
+    # TODO: Use a native protected-merge primitive that atomically validates
+    # expected_head and every review/check/policy fact bound by authority_token.
+    # A bridge-side lock, read/read comparison, or expected-head-only merge is
+    # not sufficient and must never advertise change.merge-conditional.
+    raise BridgeError("not_implemented", "conditional merge mapping is not implemented")
 
 
 def mutate(payload):
@@ -104,19 +160,29 @@ def handle(request):
     if action == "capabilities":
         if request.get("payload") is not None:
             raise BridgeError("invalid_request", "capabilities payload must be null")
-        return {
-            "protocol": PROTOCOL,
-            "request_id": request["request_id"],
-            "capabilities": {
-                "protocol_version": PROTOCOL,
-                "values": CAPABILITIES,
-            },
+        capability_payload = {
+            "protocol_version": PROTOCOL,
+            "values": CAPABILITIES,
         }
-    if action == "snapshot":
+        if any(value in MERGE_AUTHORITY_CAPABILITIES for value in CAPABILITIES):
+            capability_payload["semantic_generation"] = SEMANTIC_GENERATION
+            capability_payload["provider_build_identity"] = PROVIDER_BUILD_IDENTITY
         return {
             "protocol": PROTOCOL,
             "request_id": request["request_id"],
-            "snapshot": snapshot(request.get("payload")),
+            "capabilities": capability_payload,
+        }
+    if action == "merge_snapshot":
+        return {
+            "protocol": PROTOCOL,
+            "request_id": request["request_id"],
+            "merge_snapshot": merge_snapshot(request.get("payload")),
+        }
+    if action == "merge_change":
+        return {
+            "protocol": PROTOCOL,
+            "request_id": request["request_id"],
+            "merge": merge_change(request.get("payload")),
         }
     if action == "mutate":
         return {
@@ -162,8 +228,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--provider-key", required=True)
     parser.add_argument("--display-name", required=True)
     parser.add_argument("--remote-authority", action="append", required=True)
-    parser.add_argument("--capability", action="append", choices=sorted(CAPABILITIES), default=[])
-    parser.add_argument("--recommended-evidence", action="append", choices=sorted(EVIDENCE), default=[])
+    parser.add_argument("--provider-build-identity", required=True)
+    parser.add_argument("--principal-mappings-file", required=True, type=Path)
+    parser.add_argument("--capability", action="append", choices=sorted(OPTIONAL_CAPABILITIES), default=[])
     parser.add_argument("--code-change-label", default="Merge request")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--force", action="store_true")
@@ -212,10 +279,93 @@ def validate(args: argparse.Namespace) -> None:
     if len(set(authorities)) != len(authorities) or any(not valid_authority(value) for value in authorities):
         raise SystemExit("--remote-authority values must be unique host[:port] authorities")
     args.remote_authority = authorities
-    args.capability = sorted(set(args.capability))
-    args.recommended_evidence = sorted(set(args.recommended_evidence))
-    if args.recommended_evidence and "evidence.snapshot" not in args.capability:
-        raise SystemExit("recommended evidence requires --capability evidence.snapshot")
+    if not valid_opaque_identity(args.provider_build_identity, 256):
+        raise SystemExit("--provider-build-identity must be an immutable printable identity")
+    args.capability = sorted(set(args.capability) | MERGE_AUTHORITY_CAPABILITIES)
+    args.principal_mapping_identity, args.principal_mappings = read_principal_mappings(
+        args.principal_mappings_file
+    )
+
+
+def valid_opaque_identity(value, limit: int) -> bool:
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and 0 < len(value) <= limit
+        and all(0x21 <= ord(character) <= 0x7E for character in value)
+    )
+
+
+def strict_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field: {key}")
+        result[key] = value
+    return result
+
+
+def read_principal_mappings(raw_path: Path) -> tuple[str, list[dict]]:
+    expanded = os.path.expanduser(str(raw_path))
+    path = Path(expanded)
+    if not path.is_absolute() or os.path.normpath(expanded) != expanded:
+        raise SystemExit("--principal-mappings-file must be a clean absolute path")
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise SystemExit("--principal-mappings-file is unavailable") from error
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_size > MAXIMUM_MAPPING_BYTES
+        or (os.name != "nt" and info.st_mode & 0o077 != 0)
+        or (os.name != "nt" and hasattr(os, "getuid") and info.st_uid != os.getuid())
+    ):
+        raise SystemExit("--principal-mappings-file must be a private single-link regular file")
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        after = os.fstat(descriptor)
+        if not os.path.samestat(info, after):
+            raise OSError("mapping file changed while opening")
+        with os.fdopen(descriptor, "rb", closefd=True) as source:
+            descriptor = -1
+            raw = source.read(MAXIMUM_MAPPING_BYTES + 1)
+        if len(raw) > MAXIMUM_MAPPING_BYTES:
+            raise ValueError("mapping file exceeds 1 MiB")
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=strict_object)
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+        raise SystemExit("--principal-mappings-file is not strict JSON") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(payload, dict) or set(payload) != {"principal_mapping_identity", "principal_mappings"}:
+        raise SystemExit("--principal-mappings-file shape is invalid")
+    identity = payload["principal_mapping_identity"]
+    mappings = payload["principal_mappings"]
+    if not valid_opaque_identity(identity, 256) or not isinstance(mappings, list) or not mappings:
+        raise SystemExit("principal mapping identity and at least one mapping are required")
+    seen = set()
+    for mapping in mappings:
+        if not isinstance(mapping, dict) or set(mapping) != {"provider", "stable_id", "principal"}:
+            raise SystemExit("principal mapping shape is invalid")
+        principal = mapping["principal"]
+        if (
+            not isinstance(principal, dict)
+            or set(principal) != {"realm", "stable_id"}
+            or not isinstance(mapping["provider"], str)
+            or PROVIDER_KEY.fullmatch(mapping["provider"]) is None
+            or not valid_opaque_identity(mapping["stable_id"], 256)
+            or not valid_opaque_identity(principal["realm"], 128)
+            or not valid_opaque_identity(principal["stable_id"], 256)
+        ):
+            raise SystemExit("principal mapping identity is invalid")
+        source = (mapping["provider"], mapping["stable_id"])
+        if source in seen:
+            raise SystemExit("principal mapping source is duplicated")
+        seen.add(source)
+    return identity, mappings
 
 
 def reject_symlink_components(path: Path) -> None:
@@ -269,11 +419,11 @@ def write_file(path: Path, content: str, mode: int, force: bool) -> None:
         except OSError as error:
             raise SystemExit(f"create {path}: {error}") from error
         try:
+            os.fchmod(descriptor, mode)
             with os.fdopen(descriptor, "wb", closefd=True) as output:
                 output.write(encoded)
                 output.flush()
                 os.fsync(output.fileno())
-            os.chmod(path, mode, follow_symlinks=False)
         except Exception:
             path.unlink(missing_ok=True)
             raise
@@ -299,6 +449,8 @@ def main() -> None:
 
     bridge = BRIDGE_TEMPLATE.replace("__PROVIDER_KEY__", repr(args.provider_key)).replace(
         "__PLANNED_CAPABILITIES__", repr(args.capability)
+    ).replace(
+        "__PROVIDER_BUILD_IDENTITY__", repr(args.provider_build_identity)
     )
     bridge_path = output / "provider_bridge.py"
     write_file(bridge_path, bridge, 0o750, args.force)
@@ -315,6 +467,8 @@ def main() -> None:
                 ],
                 "timeout": "30s",
                 "max_output_bytes": 1048576,
+                "principal_mappings": args.principal_mappings,
+                "principal_mapping_identity": args.principal_mapping_identity,
                 "description": {
                     "display_name": args.display_name.strip(),
                     "remote_authorities": args.remote_authority,
@@ -330,13 +484,17 @@ def main() -> None:
 
     plan = {
         "provider_key": args.provider_key,
+        "semantic_generation": SEMANTIC_GENERATION,
+        "provider_build_identity": args.provider_build_identity,
         "planned_capabilities": args.capability,
-        "planned_recommended_evidence": args.recommended_evidence,
+        "principal_mapping_identity": args.principal_mapping_identity,
         "activation": [
-            "implement and contract-test each planned action",
+            "implement and contract-test merge_snapshot for one coherent exact-head native authority generation",
+            "implement merge_change with native atomic expected-head and authority-token enforcement",
+            "prove every provider actor returned by merge_snapshot is covered by the operator principal mapping",
             "move implemented values into provider_bridge.py CAPABILITIES",
+            "copy semantic generation and immutable provider build identity into providers.json description",
             "copy the same values into providers.json description.capabilities",
-            "add recommended evidence only for implemented snapshot mappings",
             "run validate_provider.py and non-production action tests",
         ],
     }

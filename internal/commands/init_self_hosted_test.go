@@ -134,8 +134,8 @@ func TestExternalCodeWorkflowConfigRejectsProviderReplacement(t *testing.T) {
 	}
 }
 
-func TestParseCanonicalGitRemoteConfigNormalizesIngressHTTPBin(t *testing.T) {
-	remotes, err := parseCanonicalGitRemoteConfig("remote.origin.url git@gitlab.alibaba-inc.com:Ingress/httpbin.git\n")
+func TestParseCanonicalGitRemoteConfigNormalizesExampleRepository(t *testing.T) {
+	remotes, err := parseCanonicalGitRemoteConfig("remote.origin.url git@git.example.test:acme/widgets.git\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,10 +143,10 @@ func TestParseCanonicalGitRemoteConfigNormalizesIngressHTTPBin(t *testing.T) {
 		t.Fatalf("remotes = %+v", remotes)
 	}
 	got := remotes[0]
-	if got.RemoteName != "origin" || got.Authority != "gitlab.alibaba-inc.com" ||
-		got.ExternalRepository != "Ingress/httpbin" ||
-		got.CloneURL != "https://gitlab.alibaba-inc.com/Ingress/httpbin.git" ||
-		got.WebURL != "https://gitlab.alibaba-inc.com/Ingress/httpbin" {
+	if got.RemoteName != "origin" || got.Authority != "git.example.test" ||
+		got.ExternalRepository != "acme/widgets" ||
+		got.CloneURL != "https://git.example.test/acme/widgets.git" ||
+		got.WebURL != "https://git.example.test/acme/widgets" {
 		t.Fatalf("normalized remote = %+v", got)
 	}
 }
@@ -201,6 +201,97 @@ func TestInitJournalResumesOnlyExactServerTarget(t *testing.T) {
 	}
 }
 
+func TestSelfHostedInitRejectsLegacyAndPartialProvidersBeforeMutation(t *testing.T) {
+	for _, test := range []struct {
+		name, providerKey, displayName, generation, build string
+		capabilities                                      []string
+	}{
+		{name: "legacy Aone", providerKey: "aone", displayName: "Aone Legacy",
+			capabilities: []string{"evidence.snapshot"}},
+		{name: "partial merge authority", providerKey: "code.partial", displayName: "Partial Code",
+			generation: codereview.MergeAuthorityGeneration, build: "partial@sha256:0123456789abcdef",
+			capabilities: []string{"evidence.review-decision"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			previous, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chdir(root); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chdir(previous) })
+			runInitTestGit(t, "init")
+			runInitTestGit(t, "remote", "add", "origin", "git@git.example.test:acme/widgets.git")
+
+			orgID := uuid.New()
+			mutationCalls := 0
+			description := map[string]any{"provider_key": test.providerKey, "display_name": test.displayName,
+				"remote_authorities": []string{"git.example.test"}, "code_change_label": "Merge request",
+				"capabilities": test.capabilities}
+			if test.generation != "" {
+				description["semantic_generation"] = test.generation
+				description["provider_build_identity"] = test.build
+			}
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					mutationCalls++
+					http.Error(w, "unexpected mutation", http.StatusInternalServerError)
+					return
+				}
+				switch r.URL.Path {
+				case "/api/v1/meta":
+					writeTestJSON(w, map[string]any{"api_version": "v1", "server_instance_id": "issue-spec:preflight",
+						"api_url": server.URL, "native_api_url": server.URL + "/api/v1", "web_url": server.URL,
+						"transport": map[string]any{"mode": "loopback-http", "secure": false},
+						"providers": []any{description}})
+				case "/user":
+					w.Header().Set("X-OAuth-Scopes", "repo, admin:repo")
+					writeTestJSON(w, map[string]any{"login": "operator"})
+				case "/api/v1/context":
+					writeTestJSON(w, map[string]any{"user": map[string]any{"id": uuid.NewString(), "login": "operator"},
+						"credential":    map[string]any{"kind": "pat", "scopes": []string{"repo", "admin:repo"}},
+						"organizations": []map[string]any{{"id": orgID, "name": "acme"}}})
+				case "/api/v1/context/orgs/" + orgID.String() + "/repos":
+					writeTestJSON(w, map[string]any{"repositories": []any{}})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			registryPath := writeProviderRegistryFixture(t, root, test.providerKey, description,
+				map[string]any{"protocol_version": codereview.ProtocolVersion, "semantic_generation": test.generation,
+					"provider_build_identity": test.build, "values": test.capabilities})
+			t.Setenv("ISSUE_SPEC_TOKEN", "realm-token")
+			t.Setenv("ISSUE_SPEC_CODE_PROVIDERS_FILE", "")
+			profile := auth.Profile{Name: "preflight", Kind: auth.ProfileKindHosted, Hostname: "127.0.0.1",
+				APIURL: server.URL, NativeAPIURL: server.URL + "/api/v1", WebURL: server.URL,
+				ServerInstanceID: "issue-spec:preflight", OperatorRegistryFile: registryPath,
+				OnboardingPolicy: auth.OnboardingPolicy{AllowRepositoryCreate: true, AllowSourceBinding: true, AllowUnattended: true}}
+			var out, errOut bytes.Buffer
+			app := newApp(strings.NewReader(""), &out, &errOut)
+			code := app.runSelfHostedInit(t.Context(), profile, selfHostedInitOptions{Repo: "local/source",
+				ServerOrg: "acme", ServerRepo: "widgets-spec", ProviderKey: test.providerKey,
+				SourceWebURL: "https://git.example.test/acme/widgets", CreateLabels: true,
+				Tools: "codex", Delivery: "skills", Yes: true})
+			if code == 0 || !strings.Contains(errOut.String(), "incompatible with minimal merge authority") {
+				t.Fatalf("init exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+			}
+			if mutationCalls != 0 {
+				t.Fatalf("provider preflight failure reached %d remote mutations", mutationCalls)
+			}
+			for _, path := range []string{".issue-spec", "issue-spec", ".agents", ".claude"} {
+				if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
+					t.Fatalf("provider preflight failure created local path %q: %v", path, err)
+				}
+			}
+		})
+	}
+}
+
 func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing.T) {
 	root := t.TempDir()
 	previous, err := os.Getwd()
@@ -212,7 +303,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
 	runInitTestGit(t, "init")
-	runInitTestGit(t, "remote", "add", "origin", "git@gitlab.alibaba-inc.com:Ingress/httpbin.git")
+	runInitTestGit(t, "remote", "add", "origin", "git@git.example.test:acme/widgets.git")
 
 	orgID := uuid.New()
 	repoID := uuid.New()
@@ -229,12 +320,11 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 			writeTestJSON(w, map[string]any{"api_version": "v1", "server_instance_id": "issue-spec:e2e",
 				"api_url": server.URL, "native_api_url": server.URL + "/api/v1", "web_url": server.URL,
 				"transport": map[string]any{"mode": "loopback-http", "secure": false},
-				"providers": []map[string]any{{"provider_key": "aone", "display_name": "Aone Code",
-					"remote_authorities": []string{"gitlab.alibaba-inc.com"}, "code_change_label": "Merge request",
-					"semantic_generation": "minimal-merge-authority/v1", "provider_build_identity": "aone-bridge@sha256:0123456789abcdef",
-					"capabilities": []string{"change.comment", "evidence.snapshot", "evidence.review-decision",
-						"evidence.authoritative-check-conclusion", "change.merge-conditional"},
-					"recommended_evidence": []string{"review", "check"}}}})
+				"providers": []map[string]any{{"provider_key": "code.example", "display_name": "Example Code",
+					"remote_authorities": []string{"git.example.test"}, "code_change_label": "Merge request",
+					"semantic_generation": "minimal-merge-authority/v1", "provider_build_identity": "code-example@sha256:0123456789abcdef",
+					"capabilities": []string{"change.comment", "evidence.review-decision",
+						"evidence.authoritative-check-conclusion", "change.merge-conditional"}}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/user":
 			w.Header().Set("X-OAuth-Scopes", "repo, admin:repo, evidence:write")
 			writeTestJSON(w, map[string]any{"login": "browser-admin"})
@@ -286,11 +376,11 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	}
 
 	args := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
-		"--provider", "aone", "--source-web-url", "https://code.alibaba-inc.com/Ingress/httpbin",
+		"--provider", "code.example", "--source-web-url", "https://git.example.test/acme/widgets",
 		"--tools", "codex", "--delivery", "skills", "--json"}
 	previewDir := filepath.Join(root, "isolated-global-prompts")
 	planArgs := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
-		"--provider", "aone", "--source-web-url", "https://code.alibaba-inc.com/Ingress/httpbin",
+		"--provider", "code.example", "--source-web-url", "https://git.example.test/acme/widgets",
 		"--tools", "codex", "--delivery", "both", "--plan",
 		"--global-prompts-dir", previewDir, "--global-prompts-dry-run"}
 	for _, test := range []struct {
@@ -342,7 +432,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		app := newApp(strings.NewReader(""), &out, &errOut)
 		app.profileName = "e2e"
 		neutralPlanArgs := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
-			"--provider", "aone", "--source-web-url", "https://code.alibaba-inc.com/Ingress/httpbin",
+			"--provider", "code.example", "--source-web-url", "https://git.example.test/acme/widgets",
 			"--tools", "nOnE", "--delivery", "not-used", "--language", "zh", "--skip-labels", "--plan", "--json"}
 		if code := app.runInit(t.Context(), neutralPlanArgs); code != 0 {
 			t.Fatalf("tools-none plan exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
@@ -368,7 +458,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		app := newApp(strings.NewReader(""), &out, &errOut)
 		code := app.runSelfHostedInit(t.Context(), strict, selfHostedInitOptions{Repo: "local-source/local-checkout",
 			ServerOrg: "browser-e2e", ServerRepo: "httpbin",
-			ProviderKey: "aone", SourceWebURL: "https://code.alibaba-inc.com/Ingress/httpbin",
+			ProviderKey: "code.example", SourceWebURL: "https://git.example.test/acme/widgets",
 			CreateLabels: true, Tools: "codex", Delivery: "skills", JSON: true})
 		if code == 0 || !strings.Contains(errOut.String(), "requires --yes") {
 			t.Fatalf("non-interactive mutation policy exit=%d stderr=%s", code, errOut.String())
@@ -400,7 +490,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		t.Fatal(err)
 	}
 	neutralArgs := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
-		"--provider", "aone", "--source-web-url", "https://code.alibaba-inc.com/Ingress/httpbin",
+		"--provider", "code.example", "--source-web-url", "https://git.example.test/acme/widgets",
 		"--tools", "NoNe", "--delivery", "not-used", "--language", "zh", "--skip-labels", "--json"}
 	var neutralOutput string
 	{
@@ -412,7 +502,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		}
 		neutralOutput = out.String()
 	}
-	for _, want := range []string{`"language_applied": false`, `"provider_key": "aone"`, "openspec/config.yaml"} {
+	for _, want := range []string{`"language_applied": false`, `"provider_key": "code.example"`, "openspec/config.yaml"} {
 		if !strings.Contains(neutralOutput, want) {
 			t.Fatalf("tools-none init output missing %q: %s", want, neutralOutput)
 		}
@@ -434,7 +524,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	}
 	neutralConfig := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
 	for _, want := range []string{`"repo": "browser-e2e/httpbin"`, `"profile": "e2e"`, `"server_instance_id": "issue-spec:e2e"`,
-		`"key": "aone"`, `"external_repository": "Ingress/httpbin"`, `"change.comment"`, `"evidence.snapshot"`} {
+		`"key": "code.example"`, `"external_repository": "acme/widgets"`, `"change.comment"`, `"change.merge-conditional"`} {
 		if !strings.Contains(neutralConfig, want) {
 			t.Fatalf("tools-none runtime config missing %q:\n%s", want, neutralConfig)
 		}
@@ -495,13 +585,13 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		t.Fatalf("init output did not use the resolved server target: %s", finalOutput)
 	}
 	config := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
-	for _, want := range []string{`"version": 2`, `"repo": "browser-e2e/httpbin"`, `"profile": "e2e"`, `"key": "aone"`, `"external_repository": "Ingress/httpbin"`} {
+	for _, want := range []string{`"version": 2`, `"repo": "browser-e2e/httpbin"`, `"profile": "e2e"`, `"key": "code.example"`, `"external_repository": "acme/widgets"`} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("project config missing %q:\n%s", want, config)
 		}
 	}
 	workflowConfig := readTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"))
-	for _, want := range []string{"external_code:", "provider_key: aone"} {
+	for _, want := range []string{"external_code:", "provider_key: code.example"} {
 		if !strings.Contains(workflowConfig, want) {
 			t.Fatalf("workflow config missing %q:\n%s", want, workflowConfig)
 		}
@@ -544,9 +634,9 @@ func writeTestJSON(w http.ResponseWriter, value any) {
 }
 
 func testBinding(id uuid.UUID) map[string]any {
-	return map[string]any{"id": id, "provider_key": "aone", "external_repository_id": "Ingress/httpbin",
-		"clone_url": "https://gitlab.alibaba-inc.com/Ingress/httpbin.git",
-		"web_url":   "https://code.alibaba-inc.com/Ingress/httpbin", "default_branch": "main",
+	return map[string]any{"id": id, "provider_key": "code.example", "external_repository_id": "acme/widgets",
+		"clone_url": "https://git.example.test/acme/widgets.git",
+		"web_url":   "https://git.example.test/acme/widgets", "default_branch": "main",
 		"version": 1, "active": true, "created_at": "2026-07-12T00:00:00Z", "updated_at": "2026-07-12T00:00:00Z"}
 }
 
@@ -554,13 +644,13 @@ func writeTestBinding(w http.ResponseWriter, id uuid.UUID) { writeTestJSON(w, te
 
 func writeTestProviderRegistry(t *testing.T, root string) string {
 	t.Helper()
-	bridge := filepath.Join(root, "aone-bridge")
+	bridge := filepath.Join(root, "code-example-bridge")
 	bridgeBody := `#!/usr/bin/python3
 import json, sys
 request = json.load(sys.stdin)
 response = {"protocol": request["protocol"], "request_id": request["request_id"]}
 if request["action"] == "capabilities":
-    response["capabilities"] = {"protocol_version": request["protocol"], "semantic_generation": "minimal-merge-authority/v1", "provider_build_identity": "aone-bridge@sha256:0123456789abcdef", "values": ["change.comment", "evidence.snapshot", "evidence.review-decision", "evidence.authoritative-check-conclusion", "change.merge-conditional"]}
+    response["capabilities"] = {"protocol_version": request["protocol"], "semantic_generation": "minimal-merge-authority/v1", "provider_build_identity": "code-example@sha256:0123456789abcdef", "values": ["change.comment", "evidence.review-decision", "evidence.authoritative-check-conclusion", "change.merge-conditional"]}
 else:
     response["error"] = {"code": "unsupported", "message": "unsupported in init test"}
 json.dump(response, sys.stdout)
@@ -569,8 +659,35 @@ json.dump(response, sys.stdout)
 		t.Fatal(err)
 	}
 	registry := filepath.Join(root, "providers.json")
-	body := fmt.Sprintf(`{"version":1,"providers":{"aone":{"path":%q,"description":{"provider_key":"aone","display_name":"Aone Code","remote_authorities":["gitlab.alibaba-inc.com"],"code_change_label":"Merge request","semantic_generation":"minimal-merge-authority/v1","provider_build_identity":"aone-bridge@sha256:0123456789abcdef","capabilities":["change.comment","evidence.snapshot","evidence.review-decision","evidence.authoritative-check-conclusion","change.merge-conditional"],"recommended_evidence":["review","check"]}}}}`, bridge)
+	body := fmt.Sprintf(`{"version":1,"providers":{"code.example":{"path":%q,"description":{"provider_key":"code.example","display_name":"Example Code","remote_authorities":["git.example.test"],"code_change_label":"Merge request","semantic_generation":"minimal-merge-authority/v1","provider_build_identity":"code-example@sha256:0123456789abcdef","capabilities":["change.comment","evidence.review-decision","evidence.authoritative-check-conclusion","change.merge-conditional"]}}}}`, bridge)
 	if err := os.WriteFile(registry, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+func writeProviderRegistryFixture(t *testing.T, root, key string, description, capabilities map[string]any) string {
+	t.Helper()
+	bridge := filepath.Join(root, strings.ReplaceAll(key, ".", "-")+"-bridge")
+	capabilityJSON, err := json.Marshal(capabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridgeBody := fmt.Sprintf(`#!/usr/bin/python3
+import json, sys
+request = json.load(sys.stdin)
+json.dump({"protocol": request["protocol"], "request_id": request["request_id"], "capabilities": json.loads(%q)}, sys.stdout)
+`, string(capabilityJSON))
+	if err := os.WriteFile(bridge, []byte(bridgeBody), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registry := filepath.Join(root, strings.ReplaceAll(key, ".", "-")+"-providers.json")
+	body, err := json.Marshal(map[string]any{"version": 1, "providers": map[string]any{key: map[string]any{
+		"path": bridge, "description": description}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registry, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return registry

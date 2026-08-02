@@ -15,44 +15,51 @@ through the bridge.
 
 ## Capabilities
 
-- `evidence.snapshot`: read change, review, check, merge, and archive facts for
-  one exact head revision.
-- `change.create`: create a PR/MR from the requested base and head revisions.
-- `change.comment`: add a comment to the exact existing change.
+- `evidence.review-decision`: return current provider-native reviewer decisions,
+  a closed exact-subject author set, effective approval/CODEOWNER/stale/
+  conversation policy, and provider-owned findings.
+- `evidence.authoritative-check-conclusion`: return exactly one
+  provider-selected current conclusion for every requested stable check
+  key/owner and configuration generation.
+- `change.merge-conditional`: atomically validate expected head and every
+  review/check/policy fact bound by the fresh opaque authority token while
+  performing the native protected merge.
 
-Do not advertise a capability until its unhappy paths are tested. Capability
-discovery must not require a repository token when the wrapper can answer from
-static configuration.
+All three are required with semantic generation `minimal-merge-authority/v1`
+and one immutable provider build identity. Do not advertise any of them until
+the complete set and its unhappy paths are tested. Capability discovery must
+not require a repository token when the wrapper can answer from static
+configuration. `evidence.snapshot`, `change.create`, and `change.comment` are
+legacy audit/navigation surfaces and never satisfy merge-authority preflight.
 
-## Evidence facts
+## Merge-authority snapshot
 
-Use stable fact IDs derived from immutable provider event or object IDs. Use a
-SHA-256 digest of a canonical normalized payload, not of presentation text.
+`merge_snapshot` receives the exact reference, expected subject revision, and
+the complete requested check identity set. Observe one coherent native
+generation; never substitute current HEAD for the requested head and never let
+Core choose a CI retry by time or list order.
 
-| Kind | Typical provider objects | Important checks |
+| Authority fact | Provider source | Important checks |
 |---|---|---|
-| `change` | PR/MR record | Head revision, base revision, open/closed state |
-| `review` | Review or line discussion | Canonical FINDING/PROCESS/SPEC IDs, neutral severity and state |
-| `check` | Pipeline/job/check run | Exact head SHA, stable name, pending/success/failure state |
-| `merge` | Merge event/change record | Merged state and immutable merge revision |
-| `archive` | Durable-spec PR/MR | Exact archive revision and merged state |
+| Exact-subject authors | opener plus commit authors/coauthors/committers | closed set, stable source actor IDs, services included |
+| Review policy and decisions | native approval policy and current reviews | full count/CODEOWNER/stale/conversation rules, current reviewer identity and verdict |
+| Findings and conversations | native discussions/findings | stable owner, P0/P1/P2, reviewer-owned resolution, unresolved conversation IDs |
+| Current checks | native required-check/ruleset APIs | exact key/owner/configuration, one provider-selected attempt, exact subject |
+| Authority token | native policy generation or protected merge token | binds head, policy, decisions, findings, conversations, and all required checks |
 
-Never synthesize canonical review linkage from free-form reviewer prose. If the
-provider cannot retain issue-spec linkage metadata, omit review facts and do
-not recommend `review` evidence.
+Return source actors without trusted cross-domain identity. Core overwrites
+their canonical principal using `principal_mappings` from the operator registry
+and rejects unmapped, duplicate, or conflicting actors. Never infer identity
+from login spelling, email, display text, logical Agent, or bridge process.
 
-`observed_at` is the provider observation time. Set `valid_until` when the fact
-is cached or otherwise time-bounded. Return a new fact that supersedes an old
-one instead of silently changing the old fact's identity.
+## Conditional merge
 
-## Mutations
-
-For `create_change`, require a title and head revision and reject an existing
-`change_id`. Return the new change reference, external ID, and canonical URL.
-
-For `comment`, require a complete reference and non-empty body. The response
-must echo the same reference. Use a request-derived idempotency key when the
-provider supports one; otherwise persist a local mutation ledger.
+`merge_change` requires the same exact reference, caller-required
+`expected_head`, and the opaque token returned by a fresh `merge_snapshot`.
+Call only a platform primitive that atomically rejects head, policy, decision,
+finding, conversation, or required-check drift. A local mutex, double read,
+saved snapshot, expected-head-only API, or read-then-unprotected merge cannot
+implement `change.merge-conditional`.
 
 ## Errors
 
@@ -63,11 +70,16 @@ headers, tokens, cookies, or filesystem paths.
 
 ## Contract test matrix
 
-- capabilities: supported, empty, duplicate, unknown, and description mismatch;
+- capabilities: complete, empty/inert, partial, legacy-only, duplicate, unknown,
+  generation/build mismatch, and description mismatch;
 - envelope: wrong protocol/request ID, duplicate/unknown fields, trailing JSON;
-- snapshot: wrong provider/repository/change/revision, stale fact, duplicate ID;
-- review: missing linkage, invalid severity/state, supersession;
-- checks: pending, failed, success, renamed, and retry;
-- mutation: unsupported capability, wrong reference, duplicate delivery;
+- mapping: absent identity, duplicate source actor, conflicting principal,
+  unmapped author/reviewer/finding owner, and bridge-supplied conflict;
+- merge snapshot: wrong provider/repository/change/revision, incomplete author
+  set/policy, duplicate reviewer, unresolved P0/P1, conversation, wrong token;
+- checks: missing/duplicate key-owner, pending, failed, success, renamed,
+  configuration drift, and provider-selected retry;
+- merge: expected-head race, same-head policy/review/check drift, stale token,
+  unknown native result, and exact response identity;
 - operations: timeout, cancellation, output overflow, upstream 401/403/404/429/5xx;
 - security: no inherited ambient token, no shell invocation, no secret on stderr.
