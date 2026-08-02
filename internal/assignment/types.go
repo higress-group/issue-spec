@@ -270,6 +270,19 @@ type Receipt struct {
 	Verification         *VerificationResult   `json:"verification,omitempty"`
 }
 
+// ReceiptInspection reports the identity of one strictly decoded logical
+// receipt without mutating or normalizing the caller's file. Framing outside
+// the single top-level JSON value is intentionally not part of receipt
+// identity.
+type ReceiptInspection struct {
+	ProvidedDigest   string   `json:"provided_digest,omitempty"`
+	RecomputedDigest string   `json:"recomputed_digest,omitempty"`
+	DigestMatches    bool     `json:"digest_matches"`
+	StructuralValid  bool     `json:"structural_valid"`
+	Valid            bool     `json:"valid"`
+	Errors           []string `json:"errors,omitempty"`
+}
+
 type ImplementationResult struct {
 	ChangedPaths   []string `json:"changed_paths"`
 	Decisions      []string `json:"decisions,omitempty"`

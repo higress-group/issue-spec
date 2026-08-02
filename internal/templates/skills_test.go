@@ -145,26 +145,26 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 			name: "issue-spec-apply",
 			required: []string{"sealed implementation assignment", "design_context.read_mode=complete-issue-body",
 				"issue-spec read issue --repo owner/repo", "Stop and report any conflict", "assigned worktree and owned paths",
-				"assigned generators", "focused verification", "exactly one DCO commit", "bounded handoff/result receipt",
-				"result-revision binding", "assigned_selector and resolved_revision", "Any amendment changes the result revision",
-				"Literal selectors retain their exact command identity"},
+				"assigned generators", "exactly one DCO commit", `{"decisions":[],"risks":[],"rationale_draft":"..."}`,
+				"issue-spec role complete", "derives Git facts", "runs every sealed test", "publishes atomically",
+				"An amendment invalidates the receipt", "Coordinator acceptance"},
 			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
 		{
 			name: "issue-spec-review",
 			required: []string{"sealed review assignment", "exact subject revision", "immutable snapshot/diff",
 				"design_context.read_mode=complete-issue-body", "read the complete Design", "Stop on conflict",
-				"subject-revision-bound required test", "assigned_selector plus resolved_revision", "Preserve literal selectors byte-for-byte",
-				"actionable findings", "explicit no-finding verdict", "bounded review receipt/sync result",
+				`{"verdict":"approve","findings":[]}`, "issue-spec role complete", "runs every sealed test",
+				"atomically self-validates v1 evidence", "Coordinator review submission/sync",
 				"issue-spec link --repo owner/repo --from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n> --to-issue <implement-issue>",
 				"issue-spec link --repo owner/repo --from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n> --to-issue <proposal-issue>"},
 			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
 		{
 			name: "issue-spec-verify",
-			required: []string{"sealed verification assignment", "exact immutable subject revision", "required focused tests/checks",
-				"subject-revision-bound required test", "assigned_selector plus resolved_revision", "Preserve literal selectors byte-for-byte",
-				"provider-owned check identity", "bounded VERIFY receipt", "Do not collect or pass runtime-specific session IDs"},
+			required: []string{"sealed verification assignment", "exact immutable subject revision", "required test commands/check selectors",
+				`{"summary":"..."}`, "issue-spec role complete", "runs every sealed test", "derives check selectors",
+				"Coordinator acceptance blockers", "Do not collect or pass runtime session IDs"},
 			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
 	}
@@ -186,6 +186,65 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestRoleCompleteGuidanceCompactsFormerManualEvidenceRecipe(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	former := map[string]string{
+		"issue-spec-apply": `## Implementation Role Packet
+1. Accept only the sealed implementation assignment for the exact PROCESS, base revision, worktree, write ownership, focused tests, generators, result schema, and design_context. Do not load proposal bodies, the complete DAG, link matrices, post-merge policy, provider routing, or unrelated artifacts.
+2. Before code changes, require design_context.read_mode=complete-issue-body and conflict_policy=design-authoritative-stop. Read the complete Design without comments, timeline, history, or gates. Stop and report any conflict.
+3. Work only in the assigned worktree and owned paths. Preserve the named invariant, decisions, must_preserve, must_not, and minimum_verification exactly.
+4. Implement the owned invariant, run the assigned generators exactly, and run focused verification. If the assignment cannot fit a bounded end-to-end working set, stop with the concrete stable-interface split options and acceptance consequences.
+5. For each focused test with a result-revision binding, first produce the exact final DCO result commit, resolve the sealed declarative selector against that commit, run the resulting command, and record both assigned_selector and resolved_revision with the executed command and outcome. Any amendment changes the result revision, invalidates the earlier test evidence, and requires resolution and execution again. Literal selectors retain their exact command identity.
+6. Manually construct the complete receipt schema from assignment identity, Git revision, changed paths, selectors, outcomes, assurance, decisions, risks, rationale, and provenance. For every literal selector copy the exact command. For every bound selector copy assigned_selector, resolved_revision, and the expanded command. Set route=role-owned, assurance=self-reported, writer and subject to the role agent, and the manual source. Canonically sort changed paths, decisions, risks, and tests, omit receipt_digest, hash the canonical JSON, restore receipt_digest, and avoid framing changes. Re-open the output and manually compare assignment id, digest, generation, role, base, result revision, tests, receipt id, and receipt digest. Return the result commit, changed paths, generator outputs, focused tests, decisions, risks, and bounded handoff/result receipt.`,
+		"issue-spec-review": `## Review Role Packet
+1. Accept only the sealed review assignment for the exact subject revision, immutable snapshot/diff, code authors, invariant, scenarios, scope, checks, result schema, and design_context.
+2. Read the complete Design and stop on conflict.
+3. Resolve every subject-revision-bound test, run it, and record assigned_selector plus resolved_revision. Preserve literal selectors byte-for-byte.
+4. Review the invariant end to end at the exact revision and report complete actionable findings or an explicit no-finding verdict.
+5. Manually construct the full review receipt with assignment digest and generation, subject revision, every exact test result, writer/subject provenance, verdict, and findings. For each bound test copy assigned_selector and resolved_revision; for each finding copy its stable id, SPEC, owner PROCESS, path, side, line, severity, and message. Set route=role-owned, assurance=self-reported, writer and subject to the independent reviewer, and the manual review source. Canonically sort findings and tests, omit receipt_digest, hash canonical JSON, restore it, and ensure editor whitespace never changes identity. Re-open the file and manually compare receipt identity, digest, role, generation, subject revision, tests, verdict, findings, and provenance.
+6. Check that approve has no findings and changes-requested has at least one complete finding. Re-check the exact revision after fixes, reconstruct and rehash all evidence after any subject change, and submit only the bounded review receipt/sync result.`,
+		"issue-spec-verify": `## Verification Role Packet
+1. Accept only the sealed verification assignment for the exact immutable subject revision, scenarios, required tests/check selectors, and result schema.
+2. Resolve every subject-revision-bound test and record assigned_selector plus resolved_revision. Preserve literal selectors byte-for-byte.
+3. Run only required tests and keep local self-reported results distinct from provider outcomes.
+4. Manually construct the complete VERIFY receipt with assignment identity, subject, tests, check selectors, summary, writer/subject provenance, and assurance. Canonically sort selectors and tests, omit receipt_digest, hash canonical JSON, restore it, and preserve exact newline framing.
+5. For each test copy its ID, exact command, passed outcome, and self-reported assurance. For each bound selector also copy the complete assigned selector and exact resolved revision. Copy provider/name check selector identity but never claim a provider conclusion. Set route=role-owned, assurance=self-reported, writer and subject to the real verifier, and source to the manual verification route. Validate the schema, role payload exclusivity, exact assignment generation, exact subject revision, selector ordering, and digest after writing the file.
+6. Return only the bounded VERIFY receipt and failures; never invent provider evidence, create REVIEW, infer links, or replace independent review.`,
+	}
+	for name, old := range former {
+		content := rolePacketOnly(skillContent(t, skills, name))
+		if !strings.Contains(content, "issue-spec role complete") {
+			t.Fatalf("%s does not invoke role complete", name)
+		}
+		for _, forbidden := range []string{"receipt_digest", "sha256sum", "jq -S", "hash canonical JSON", "newline framing"} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s retains manual receipt recipe %q", name, forbidden)
+			}
+		}
+		if len([]byte(content)) >= len([]byte(old)) {
+			t.Fatalf("%s role packet did not compact: new=%d former=%d", name, len([]byte(content)), len([]byte(old)))
+		}
+	}
+}
+
+func rolePacketOnly(content string) string {
+	start := strings.Index(content, "## Implementation Role Packet")
+	if start < 0 {
+		start = strings.Index(content, "## Review Role Packet")
+	}
+	if start < 0 {
+		start = strings.Index(content, "## Verification Role Packet")
+	}
+	if start < 0 {
+		return ""
+	}
+	content = content[start:]
+	if end := strings.Index(content, "\n## "); end >= 0 {
+		content = content[:end]
+	}
+	return content
 }
 
 func TestGeneratedGuidanceDeterministicSizeBudgets(t *testing.T) {
