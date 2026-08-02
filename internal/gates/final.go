@@ -170,6 +170,25 @@ func (e *evaluator) evaluateFinalPlanning() finalPlanning {
 				artifactRef(process), "missing", result.tasks[parentID].URL, "comment upsert", "--type", "PROCESS", "--id", processID)
 			continue
 		}
+		for _, dependencyID := range model.TypedSectionList(process.Comment.Body, "### Dependencies") {
+			dependency, ok := result.processes[dependencyID]
+			if !ok {
+				e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s depends on unknown PROCESS %s", processID, dependencyID),
+					artifactRef(process), dependencyID, "one active PROCESS", "comment generate", "--type", "PROCESS", "--id", processID)
+				continue
+			}
+			linked := linksIdentifyArtifact(process.Comment.Links["Related Comments"], dependency)
+			if e.snapshot.Relationships.Required {
+				linked = false
+			}
+			if e.snapshot.Relationships.Required && e.snapshot.Relationships.Observed && e.snapshot.Relationships.Error == "" {
+				linked = relationshipIndexHas(e.snapshot.Relationships.Index, relationships.ProcessDependsProcess, processID, dependencyID)
+			}
+			if !linked {
+				e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s dependency %s is missing its canonical PROCESS URL", processID, dependencyID),
+					artifactRef(process), "missing", dependency.URL, "comment upsert", "--type", "PROCESS", "--id", processID)
+			}
+		}
 		selectors := map[string]bool{}
 		for _, id := range model.TypedSectionList(process.Comment.Body, "### Covers") {
 			if strings.HasPrefix(id, "SPEC-") {
