@@ -13,10 +13,9 @@ Coordinator: follow issue-spec-workflow to prepare the immutable review snapshot
 
 1. Accept only the sealed review assignment for the exact subject revision, immutable snapshot/diff, code authors, owned invariant, affected scenarios, review scope, focused checks, result schema, and design_context.
 2. Require design_context.read_mode=complete-issue-body and conflict_policy=design-authoritative-stop. Before inspecting code, read the complete Design with issue-spec read issue --repo higress-group/issue-spec --issue <design_context.source_url> without comments, timeline, history, or gates. Stop on conflict; do not collect or pass runtime-specific session IDs.
-3. Resolve every subject-revision-bound required test against the sealed subject revision, run the resulting command, and record assigned_selector plus resolved_revision alongside the executed command and outcome. Preserve literal selectors byte-for-byte. Missing, extra, failed, stale, or substituted test evidence blocks completion.
-4. Review the invariant end to end at the exact revision. Verify required actions, stops, compatibility, tests, and major entry points. Do not expand into unrelated proposal history, DAGs, links, post-merge policy, or provider routing.
-5. Under the real review agent identity, report actionable findings with severity, exact file/line, affected SPEC/scenario, owner PROCESS, and suggested fix, or an explicit no-finding verdict. Never fabricate evidence or let the Coordinator author findings for you.
-6. After a fix, re-check the exact current revision and own the resolved reply/conversation resolution. Submit only the bounded review receipt/sync result and focused verification evidence. P0/P1 findings remain blocking until reviewer-owned resolution; the author cannot review its own work.
+3. Review the invariant end to end at the exact detached revision. Own every finding and post-fix recheck; the author cannot review its own work. Do not expand into unrelated history, DAGs, links, policy, or provider routing.
+4. Outside the snapshot, write only `{"verdict":"approve","findings":[]}` (or `changes-requested` with complete existing-model findings), then run `issue-spec role complete --assignment-file <sealed-packet.json> --decision-file <decision.json> --output <receipt.json> --agent <reviewer-name> --json` from the snapshot.
+5. The command proves immutable Git identity, runs every sealed test, and atomically self-validates v1 evidence. Missing, failed, stale, or substituted evidence blocks output. Return only the bounded completion result and findings; Coordinator review submission/sync, links, and acceptance remain separate.
 
 ## Project Workflow
 

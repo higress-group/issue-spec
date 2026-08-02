@@ -479,6 +479,7 @@ func TestBuildMinimalFinalEvidenceUsesV2IssuingProcessWithoutReviewBacklink(t *t
 		}
 	}
 	fixture.inputs = discovered
+	fixture.roleInput(assignment.RoleReview).Reviews = nil
 	wantSnapshot := fixture.snapshot()
 	for index := range fixture.artifacts {
 		artifact := &fixture.artifacts[index]

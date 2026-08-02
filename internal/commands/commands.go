@@ -120,6 +120,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runRunner(ctx, args[1:])
 	case "requirements":
 		return a.runRequirements(ctx, args[1:])
+	case "role":
+		return a.runRole(ctx, args[1:])
 	case "finalize":
 		return a.runFinalize(ctx, args[1:])
 	default:
@@ -256,8 +258,10 @@ Usage:
 	issue-spec finalize preview --repo owner/repo --proposal N --design N --implement N --pr N --intent-file file.json --plan-out /absolute/plan.json [--json]
 	issue-spec finalize apply --plan /absolute/plan.json --checkpoint /absolute/checkpoint.json [--allow-nonatomic] [--json]
 	issue-spec finalize detail --plan /absolute/plan.json [--json]
-  issue-spec requirements setup --server URL [--token-stdin] [--yes] [--json]
+	issue-spec requirements setup --server URL [--token-stdin] [--yes] [--json]
   issue-spec requirements status [--repo owner/repo] [--json]
+	issue-spec role complete --assignment-file /absolute/packet.json --decision-file /absolute/decision.json --output /absolute/receipt.json --agent Worker --json
+	issue-spec role verify-receipt --receipt-file /absolute/receipt.json --json
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
   issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE (--git-credential-command /absolute/provider|--allow-host-ssh)
 	issue-spec runner preflight --repo owner/repo --runner login`)

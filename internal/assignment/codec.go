@@ -156,6 +156,36 @@ func SealReceipt(value Receipt) (Receipt, error) {
 	return value, nil
 }
 
+// InspectReceiptJSON strictly decodes one logical receipt and recomputes its
+// digest from the shared canonical model. Unlike ParseReceiptJSON it can
+// report a supplied bad digest alongside the recomputed value, but it never
+// repairs or reseals the input.
+func InspectReceiptJSON(data []byte) ReceiptInspection {
+	var value Receipt
+	if err := decodeStrict(data, &value); err != nil {
+		return ReceiptInspection{Errors: []string{fmt.Sprintf("parse receipt: %v", err)}}
+	}
+	value = normalizeReceipt(value)
+	report := ReceiptInspection{ProvidedDigest: value.ReceiptDigest}
+	if err := validateReceipt(value, false); err != nil {
+		report.Errors = []string{fmt.Sprintf("validate receipt: %v", err)}
+		return report
+	}
+	report.StructuralValid = true
+	digest, err := ReceiptDigest(value)
+	if err != nil {
+		report.Errors = []string{fmt.Sprintf("digest receipt: %v", err)}
+		return report
+	}
+	report.RecomputedDigest = digest
+	report.DigestMatches = value.ReceiptDigest == digest
+	report.Valid = report.DigestMatches
+	if !report.DigestMatches {
+		report.Errors = []string{"validate receipt: receipt_digest does not match canonical receipt"}
+	}
+	return report
+}
+
 func decodeStrict(data []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
