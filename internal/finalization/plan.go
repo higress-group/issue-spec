@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/reconcile"
 )
@@ -294,7 +293,7 @@ func Compile(input CompileInput) (Plan, error) {
 	reconcilePlan := reconcile.Plan{Version: reconcile.PlanVersion, Repo: strings.TrimSpace(input.Repository),
 		Hostname: strings.TrimSpace(input.Hostname), Proposal: input.Proposal, Operations: []reconcile.Operation{}}
 	if selection.Valid() {
-		reconcilePlan, err = compileReconcile(input, intent, observations, projected, selection, input.LifecycleReady && len(blockers) == 0)
+		reconcilePlan, err = compileReconcile(input, observations, projected, selection, input.LifecycleReady && len(blockers) == 0)
 	}
 	if err != nil {
 		return Plan{}, err
@@ -311,159 +310,58 @@ func Compile(input CompileInput) (Plan, error) {
 	return plan, ValidatePlan(plan)
 }
 
-func compileReconcile(input CompileInput, intent Intent, observations []Observation, projected []model.Artifact,
+func compileReconcile(input CompileInput, observations []Observation, projected []model.Artifact,
 	selection Selection, lifecycleReady bool) (reconcile.Plan, error) {
 	plan := reconcile.Plan{Version: reconcile.PlanVersion, Repo: strings.TrimSpace(input.Repository), Hostname: strings.TrimSpace(input.Hostname),
 		Proposal: input.Proposal, Operations: []reconcile.Operation{}}
 	byID := make(map[string]model.Artifact)
 	observedByID := make(map[string]Observation)
-	byURL := make(map[string]model.Artifact)
 	for _, observation := range observations {
 		typed := model.ParseTypedComment(observation.Body)
 		if typed.ID != "" {
 			observedByID[typed.ID] = observation
 		}
 	}
-	plannedBodies := make(map[string]string)
-	plannedWrites := make(map[string]bool)
 	for _, artifact := range projected {
 		if artifact.Comment.ID != "" {
 			byID[artifact.Comment.ID] = artifact
-			observation, ok := observedByID[artifact.Comment.ID]
-			if !ok {
+			if _, ok := observedByID[artifact.Comment.ID]; !ok {
 				return reconcile.Plan{}, fmt.Errorf("missing provider observation for %s", artifact.Comment.ID)
 			}
-			plannedBodies[artifact.Comment.ID] = observation.Body
-		}
-		for _, raw := range []string{artifact.URL, artifact.APIURL} {
-			if normalized := model.NormalizeURL(raw); normalized != "" {
-				byURL[normalized] = artifact
-			}
 		}
 	}
 
-	var stampIDs []string
-	for _, edge := range intent.SupersededBy {
-		artifact := byID[edge.From]
-		observation := observedByID[edge.From]
-		persisted, found, parseErr := model.ParseSupersededBy(observation.Body, edge.From)
-		if parseErr != nil {
-			return reconcile.Plan{}, parseErr
-		}
-		if found && persisted.ProcessID == edge.To && model.NormalizeURL(persisted.URL) == model.NormalizeURL(byID[edge.To].URL) {
-			continue
-		}
-		id := "01-stamp-" + strings.ToLower(edge.From)
-		stampIDs = append(stampIDs, id)
-		plan.Operations = append(plan.Operations, reconcile.Operation{ID: id, Kind: "upsert",
-			Target:       reconcile.Target{Issue: artifact.Issue, Type: "PROCESS", ID: edge.From},
-			Desired:      reconcile.Desired{Body: artifact.Comment.Body},
-			Precondition: plannedRepresentationPrecondition(observation, plannedBodies[edge.From], plannedWrites[edge.From])})
-		plannedBodies[edge.From] = artifact.Comment.Body
-		plannedWrites[edge.From] = true
-	}
-
-	var linkIDs []string
-	for _, edge := range selection.Edges {
-		from, to := byID[edge.FromProcessID], byID[edge.ToProcessID]
-		fromTarget := reconcile.Target{Issue: from.Issue, Type: "PROCESS", ID: from.Comment.ID}
-		toTarget := reconcile.Target{Issue: to.Issue, Type: "PROCESS", ID: to.Comment.ID}
-		fromBefore, toBefore := plannedBodies[from.Comment.ID], plannedBodies[to.Comment.ID]
-		fromAfter, fromChanged, linkErr := model.AddRelatedCommentLink(fromBefore, to.URL)
-		if linkErr != nil {
-			return reconcile.Plan{}, fmt.Errorf("plan link %s -> %s: %w", from.Comment.ID, to.Comment.ID, linkErr)
-		}
-		toAfter, toChanged, linkErr := model.AddRelatedCommentLink(toBefore, from.URL)
-		if linkErr != nil {
-			return reconcile.Plan{}, fmt.Errorf("plan link %s -> %s: %w", to.Comment.ID, from.Comment.ID, linkErr)
-		}
-		id := "02-link-" + strings.ToLower(edge.FromProcessID) + "-to-" + strings.ToLower(edge.ToProcessID)
-		linkIDs = append(linkIDs, id)
-		plan.Operations = append(plan.Operations, reconcile.Operation{ID: id, Kind: "link", DependsOn: append([]string(nil), stampIDs...),
-			Target: fromTarget, Desired: reconcile.Desired{Peer: &toTarget},
-			Precondition: reconcile.Precondition{Endpoints: []reconcile.EndpointPrecondition{
-				plannedEndpointPrecondition(fromTarget, observedByID[from.Comment.ID], fromBefore, fromAfter, plannedWrites[from.Comment.ID]),
-				plannedEndpointPrecondition(toTarget, observedByID[to.Comment.ID], toBefore, toAfter, plannedWrites[to.Comment.ID]),
-			}}})
-		plannedBodies[from.Comment.ID], plannedBodies[to.Comment.ID] = fromAfter, toAfter
-		plannedWrites[from.Comment.ID] = plannedWrites[from.Comment.ID] || fromChanged
-		plannedWrites[to.Comment.ID] = plannedWrites[to.Comment.ID] || toChanged
-	}
-
-	var backlinkIDs []string
-	for _, artifact := range projected {
-		var role assignment.Role
-		switch artifact.Comment.Type {
-		case "REVIEW":
-			role = assignment.RoleReview
-		case "VERIFY":
-			role = assignment.RoleVerification
-		default:
-			continue
-		}
-		authority, found, authorityErr := model.ObserveAcceptedReceiptAuthority(artifact.Comment.Body, role)
-		if authorityErr != nil {
-			return reconcile.Plan{}, fmt.Errorf("%s accepted receipt: %w", artifact.Comment.ID, authorityErr)
-		}
-		if !found || artifact.Comment.Status != "done" {
-			continue
-		}
-		for _, relatedURL := range model.RelatedCommentURLs(artifact.Comment) {
-			peer, exists := byURL[model.NormalizeURL(relatedURL)]
-			if !exists || (peer.Comment.Type != "PROCESS" && peer.Comment.Type != "SPEC") ||
-				hasRelatedIdentity(peer.Comment, artifact.URL, artifact.APIURL) {
-				continue
-			}
-			id := "03-backlink-" + strings.ToLower(artifact.Comment.ID) + "-to-" + strings.ToLower(peer.Comment.ID)
-			backlinkIDs = append(backlinkIDs, id)
-			carrierTarget := reconcile.Target{Issue: artifact.Issue, Type: artifact.Comment.Type, ID: artifact.Comment.ID}
-			peerTarget := reconcile.Target{Issue: peer.Issue, Type: peer.Comment.Type, ID: peer.Comment.ID}
-			peerBefore := plannedBodies[peer.Comment.ID]
-			peerAfter, peerChanged, linkErr := model.AddRelatedCommentLink(peerBefore, artifact.URL)
-			if linkErr != nil {
-				return reconcile.Plan{}, fmt.Errorf("plan backlink %s -> %s: %w", peer.Comment.ID, artifact.Comment.ID, linkErr)
-			}
-			plan.Operations = append(plan.Operations, reconcile.Operation{ID: id, Kind: "link",
-				DependsOn: append(append([]string(nil), stampIDs...), linkIDs...),
-				Target:    carrierTarget,
-				Desired:   reconcile.Desired{Peer: &peerTarget, CarrierAuthorizedBacklink: true},
-				Precondition: reconcile.Precondition{AcceptedReceipt: &authority, Endpoints: []reconcile.EndpointPrecondition{
-					plannedEndpointPrecondition(peerTarget, observedByID[peer.Comment.ID], peerBefore, peerAfter, plannedWrites[peer.Comment.ID]),
-				}}})
-			plannedBodies[peer.Comment.ID] = peerAfter
-			plannedWrites[peer.Comment.ID] = plannedWrites[peer.Comment.ID] || peerChanged
-		}
-	}
-
-	prior := append(append(append([]string(nil), stampIDs...), linkIDs...), backlinkIDs...)
 	var historicalIDs []string
 	for _, historical := range selection.Historical {
 		artifact := byID[historical.ProcessID]
-		before := plannedBodies[historical.ProcessID]
-		transition, transitionErr := model.ApplyTypedTransition(before, model.TransitionRequest{
+		observation := observedByID[historical.ProcessID]
+		transition, transitionErr := model.ApplyTypedTransition(artifact.Comment.Body, model.TransitionRequest{
 			ExpectedType: "PROCESS", ExpectedID: historical.ProcessID, ToStatus: "superseded",
 		})
 		if transitionErr != nil {
 			return reconcile.Plan{}, fmt.Errorf("plan historical PROCESS %s: %w", historical.ProcessID, transitionErr)
 		}
-		id := "04-supersede-" + strings.ToLower(historical.ProcessID)
+		if transition.Body == observation.Body {
+			continue
+		}
+		id := "01-supersede-" + strings.ToLower(historical.ProcessID)
 		historicalIDs = append(historicalIDs, id)
-		plan.Operations = append(plan.Operations, reconcile.Operation{ID: id, Kind: "transition", DependsOn: append([]string(nil), prior...),
-			Target: reconcile.Target{Issue: artifact.Issue, Type: "PROCESS", ID: historical.ProcessID}, Desired: reconcile.Desired{Status: "superseded"},
-			Precondition: plannedRepresentationPrecondition(observedByID[historical.ProcessID], before, plannedWrites[historical.ProcessID])})
-		plannedBodies[historical.ProcessID] = transition.Body
-		plannedWrites[historical.ProcessID] = plannedWrites[historical.ProcessID] || transition.Changed
+		plan.Operations = append(plan.Operations, reconcile.Operation{ID: id, Kind: "upsert",
+			Target:       reconcile.Target{Issue: artifact.Issue, Type: "PROCESS", ID: historical.ProcessID},
+			Desired:      reconcile.Desired{Body: transition.Body},
+			Precondition: observationPrecondition(observation)})
 	}
 	if lifecycleReady {
-		processBarrier := append(append([]string(nil), prior...), historicalIDs...)
+		processBarrier := append([]string(nil), historicalIDs...)
 		var processIDs []string
 		for _, idValue := range selection.ActiveProcessIDs {
 			artifact := byID[idValue]
 			if artifact.Comment.Status == "done" {
 				continue
 			}
-			before := plannedBodies[idValue]
-			transition, transitionErr := model.ApplyTypedTransition(before, model.TransitionRequest{
+			observation := observedByID[idValue]
+			before := observation.Body
+			_, transitionErr := model.ApplyTypedTransition(before, model.TransitionRequest{
 				ExpectedType: "PROCESS", ExpectedID: idValue, ToStatus: "done",
 			})
 			if transitionErr != nil {
@@ -473,26 +371,29 @@ func compileReconcile(input CompileInput, intent Intent, observations []Observat
 			processIDs = append(processIDs, id)
 			plan.Operations = append(plan.Operations, reconcile.Operation{ID: id, Kind: "transition", DependsOn: append([]string(nil), processBarrier...),
 				Target: reconcile.Target{Issue: artifact.Issue, Type: "PROCESS", ID: idValue}, Desired: reconcile.Desired{Status: "done"},
-				Precondition: plannedRepresentationPrecondition(observedByID[idValue], before, plannedWrites[idValue])})
-			plannedBodies[idValue] = transition.Body
-			plannedWrites[idValue] = plannedWrites[idValue] || transition.Changed
+				Precondition: observationPrecondition(observation)})
 		}
 		taskBarrier := append(append([]string(nil), processBarrier...), processIDs...)
 		for _, artifact := range projected {
 			if artifact.Comment.Type != "TASK" || artifact.Comment.Status == "done" || artifact.Comment.Status == "superseded" {
 				continue
 			}
-			before := plannedBodies[artifact.Comment.ID]
+			observation := observedByID[artifact.Comment.ID]
 			plan.Operations = append(plan.Operations, reconcile.Operation{ID: "06-complete-" + strings.ToLower(artifact.Comment.ID), Kind: "transition",
 				DependsOn: append([]string(nil), taskBarrier...), Target: reconcile.Target{Issue: artifact.Issue, Type: "TASK", ID: artifact.Comment.ID},
 				Desired:      reconcile.Desired{Status: "done"},
-				Precondition: plannedRepresentationPrecondition(observedByID[artifact.Comment.ID], before, plannedWrites[artifact.Comment.ID])})
+				Precondition: observationPrecondition(observation)})
 		}
 	}
 	if len(plan.Operations) != 0 {
-		_, digest, err := reconcile.Validate(plan)
+		ordered, _, err := reconcile.Validate(plan)
 		if err != nil {
 			return reconcile.Plan{}, fmt.Errorf("compile reconcile plan: %w", err)
+		}
+		plan.Operations = ordered
+		_, digest, err := reconcile.Validate(plan)
+		if err != nil {
+			return reconcile.Plan{}, fmt.Errorf("canonicalize reconcile plan: %w", err)
 		}
 		plan.PlanDigest = digest
 	}
@@ -688,24 +589,6 @@ func observationPrecondition(observation Observation) reconcile.Precondition {
 	return reconcile.Precondition{BodyDigest: model.RepresentationDigest(observation.Body)}
 }
 
-func plannedRepresentationPrecondition(observation Observation, body string, previouslyWritten bool) reconcile.Precondition {
-	if !previouslyWritten && body == observation.Body {
-		return observationPrecondition(observation)
-	}
-	return reconcile.Precondition{BodyDigest: model.RepresentationDigest(body)}
-}
-
-func plannedEndpointPrecondition(target reconcile.Target, observation Observation, before, after string,
-	previouslyWritten bool) reconcile.EndpointPrecondition {
-	result := reconcile.EndpointPrecondition{Target: target, AfterDigest: model.RepresentationDigest(after)}
-	if !previouslyWritten && before == observation.Body && observation.RepresentationVersion > 0 {
-		result.RepresentationVersion = observation.RepresentationVersion
-	} else {
-		result.BodyDigest = model.RepresentationDigest(before)
-	}
-	return result
-}
-
 func soleProcessIssue(observations []Observation) (int, error) {
 	implement := 0
 	for _, observation := range observations {
@@ -801,21 +684,6 @@ func normalizeBlockers(values []Blocker) []Blocker {
 		return nil
 	}
 	return result
-}
-
-func hasRelatedIdentity(comment model.TypedComment, identities ...string) bool {
-	want := map[string]bool{}
-	for _, identity := range identities {
-		if normalized := model.NormalizeURL(identity); normalized != "" {
-			want[normalized] = true
-		}
-	}
-	for _, related := range model.RelatedCommentURLs(comment) {
-		if want[model.NormalizeURL(related)] {
-			return true
-		}
-	}
-	return false
 }
 
 func validateRepresentations(values []Representation) error {
