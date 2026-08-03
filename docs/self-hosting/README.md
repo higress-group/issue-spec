@@ -243,7 +243,13 @@ delete only the unwanted active reference, and retry—never guess or silently
 overwrite. GitHub keeps its existing PR workflow; self-hosted review, merge,
 and closure stay with the selected code provider.
 
-The actual direct-path writer or each managed PROCESS worker returns zero or
+When Design or TASK is selected, or the user requests delegation, the
+Coordinator writes no code on delegated or managed paths. Without managed
+PROCESS, exactly one real non-Coordinator worker owns the bounded implementation;
+with managed PROCESS, each change-bearing package has one worker owner and
+distinct packages may run concurrently. Coordinator edits are limited to a
+narrow direct-PR fast path with neither selected planning nor a delegation
+request. The delegated worker, narrow fast-path writer, or each managed PROCESS worker returns zero or
 more line-rationale drafts for non-obvious decisions: repository-relative path,
 stable symbol plus changed-line anchor, and why/tradeoff/risk, with no secret,
 raw payload, or credential. Writers need no provider permission and never guess

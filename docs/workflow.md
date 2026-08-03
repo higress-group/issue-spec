@@ -14,9 +14,13 @@ Use a simple Issue for a bounded single-writer change. Add Proposal, Design,
 Implement, SPEC, TASK, or PROCESS only when product decisions, durable contract
 changes, or concrete coordination risk justify them.
 
-A child/subagent is an execution choice, not a PROCESS trigger. One bounded
-code-writing child can work without PROCESS while the Coordinator does not
-write concurrently. Select managed PROCESS only for:
+A child/subagent is an execution choice, not a PROCESS trigger. Select execution
+mode before assigning writers. Once Design or TASK is selected, or the user
+explicitly asks for an independent worker, the Coordinator writes no code on
+delegated or managed paths. Without managed PROCESS, exactly one real
+non-Coordinator worker owns the bounded implementation. With managed PROCESS,
+each change-bearing work package has one real non-Coordinator owner and distinct
+packages may run concurrently. Select managed PROCESS only for:
 
 - concurrent code writers;
 - isolation that protects pre-existing work;
@@ -25,6 +29,10 @@ write concurrently. Select managed PROCESS only for:
 - dependency-ordered integration.
 
 Read-only investigation and review children never require PROCESS.
+
+Coordinator code edits are limited to a narrow direct-PR fast path with no
+selected Design/TASK and no user delegation request. File count never selects
+this exception.
 
 ## Plan and implement
 
@@ -39,6 +47,12 @@ When planning is selected:
 Managed PROCESS preserves exact base, ownership, worktree isolation, DCO,
 generators, tests, dependency order, and bounded handoff. These are execution
 safety controls, not review or merge gates.
+
+Each implementation worker owns one package's code, focused tests, exact result
+commit, decisions, risks, and non-obvious line-rationale drafts. The Coordinator
+owns dispatch/wait, exact-commit inspection, integration, proportionate final
+validation, anchor validation, and provider publication. Workers receive no
+provider credentials.
 
 ## Validate the exact head
 
