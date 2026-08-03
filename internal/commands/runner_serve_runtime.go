@@ -29,6 +29,7 @@ type runnerServeRuntimeInput struct {
 	Queue                    *webhook.Queue
 	Store                    crstate.StateStore
 	HTTP                     *runnerserver.Service
+	Storage                  jobs.StorageLifecycle
 	GitCredentialCommand     string
 	GitCredentialArgs        []string
 	GitCredentialTimeout     time.Duration
@@ -143,7 +144,7 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	// Wrap the selected writeback boundary, including hermetic test or operator
 	// dependencies, so every live lifecycle transition reaches diagnostics.
 	writebacks = wrapRunnerWriteback(writebacks, input.Diagnostics)
-	dispatcher := &jobs.Dispatcher{Store: input.Store,
+	dispatcher := &jobs.Dispatcher{Store: input.Store, Storage: input.Storage,
 		Repositories: repository.NativeResolver{Bindings: native, Scopes: scopes.ByRepository},
 		Workspaces:   workspaces, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,
 		AcpxBinary: input.Runner.AcpxPath, IssueSpecBinary: issueSpecBinary, CredentialBroker: broker,

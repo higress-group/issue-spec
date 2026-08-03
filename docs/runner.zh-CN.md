@@ -143,6 +143,8 @@ issue-spec runner poll \
 - `--workspace-root <path>` 存储受管理的仓库克隆。默认使用与 `state.json` 相邻的 `workspaces` 目录，位于同一 runner 作用域下。显式路径按给定值使用。
 - `--log-dir <path>` 存储私有的持久诊断日志。默认使用 `state.json` 同级的 `logs` 目录，启动时会打印实际路径。排障时先运行 `rg -n '"level":"error"' <日志目录>/errors.ndjson`，再通过 `index.ndjson` 按 delivery、job 或 public session ID 缩小范围。
 - `--workspace-retention <duration>` 控制真实轮询周期何时移除过期、非活跃的受管 session clone。默认 7 天。处于 queued、dispatched、running、locked 与 interrupted 状态的 session job 会被保护。删除 clone 前 retention 会调用 `git worktree list`；当 runner metadata 为 dirty 或 uncertain、存在 linked worktree，或 git worktree inspection 失败时都会 fail closed 并保留 clone。它不会清理 child PROCESS workspace。
+- `--storage-min-free-bytes <n>` 为 workspace 文件系统设置空闲空间准入阈值。任务分发在获取任何 session 或 workspace 锁之前读取实时空闲字节；低于阈值时先执行一次安全的 storage reconciliation 再复查，若仍然不足，任务保持 queued 而不会失败。配置了阈值时 statfs 失败同样延迟分发（fail closed）。默认 `0` 表示关闭该守卫。
+- `--storage-orphan-grace <duration>` 控制无匹配的 session runtime 目录（既无保留 session 也无所有权证明）在被 applied storage reconciliation 删除前需要观察多久。默认 7 天（`168h`）。孤儿 PROCESS workspace pool 永远不会被自动删除。
 - `--poll-interval` 与 `--fallback-interval` 分别控制通知轮询与较低频率的仓库评论回退。
 - `--fallback-initial-lookback <duration>` 在尚未存储游标时限制首次仓库评论回退的范围。默认 `720h`（30 天）；设为 `0` 可扫描所有历史评论。
 - `--max-concurrency <n>` 可以并行运行相互独立的会话。默认 3；当 runner 主机具备足够的 CPU、内存与 agent 配额时，可调高以提升吞吐。同一公共会话的命令会被 workspace/session 锁串行化。
@@ -153,6 +155,19 @@ issue-spec runner poll \
 - `--agent codex|claude|qoder` 通过 acpx 选择协调 agent。`--model <name>` 把所配置的 model/profile 传给 acpx。
 - `--gh-config-dir <path>` 选择要镜像进沙箱的宿主 GitHub CLI 配置目录。默认情况下 runner 会从宿主 GitHub CLI 环境推导。
 - `--allow-cancel=false` 关闭 `/cancel` intake。
+
+Runner 的存储以 workspace root 为锚点。runner 在受管克隆旁边维护一个私有的 `.storage` 目录：session runtime 根（`.sessions/<hash>`）与 PROCESS workspace pool（`.process-workspaces/<hash>`）的 sidecar 清单、owner 锁，以及首次迁移备份。一个规范化 root 只有一个具备破坏性的 owner：`runner poll` 与 `runner serve` 在进程生命周期内持有 owner 锁，在同一 root 上启动第二个 runner 会失败并提示「stop the old runner before starting a new one」。在同一 state 与 workspace 对上启动新 runner 之前，务必先停止旧 runner。`runner storage reconcile` 在两种模式下也会获取 owner 锁——`--dry-run` 不做任何修改，但仍与存活 runner 互斥；只有 `runner preflight` 不加锁。
+
+可以通过 runner 内部使用的同一引擎显式检查或回收存储：
+
+```bash
+issue-spec runner storage reconcile --state <state.json> --workspace-root <path> --dry-run --json
+issue-spec runner storage reconcile --state <state.json> --workspace-root <path> --apply
+```
+
+`--dry-run` 对清单中的每个资源分类（`protected`、`retired_known`、`orphan_observed`、`rejected`）并报告 `would_delete` 动作，不做任何修改。`--apply` 只删除符合条件的资源，并在删除前立即对照重新加载的 runner 状态重新校验每一项。在对某个 root 执行首次破坏性 pass 之前，原始的迁移前 runner 状态会被保存到 `.storage/backups/state-first.json`；如果该备份无法写入，本次 pass 会跳过删除。当 sidecar 处于 report-only 状态时命令以非零码退出：绑定到不同规范化 root 身份、或由更新 schema 版本写入的 sidecar 只会被只读清点，绝不会被修改或删除。
+
+PROCESS pool 的删除刻意保持保守。仅当所属 clone 存在且 inspection 证明 pool 为空时才会删除已退役的 pool：没有活跃 lease、ownership marker、已注册 worktree 或残留文件。不确定的 pool 会被保留并给出运维处置诊断，绝不会被强制放弃；请通过所属 PROCESS（例如 `issue-spec workflow workspace reconcile`）检查或恢复后，再手动移除任何内容。runtime 与 pool 的删除失败会把所属 workspace 从本次分组 workspace 清理中 defer，以免破坏处置证据。
 
 在 Linux 上，runner 分发默认使用 bubblewrap，把 coordinator 的文件系统写入限制在受管 session clone 与该 session 的 PROCESS workspace pool 内，同时仍允许 GitHub、model 与包操作的网络访问。原生 child 共享这一外层边界；bubblewrap 不会为每个 child 创建独立 sandbox。当 bubblewrap 不在 `PATH` 上时，请安装它或设置 `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path`。若 bubblewrap 不可用或不受支持，runner 会让 preflight 失败，而不是在没有隔离的情况下静默运行。
 

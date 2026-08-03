@@ -1002,6 +1002,20 @@ func validateIDSegment(id string) error {
 	return nil
 }
 
+// CanonicalPath exposes the workspace root canonicalization used for every
+// managed path: absolute, cleaned, symlink-resolved, with missing trailing
+// components resolved against their deepest existing ancestor.
+func CanonicalPath(path string) (string, error) {
+	return canonicalPath(path)
+}
+
+// ValidatePathUnderRoot exposes the root-confinement check used for managed
+// workspaces: the returned canonical path is guaranteed to live below the
+// canonical root and never equal it.
+func ValidatePathUnderRoot(root, path string) (string, error) {
+	return validatePathUnderRoot(root, path)
+}
+
 func validatePathUnderRoot(root, path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("path is required")

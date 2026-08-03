@@ -276,6 +276,13 @@ func sameOpenFilePath(file *os.File, path string) (bool, error) {
 	return os.SameFile(fileInfo, pathInfo), nil
 }
 
+// WriteAtomic persists data with temp-write, fsync, rename, and a directory
+// fsync so a crash never leaves a torn file. Shared by runner state, the
+// storage sidecar, and backups.
+func WriteAtomic(path string, data []byte) error {
+	return writeAtomic(path, data)
+}
+
 func writeAtomic(path string, data []byte) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {

@@ -437,6 +437,45 @@ code-host endpoints in `NO_PROXY`; do not put proxy credentials in the unit or
 a public diagnostic comment. Restart the service after changing the file and
 rerun `runner preflight --verify-agent-runtime` as the same user.
 
+### Storage lifecycle and single owner
+
+The runner anchors storage at `--workspace-root`: a private `.storage`
+directory holds the sidecar inventory of session runtime roots and PROCESS
+workspace pools, an owner lock, and first-migration backups. One canonical
+root has exactly one destructive owner, so run exactly one systemd unit per
+state/workspace pair. A second `runner serve` (or `runner poll`) against the
+same root fails at startup with "stop the old runner before starting a new
+one"; always stop the old unit before starting a replacement.
+
+Two optional flags tune storage behavior on `runner serve`:
+
+- `--storage-min-free-bytes <n>` delays dispatch when the workspace
+  filesystem drops below `n` free bytes, after one safe reconciliation
+  re-check. Jobs stay queued rather than failing. The default `0` disables
+  the guard.
+- `--storage-orphan-grace <duration>` sets the observation window before an
+  unmatched session runtime directory may be deleted by applied
+  reconciliation. The default is 7 days.
+
+Inspect or reclaim storage during maintenance with the same engine:
+
+```bash
+sudo -u issue-spec-runner issue-spec --profile team runner storage reconcile \
+  --state /var/lib/issue-spec-runner/state.json \
+  --workspace-root /var/lib/issue-spec-runner/workspaces \
+  --dry-run --json
+```
+
+`--dry-run` only reports classifications and `would_delete` actions;
+`--apply` deletes eligible resources after re-validating each against freshly
+reloaded runner state. Both modes acquire the owner lock, so run the command
+while the unit is stopped. If the command reports the sidecar as report-only
+(different root identity or newer schema), it inventories read-only and exits
+non-zero; do not delete `.storage` by hand unless you also accept losing
+ownership and orphan-observation proof. Retired PROCESS pools are deleted
+only when proven empty; uncertain pools are preserved with a remediation
+diagnostic and are never force-abandoned.
+
 ## 8. Trigger the agent from a comment
 
 The command must start at the beginning of the comment:

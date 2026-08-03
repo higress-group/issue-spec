@@ -10,6 +10,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/commentrunner/storage"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
@@ -29,6 +30,7 @@ type WorkspaceCleaner interface {
 }
 
 type ReconcileResult struct {
+	StorageCleanup            *storage.Report           `json:"storage_cleanup,omitempty"`
 	Reconciled                int                       `json:"reconciled"`
 	Queued                    int                       `json:"queued"`
 	Running                   int                       `json:"running"`
@@ -120,7 +122,12 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 			}
 		}
 	}
-	cleanup, diagnostics := d.cleanupExpiredWorkspaces(ctx)
+	storageReport, deferred := d.reconcileStoragePass(ctx)
+	result.StorageCleanup = storageReport
+	if storageReport != nil {
+		result.Diagnostics = append(result.Diagnostics, storageReport.Diagnostics...)
+	}
+	cleanup, diagnostics := d.cleanupExpiredWorkspaces(ctx, deferred)
 	result.WorkspaceCleanup = cleanup
 	result.Diagnostics = append(result.Diagnostics, diagnostics...)
 	return result, nil
@@ -133,8 +140,38 @@ func (d *Dispatcher) CleanupWorkspaces(ctx context.Context) (ReconcileResult, er
 	if d.Store == nil {
 		return ReconcileResult{}, fmt.Errorf("job dispatcher state store is required")
 	}
-	cleanup, diagnostics := d.cleanupExpiredWorkspaces(ctx)
-	return ReconcileResult{WorkspaceCleanup: cleanup, Diagnostics: diagnostics}, nil
+	storageReport, deferred := d.reconcileStoragePass(ctx)
+	cleanup, diagnostics := d.cleanupExpiredWorkspaces(ctx, deferred)
+	var storageDiagnostics []string
+	if storageReport != nil {
+		storageDiagnostics = storageReport.Diagnostics
+	}
+	return ReconcileResult{WorkspaceCleanup: cleanup, StorageCleanup: storageReport, Diagnostics: append(diagnostics, storageDiagnostics...)}, nil
+}
+
+// reconcileStoragePass runs the shared storage reconciliation before workspace
+// cleanup so runtime deletion precedes grouped workspace deletion. Runtime
+// deletion failures defer their grouped workspace IDs this pass. A storage
+// failure is diagnosed, never fatal to control-plane reconciliation.
+func (d *Dispatcher) reconcileStoragePass(ctx context.Context) (*storage.Report, map[string]bool) {
+	if d.Storage == nil {
+		return nil, nil
+	}
+	report, err := d.Storage.ReconcileStorage(ctx, true, false)
+	if err != nil {
+		return &storage.Report{Diagnostics: []string{"storage reconciliation: " + safeError(err)}}, nil
+	}
+	var deferred map[string]bool
+	for _, id := range report.DeferredWorkspaceIDs {
+		if id == "" {
+			continue
+		}
+		if deferred == nil {
+			deferred = map[string]bool{}
+		}
+		deferred[id] = true
+	}
+	return &report, deferred
 }
 
 func (d *Dispatcher) validateReconcile() error {
@@ -175,7 +212,7 @@ func (r *ReconcileResult) add(item ReconcileJob) {
 	}
 }
 
-func (d *Dispatcher) cleanupExpiredWorkspaces(ctx context.Context) ([]workspace.CleanupResult, []string) {
+func (d *Dispatcher) cleanupExpiredWorkspaces(ctx context.Context, extraActiveIDs map[string]bool) ([]workspace.CleanupResult, []string) {
 	cleaner, ok := d.Workspaces.(WorkspaceCleaner)
 	if !ok || cleaner == nil {
 		return nil, nil
@@ -185,6 +222,9 @@ func (d *Dispatcher) cleanupExpiredWorkspaces(ctx context.Context) ([]workspace.
 		return nil, []string{"workspace cleanup state load: " + safeError(err)}
 	}
 	workspaces, activeIDs := cleanupWorkspacesFromState(st)
+	for id := range extraActiveIDs {
+		activeIDs[id] = true
+	}
 	if len(workspaces) == 0 {
 		return nil, nil
 	}
@@ -266,6 +306,11 @@ func workspaceCleanupDiagnostics(results []workspace.CleanupResult, err error) [
 		if result.Action == "failed" || result.Action == "rejected" {
 			diagnostics = append(diagnostics, fmt.Sprintf("workspace cleanup %s %s: %s", result.Action, result.WorkspaceID, result.Reason))
 		}
+		// kept:linked_worktrees is neither failed nor rejected, but it must not
+		// stay silent: PROCESS worktrees still reference the workspace.
+		if result.Action == "kept" && result.Reason == "linked_worktrees" {
+			diagnostics = append(diagnostics, fmt.Sprintf("workspace cleanup kept %s: linked_worktrees; PROCESS worktrees still reference this workspace; run issue-spec workflow workspace reconcile/cleanup for the owning PROCESS before removal", result.WorkspaceID))
+		}
 	}
 	if err != nil && len(diagnostics) == 0 {
 		diagnostics = append(diagnostics, "workspace cleanup: "+safeError(err))
@@ -344,6 +389,13 @@ func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job)
 	runtimePaths, err := stableSessionRuntimePaths(workspacePath, job.Repo, publicID)
 	if err != nil {
 		return nil, err
+	}
+	// Best-effort touch: a recording failure must not kill already running
+	// work, but it is diagnosed so startup/explicit reconcile can repair.
+	if d.Storage != nil {
+		if err := d.Storage.RecordSessionResources(ctx, job.Repo, publicID, workspacePath); err != nil {
+			_ = d.appendDiagnostic(ctx, job.ID, "storage recording: "+safeError(err))
+		}
 	}
 	extraEnv := cloneStringMap(d.CoordinatorExtraEnv)
 	extraEnv[workspace.ProcessIntegrationRootEnv] = workspacePath

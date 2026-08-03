@@ -62,7 +62,7 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 		return nil, nil
 	}
 	code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
-		"--state", statePath, "--subscription-id", uuid.NewString(), "--secret-env", "RUNNER_CURRENT_SECRET",
+		"--state", statePath, "--workspace-root", t.TempDir(), "--subscription-id", uuid.NewString(), "--secret-env", "RUNNER_CURRENT_SECRET",
 		"--previous-secret-env", "RUNNER_PREVIOUS_SECRET", "--previous-secrets-valid-until", previousExpiry,
 		"--git-credential-command", "/usr/bin/true"})
 	if code != 0 || !called {
@@ -348,7 +348,7 @@ func TestRunnerServeAcceptsExplicitUnsafeHostSSHMode(t *testing.T) {
 		return commentrunner.PreflightReport{OK: true, Config: cfg}
 	}
 	if code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
-		"--state", filepath.Join(t.TempDir(), "state.json"), "--subscription-id", uuid.NewString(),
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--workspace-root", t.TempDir(), "--subscription-id", uuid.NewString(),
 		"--secret-env", "RUNNER_UNSAFE_HOST_SSH_SECRET", "--allow-host-ssh", "--unsafe-no-sandbox",
 		"--git-author-name", "Issue Spec Runner", "--git-author-email", "runner@example.test"}); code != 0 {
 		t.Fatalf("serve code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -388,7 +388,7 @@ func TestRunnerServeAcceptsExplicitHostSSHMode(t *testing.T) {
 		return commentrunner.PreflightReport{OK: true, Config: cfg}
 	}
 	code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
-		"--state", filepath.Join(t.TempDir(), "state.json"), "--subscription-id", uuid.NewString(),
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--workspace-root", t.TempDir(), "--subscription-id", uuid.NewString(),
 		"--secret-env", "RUNNER_HOST_SSH_SECRET", "--allow-host-ssh", "--unsafe-no-sandbox"})
 	if code != 0 || !called {
 		t.Fatalf("serve code=%d called=%v stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())

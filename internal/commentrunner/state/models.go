@@ -342,11 +342,11 @@ func (c CredentialCleanup) Valid() bool {
 }
 
 type PublicSession struct {
-	Repo              string                    `json:"repo"`
-	PublicSessionID   string                    `json:"public_session_id"`
-	IssueNumber       int                       `json:"issue_number,omitempty"`
-	AcpxRecordID      string                    `json:"acpx_record_id"`
-	CreatorLogin      string                    `json:"creator_login,omitempty"`
+	Repo            string `json:"repo"`
+	PublicSessionID string `json:"public_session_id"`
+	IssueNumber     int    `json:"issue_number,omitempty"`
+	AcpxRecordID    string `json:"acpx_record_id"`
+	CreatorLogin    string `json:"creator_login,omitempty"`
 	// CoordinatorKind is the acpx agent bound to this session at `/new`. It is
 	// reused by every `/resume` turn so a session's workspace/history stays
 	// coherent with a single agent. Empty for sessions created before per-command
@@ -715,6 +715,12 @@ func (s RunnerState) Validate() error {
 
 func PublicSessionKey(repo, publicSessionID string) string {
 	return strings.TrimSpace(repo) + "#" + strings.TrimSpace(publicSessionID)
+}
+
+// SplitPublicSessionKey is the inverse of PublicSessionKey.
+func SplitPublicSessionKey(key string) (repo, publicSessionID string, ok bool) {
+	repo, publicSessionID, ok = strings.Cut(key, "#")
+	return strings.TrimSpace(repo), strings.TrimSpace(publicSessionID), ok
 }
 
 func (s *RunnerState) CreateCommandJob(job Job) (Job, bool, error) {

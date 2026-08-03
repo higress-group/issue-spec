@@ -3,7 +3,6 @@ package jobs
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,6 +24,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	resolver "github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/commentrunner/storage"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/sandbox"
@@ -125,8 +125,18 @@ type CapabilityPreflight interface {
 	Probe(context.Context, credentials.PreflightRequest) capability.Report
 }
 
+// StorageLifecycle is the runner storage facade the dispatcher needs: statfs
+// admission before session/workspace locks, fail-closed runtime/pool recording
+// before sandbox exposure, and shared reconciliation.
+type StorageLifecycle interface {
+	AdmitDispatch(ctx context.Context) error
+	RecordSessionResources(ctx context.Context, repo, publicSessionID, workspacePath string) error
+	ReconcileStorage(ctx context.Context, apply, measureAll bool) (storage.Report, error)
+}
+
 type Dispatcher struct {
 	Store               Store
+	Storage             StorageLifecycle
 	Repositories        RepositoryResolver
 	Workspaces          WorkspaceManager
 	Sandbox             SandboxPreparer
@@ -512,6 +522,17 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 	if strings.TrimSpace(job.CommandPrompt) == "" {
 		return d.fail(ctx, job.ID, "command", fmt.Errorf("job %s is missing first-observed command prompt", job.ID))
 	}
+	// Statfs admission happens before any session/workspace lock is acquired.
+	// Pressure or statfs failure delays the queued job; it never fails it.
+	if d.Storage != nil {
+		if err := d.Storage.AdmitDispatch(ctx); err != nil {
+			reason := "storage_admission"
+			if errors.Is(err, storage.ErrStoragePressure) {
+				reason = "storage_pressure"
+			}
+			return Result{Executed: false, JobID: job.ID, Status: job.Status, Reason: reason}, nil
+		}
+	}
 	repo, session, err := d.resolveRepositoryForCommand(ctx, job, command, publicID)
 	if err != nil {
 		return d.fail(ctx, job.ID, "repository-binding", err)
@@ -876,6 +897,14 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	processRoot, err := prepareSessionProcessWorkspaceRoot(integrationRoot, job.Repo, publicID)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
+	}
+	// Fail-closed: the exact runtime/pool identity is recorded before the
+	// runtime is exposed to sandbox execution so unmanaged runtimes never
+	// proliferate.
+	if d.Storage != nil {
+		if err := d.Storage.RecordSessionResources(ctx, job.Repo, publicID, integrationRoot); err != nil {
+			return ExecutionEnvironment{}, runnercontext.Bundle{}, "", fmt.Errorf("storage recording: %w", err)
+		}
 	}
 	extraEnv := cloneStringMap(d.CoordinatorExtraEnv)
 	sandboxRequest := SandboxRequest{
@@ -2104,30 +2133,10 @@ func stableSessionRuntimePaths(workspacePath, repo, publicID string) (sessionRun
 	}, nil
 }
 
+// stableSessionRuntimeRoot delegates to the storage package so dispatch and
+// storage reconciliation can never drift on the physical identity algorithm.
 func stableSessionRuntimeRoot(workspacePath, repo, publicID string) (string, error) {
-	workspacePath = strings.TrimSpace(workspacePath)
-	repo = strings.TrimSpace(repo)
-	publicID = strings.TrimSpace(publicID)
-	if workspacePath == "" {
-		return "", fmt.Errorf("workspace path is required for session runtime paths")
-	}
-	if repo == "" {
-		return "", fmt.Errorf("repo is required for session runtime paths")
-	}
-	if publicID == "" {
-		return "", fmt.Errorf("public session id is required for session runtime paths")
-	}
-	absWorkspace, err := filepath.Abs(workspacePath)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace path for session runtime paths: %w", err)
-	}
-	cleanWorkspace := filepath.Clean(absWorkspace)
-	runtimeBase := filepath.Dir(cleanWorkspace)
-	if runtimeBase == cleanWorkspace {
-		return "", fmt.Errorf("workspace path %q cannot be filesystem root for session runtime paths", cleanWorkspace)
-	}
-	sum := sha256.Sum256([]byte(repo + "\x00" + publicID + "\x00" + cleanWorkspace))
-	return filepath.Join(runtimeBase, ".sessions", hex.EncodeToString(sum[:16])), nil
+	return storage.SessionRuntimeRoot(workspacePath, repo, publicID)
 }
 
 const processWorkspacePoolDir = ".process-workspaces"
@@ -2168,8 +2177,11 @@ func prepareSessionProcessWorkspaceRoot(workspacePath, repo, publicID string) (s
 	if err != nil {
 		return "", fmt.Errorf("prepare PROCESS workspace pool base: %w", err)
 	}
-	sum := sha256.Sum256([]byte(repo + "\x00" + publicID + "\x00" + canonicalWorkspace))
-	pool, err := preparePrivateCanonicalDir(filepath.Join(base, hex.EncodeToString(sum[:16])))
+	poolHash, err := storage.SessionProcessPoolHash(repo, publicID, canonicalWorkspace)
+	if err != nil {
+		return "", err
+	}
+	pool, err := preparePrivateCanonicalDir(filepath.Join(base, poolHash))
 	if err != nil {
 		return "", fmt.Errorf("prepare PROCESS workspace pool: %w", err)
 	}
