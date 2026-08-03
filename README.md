@@ -113,9 +113,10 @@ review in the browser:
 
 - agents author and read optional typed planning artifacts (`SPEC`, `TASK`,
   `PROCESS`, ...) with validation and safe transitions
-- a coordinator defaults bounded implementation to one writer, and uses managed
-  PROCESS workspaces only when concurrency, isolation, ownership, recovery, or
-  dependency-ordered integration requires them
+- a selected Design or TASK delegates every change-bearing work package to one
+  real non-Coordinator owner; an unmanaged bounded path has exactly one worker,
+  while managed PROCESS may coordinate concurrent packages when concurrency,
+  isolation, ownership, recovery, or dependency integration requires it
 - teammates and their agents pick up planning mid-flight because optional
   decisions and blockers live in Issues, while current review, checks, approval,
   and merge remain owned by people and the code provider

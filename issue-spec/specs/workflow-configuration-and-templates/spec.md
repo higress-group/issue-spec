@@ -14,7 +14,7 @@ Proposal Issues:
 
 ### Requirement: workflow configuration discovery is deterministic
 
-The CLI MUST resolve repository-local issue-spec workflow configuration before compatible legacy configuration and built-in defaults, MUST preserve explicit durable_specs mode selection, and the built-in fallback MUST provide a bounded simple-Issue path plus optional Proposal, SPEC, QUESTION, Design, TASK, and PROCESS planning ending at human PR or MR handoff without REVIEW, VERIFY, final verification, Archive, merge-check, conditional merge, or post-merge reconciliation stages.
+The CLI MUST resolve repository-local issue-spec workflow configuration before compatible legacy configuration and built-in defaults, MUST preserve explicit durable_specs mode selection, and the built-in fallback MUST provide a bounded simple-Issue path plus optional Proposal, SPEC, QUESTION, Design, TASK, and PROCESS planning ending at human PR or MR handoff without REVIEW, VERIFY, final verification, Archive, merge-check, conditional merge, or post-merge reconciliation stages. Selected Design/TASK implementation MUST delegate each change-bearing package to one real non-coordinator owner: the unmanaged bounded path has exactly one worker without requiring Implement or PROCESS, while managed PROCESS may coordinate multiple concurrent packages. Direct coordinator edits are limited to an unplanned narrow direct-PR fast path.
 
 #### Scenario: built-in workflow ends at human handoff
 

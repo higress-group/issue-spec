@@ -41,19 +41,29 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issue
 
 ### Requirement: implement phase plans a PROCESS DAG before dispatch
 
-The workflow MUST default a bounded implementation to one code writer and MUST permit exactly one code-writing child or subagent without TASK or PROCESS when the coordinator performs no concurrent code writes and no managed-coordination need exists. Read-only investigation or review children MUST NOT require PROCESS. Child use, file count, independent review, and human handoff MUST NOT select PROCESS.
+The workflow MUST select execution mode before assigning writers. Once Design or TASK is selected, or the user explicitly requests an independent worker, the coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-coordinator worker MUST own the bounded implementation and MUST be permitted without Implement, PROCESS, or managed workspace lifecycle. With managed PROCESS, every change-bearing work package/PROCESS MUST have exactly one real non-coordinator worker owner while distinct proven-independent packages MAY use concurrent writers. Direct coordinator code edits MUST be limited to a narrow direct-PR fast path with no selected Design/TASK and no user delegation request. Read-only investigation or review children MUST NOT require PROCESS. Child use, file count, independent review, and human handoff MUST NOT select PROCESS, and file count MUST NOT select the coordinator fast-path exception.
 
-When a change explicitly selects TASK/PROCESS coordination, the implement coordinator MUST plan the PROCESS DAG before dispatch. Selection requires at least one concrete managed-coordination need: concurrent code writers, isolation protecting pre-existing work, enforced path ownership, restartable cross-session handoff, or dependency-ordered integration. PROCESS planning state MUST NOT become delivery evidence or a final blocker.
+When managed PROCESS coordination is selected, the implement coordinator MUST plan the PROCESS DAG before dispatch. Selection requires at least one concrete managed-coordination need: concurrent code writers, isolation protecting pre-existing work, enforced path ownership, restartable cross-session handoff, or dependency-ordered integration. PROCESS planning state MUST NOT become delivery evidence or a final blocker.
 
 #### Scenario: one delegated writer stays on the direct path
 
-- **WHEN** a bounded change is delegated to exactly one code-writing child, the coordinator does not write concurrently, and no managed-coordination need exists
-- **THEN** the child MAY implement without TASK, PROCESS, workspace lifecycle, or role receipt while ordinary Git and provider checks validate the result
+- **WHEN** a bounded change has selected Design or TASK, the coordinator does not write concurrently, and no managed-coordination need exists
+- **THEN** exactly one real non-coordinator child MUST implement without requiring Implement, PROCESS, workspace lifecycle, or role receipt while ordinary Git and provider checks validate the result
+
+#### Scenario: direct Coordinator edits are a narrow unplanned exception
+
+- **WHEN** no Design/TASK is selected, the user did not request delegation, and a bounded change follows the direct-PR fast path
+- **THEN** the Coordinator MAY be the one writer without using file count to justify that exception
 
 #### Scenario: child use alone does not select PROCESS
 
 - **WHEN** a child performs implementation, investigation, or review without concurrent write ownership, isolation, recovery, or integration needs
 - **THEN** the workflow MUST NOT create PROCESS solely to record that delegation
+
+#### Scenario: managed coordination may use multiple package owners
+
+- **WHEN** concurrent writers are a concrete managed-coordination need and work packages satisfy the parallel-dispatch safety requirements
+- **THEN** managed PROCESS MAY dispatch multiple concurrent real workers while each change-bearing package has exactly one owner and the coordinator writes no code
 
 #### Scenario: planning is selected by coordination risk
 
@@ -146,7 +156,7 @@ Source SPEC comments:
 
 ### Requirement: Coordinator retains only orchestration state during agent-executed implementation
 
-During agent-executed implementation the coordinator MUST retain only planning, scheduling, workspace management, gate evaluation, integration, synchronization, blocker handling, and bounded handoff state. It MUST consume bounded worker outputs and issue-spec read results rather than implementing, testing, committing, writing legacy rationale evidence, or inlining full issue or pull request bodies or full diffs into its own context. Each implementation worker MUST own zero or more bounded line-rationale drafts for non-obvious decisions in its changed code, anchored by repository-relative path and stable symbol plus changed line with why/tradeoff/risk and containing no secret, raw payload, or credential. After the exact integrated change is pushed, the coordinator MUST validate and map those anchors, confirm continued applicability and sensitive-data absence, and MUST publish each valid unchanged worker-authored text as non-blocking provider-native inline discussion when safe; otherwise it MUST preserve `path:symbol/line` plus that text in the top-level fallback. It MUST return or explain dropping invalid drafts and MUST NOT compose or replace the workers' line rationale. The coordinator owns only provider publication and the ordinary top-level `### Implementation Rationale` summary/index without creating PROCESS/SPEC-bound rationale state.
+During delegated agent implementation, including the unmanaged single-worker path and managed multi-package execution, the coordinator MUST retain only planning, scheduling, workspace management when selected, integration, validation, blocker handling, and bounded handoff state. It MUST consume bounded worker outputs and issue-spec read results rather than implementing, testing, committing, writing legacy rationale evidence, or inlining full issue or pull request bodies or full diffs into its own context. Each implementation worker MUST own one package's code, focused tests, exact result commit, decisions, risks, and zero or more bounded line-rationale drafts for non-obvious decisions in its changed code, anchored by repository-relative path and stable symbol plus changed line with why/tradeoff/risk and containing no secret, raw payload, credential, or provider access. After the exact integrated change is pushed, the coordinator MUST validate and map those anchors, confirm continued applicability and sensitive-data absence, and MUST publish each valid unchanged worker-authored text as non-blocking provider-native inline discussion when safe; otherwise it MUST preserve `path:symbol/line` plus that text in the top-level fallback. It MUST return or explain dropping invalid drafts and MUST NOT compose or replace the workers' line rationale. The coordinator owns dispatch/wait, exact-commit inspection, integration, proportionate final validation, anchor validation, provider publication, and the ordinary top-level `### Implementation Rationale` summary/index without creating PROCESS/SPEC-bound rationale state.
 
 #### Scenario: Coordinator integrates via bounded outputs
 

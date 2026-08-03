@@ -21,12 +21,12 @@ Proposal Issues:
 
 When optional delegated change-bearing PROCESS execution is selected, the coordinator MUST isolate writable workers by worktree, preserve external or human self-managed workspaces, and avoid allocating writable workspaces to read-only orchestration; exact-head human review MUST remain outside REVIEW or VERIFY PROCESS workspaces.
 
-A bounded single-writer implementation MAY dispatch exactly one native child in the selected implementation checkout without PROCESS or managed workspace when the coordinator does not write concurrently, the checkout needs no protection from pre-existing work, and no path enforcement, restart recovery, or dependency-ordered integration is required. Read-only children require no workspace allocation.
+A bounded delegated implementation with selected Design/TASK or an explicit user delegation request MUST dispatch exactly one real non-coordinator native child in the selected implementation checkout without requiring PROCESS or managed workspace only when no managed-coordination need applies. When managed PROCESS is selected, every change-bearing work package MUST instead receive its own real non-coordinator child owner and distinct safe packages MAY run concurrently. The coordinator makes no code changes on either path. Direct coordinator edits are limited to a narrow direct-PR fast path with no selected Design/TASK and no delegation request. Read-only children require no workspace allocation.
 
 #### Scenario: direct child needs no managed workspace
 
-- **WHEN** exactly one code-writing child owns a bounded implementation and the direct-path preconditions hold
-- **THEN** the child uses the selected implementation checkout without a PROCESS lease and the coordinator waits for its result before writing code
+- **WHEN** selected Design/TASK or an explicit user request uses the unmanaged bounded path and its preconditions hold
+- **THEN** the child uses the selected implementation checkout without a PROCESS lease and the coordinator waits for its exact result without writing code on that path
 
 #### Scenario: optional workers remain isolated
 
@@ -105,13 +105,13 @@ Issue-spec MUST track portable workspace lifecycle metadata for each coordinator
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/175#issuecomment-4951799179
 
-### Requirement: Runner preserves the coordinator boundary for delegated and inline PROCESS execution
+### Requirement: Runner preserves the coordinator boundary for delegated PROCESS execution
 
-For optional PROCESS execution, a Runner coordinator MUST remain at its session integration checkout, MUST use managed workspaces and native children for delegated nodes, MAY execute genuinely inline independent nodes at the integration checkout, MUST preserve ownership and bounded handoff, and MUST NOT create REVIEW or VERIFY PROCESS workspaces, mandatory rationale evidence, or evidence lifecycle state.
+For optional PROCESS execution, a Runner coordinator MUST remain at its session integration checkout, MUST use managed workspaces and real non-coordinator native children for every change-bearing node, MAY execute only non-change-bearing orchestration inline at the integration checkout, MUST preserve ownership and bounded handoff, and MUST NOT create REVIEW or VERIFY PROCESS workspaces, mandatory rationale evidence, or evidence lifecycle state.
 
 #### Scenario: runner integration boundary survives workflow simplification
 
-- **WHEN** a Runner executes optional delegated or inline implementation work
+- **WHEN** a Runner executes optional delegated change-bearing work or inline non-change-bearing orchestration
 - **THEN** its coordinator root, child worktrees, integration, ownership, and handoff remain isolated while provider review and the human merge decision stay outside PROCESS lifecycle
 
 Source SPEC comments:

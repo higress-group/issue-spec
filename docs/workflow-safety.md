@@ -14,8 +14,14 @@ planning artifacts merely to obtain a green status.
 
 ## Direct and managed implementation
 
-Default to one code writer. A single bounded child may write without PROCESS
-when the Coordinator performs no concurrent code writes.
+Select execution mode before assigning writers. If Design or TASK is selected,
+or the user requests an independent worker, the Coordinator writes no code on
+delegated or managed paths. Without managed PROCESS, exactly one real
+non-Coordinator worker owns the bounded implementation. With managed PROCESS,
+each change-bearing work package has one real non-Coordinator owner and distinct
+packages may use concurrent writers. Coordinator code edits are limited to a
+narrow direct-PR fast path with no selected Design/TASK and no delegation
+request; file count never selects that exception.
 
 Use managed PROCESS only for concurrent writers, isolation protecting existing
 work, enforced path ownership, restartable cross-session handoff, or

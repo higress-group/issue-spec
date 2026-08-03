@@ -230,7 +230,11 @@ Provider 与外部仓库身份来自 Source Binding。`code-change attach` 不�
 的 Active Reference，再重试；禁止猜测或静默覆盖。GitHub 继续使用原有 PR 流程；
 self-hosted 的 Review、Merge 与关闭仍由所选 Code Provider 负责。
 
-direct 路径的实际写作者或各 managed PROCESS worker，只为非显然决策返回零条或
+一旦选择 Design 或 TASK，或者用户要求 delegation，Coordinator 在 delegated 与 managed
+路径都不修改代码。未选择 managed PROCESS 时，由恰好一个真实的非 Coordinator worker
+负责有界实现；选择 managed PROCESS 后，每个 change-bearing package 都有一个 worker owner，
+不同 package 可以并发。Coordinator 直接修改只保留给既没有选定规划、用户也未要求 delegation 的窄
+direct-PR fast path。delegated worker、窄 fast-path writer 或各 managed PROCESS worker，只为非显然决策返回零条或
 多条行级 rationale 草稿：仓库相对路径、稳定 symbol 加 changed-line anchor，以及
 why/tradeoff/risk，且不得包含 secret、raw payload 或 credential。写作者不需要
 provider 权限，也不猜最终 diff position。精确 head 集成并推送后，coordinator 校验
