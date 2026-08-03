@@ -207,10 +207,12 @@ func TestWriteWorkflowArtifactsDisabledHTMLReviewPrunesExactManagedReferenceIdem
 func TestWriteWorkflowArtifactsPrunesOnlyRecognizedManagedArchiveAssets(t *testing.T) {
 	root := t.TempDir()
 	managedSkill := filepath.Join(root, ".agents", "skills", "issue-spec-archive", "SKILL.md")
+	managedProviderSkill := filepath.Join(root, ".agents", "skills", "issue-spec-code-provider", "SKILL.md")
 	managedCommand := filepath.Join(root, ".claude", "commands", "issue-spec", "archive.md")
 	for path, body := range map[string]string{
-		managedSkill:   "---\nname: issue-spec-archive\nmetadata:\n  generatedBy: \"issue-spec\"\n---\n# Issue Spec Archive\n",
-		managedCommand: "---\nname: \"Issue Spec: Archive\"\ncategory: \"Workflow\"\n---\n# Issue Spec Archive\n",
+		managedSkill:         "---\nname: issue-spec-archive\nmetadata:\n  generatedBy: \"issue-spec\"\n---\n# Issue Spec Archive\n",
+		managedProviderSkill: "---\nname: issue-spec-code-provider\nmetadata:\n  generatedBy: \"issue-spec\"\n---\n# Provider\n",
+		managedCommand:       "---\nname: \"Issue Spec: Archive\"\ncategory: \"Workflow\"\n---\n# Issue Spec Archive\n",
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -223,10 +225,10 @@ func TestWriteWorkflowArtifactsPrunesOnlyRecognizedManagedArchiveAssets(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.PrunedFiles) != 2 {
-		t.Fatalf("pruned files = %v, want two recognized managed assets", result.PrunedFiles)
+	if len(result.PrunedFiles) != 3 {
+		t.Fatalf("pruned files = %v, want three recognized managed assets", result.PrunedFiles)
 	}
-	for _, path := range []string{managedSkill, managedCommand} {
+	for _, path := range []string{managedSkill, managedProviderSkill, managedCommand} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("managed archive asset was not pruned: %s err=%v", path, err)
 		}

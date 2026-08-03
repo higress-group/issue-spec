@@ -29,7 +29,8 @@ func TestWorkflowPreflightAcceptsOneImmutableSetWithoutWrites(t *testing.T) {
 		"--provider-build", "bridge@sha256:1234",
 		"--json",
 	})
-	if code != 0 || errOut.Len() != 0 || !strings.Contains(out.String(), `"ok": true`) {
+	if code != 0 || errOut.Len() != 0 || !strings.Contains(out.String(), `"ok": true`) ||
+		!strings.Contains(out.String(), `"purpose": "operator-controlled-deployment-readiness"`) {
 		t.Fatalf("preflight exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 	if backend.issueWrites != 0 || backend.prWrites != 0 || provider.snapshots != 0 || provider.merges != 0 {

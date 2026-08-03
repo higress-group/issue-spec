@@ -48,6 +48,7 @@ type workflowPreflightProvider struct {
 
 type workflowPreflightResult struct {
 	OK                          bool                      `json:"ok"`
+	Purpose                     string                    `json:"purpose"`
 	Repository                  string                    `json:"repository"`
 	ReleaseSet                  string                    `json:"release_set"`
 	CLI                         buildinfo.Info            `json:"cli"`
@@ -83,7 +84,8 @@ func (a *app) runWorkflowPreflight(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
-	result := workflowPreflightResult{Repository: repo, ReleaseSet: strings.TrimSpace(*releaseSet),
+	result := workflowPreflightResult{Repository: repo, Purpose: "operator-controlled-deployment-readiness",
+		ReleaseSet:    strings.TrimSpace(*releaseSet),
 		ServerRelease: strings.TrimSpace(*serverRelease), RunnerRelease: strings.TrimSpace(*runnerRelease),
 		CLI: buildinfo.Current(), ReconciliationMode: "post-merge-idempotent",
 		PinnedGeneratedDigest:    strings.TrimSpace(*generatedDigest),
@@ -149,7 +151,7 @@ func (a *app) runWorkflowPreflight(ctx context.Context, args []string) int {
 	if *jsonOut {
 		_ = a.outputJSON(result)
 	} else {
-		fmt.Fprintf(a.out, "workflow release preflight: ok=%t release=%s generated=%s provider=%s generation=%s build=%s\n",
+		fmt.Fprintf(a.out, "operator workflow release preflight: ok=%t release=%s generated=%s provider=%s generation=%s build=%s\n",
 			result.OK, result.ReleaseSet, result.GeneratedAssets.ContentDigest, result.Provider.Key,
 			result.Provider.SemanticGeneration, result.Provider.ImmutableBuild)
 		for _, message := range result.Errors {

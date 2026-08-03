@@ -28,6 +28,11 @@ func TestArtifactRefRequiresExactTypedProviderIdentity(t *testing.T) {
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("urls=%v want %v", got, want)
 	}
+	httpArtifact := artifact
+	httpArtifact.URL = "http://issues.internal.test/acme/widgets/issues/3#issuecomment-7"
+	if _, err := httpArtifact.Ref(); err != nil {
+		t.Fatalf("trusted internal HTTP artifact identity rejected: %v", err)
+	}
 }
 
 func TestArtifactRefRejectsInvalidIdentityAndURL(t *testing.T) {
@@ -37,7 +42,10 @@ func TestArtifactRefRejectsInvalidIdentityAndURL(t *testing.T) {
 		"wrong type":    func(value *ArtifactRef) { value.Type = "TASK" },
 		"unclean id":    func(value *ArtifactRef) { value.ID = " PROCESS-001" },
 		"relative url":  func(value *ArtifactRef) { value.URL = "/process/1" },
-		"user info":     func(value *ArtifactRef) { value.URL = "https://user@example.test/process/1" },
+		"unsupported scheme": func(value *ArtifactRef) {
+			value.URL = "ftp://example.test/process/1"
+		},
+		"user info": func(value *ArtifactRef) { value.URL = "https://user@example.test/process/1" },
 		"trailing slash": func(value *ArtifactRef) {
 			value.URL += "/"
 		},

@@ -140,7 +140,7 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 			return result, err
 		}
 	}
-	pruned, err := pruneManagedArchiveWorkflowAssets(root, delivery, tools)
+	pruned, err := pruneManagedWorkflowAssets(root, delivery, tools, provider != nil)
 	if err != nil {
 		return result, err
 	}
@@ -511,12 +511,15 @@ func directoryTreeCoveredByTarget(source, target string) (bool, error) {
 	return covered, err
 }
 
-func pruneManagedArchiveWorkflowAssets(root, delivery string, tools []workflowTool) ([]string, error) {
+func pruneManagedWorkflowAssets(root, delivery string, tools []workflowTool, keepProvider bool) ([]string, error) {
 	type candidate struct {
 		path string
 		name string
 	}
 	retired := []string{"archive", "review", "verify"}
+	if !keepProvider {
+		retired = append(retired, "code-provider")
+	}
 	var candidates []candidate
 	if delivery != workflowDeliveryCommands {
 		for _, name := range retired {

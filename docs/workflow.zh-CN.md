@@ -32,7 +32,7 @@ external_code:
 
 ## 预检一个不可变发布集合
 
-Runner 分派或合并前，先停止相关写入，并验证 CLI、Server、Runner、生成制品与提供方桥接器属于同一个固定发布集合：
+在启用 Runner 分派或合并前，把它作为运维方控制的部署切换步骤：先停止相关写入，并验证 CLI、Server、Runner、生成制品与提供方桥接器属于同一个固定发布集合：
 
 ```sh
 issue-spec workflow preflight \
@@ -47,7 +47,9 @@ issue-spec workflow preflight \
   --json
 ```
 
-预检只读。它会验证 `issue-spec.code-provider/v1`、语义代际 `minimal-merge-authority/v1`、不可变桥接构建身份、`evidence.review-decision`、`evidence.authoritative-check-conclusion`、`change.merge-conditional`、生成制品发布与摘要、检查 key/owner、运维方管理的规范主体映射来源、固定的 `post-merge-idempotent` 协调模式以及固定的 `provider-authority-token` 执行方式。这些模式是只读报告的不变量，不是调用方可选标志。任何缺失、未知或混合身份都会在读取可用权威或发生写入前失败。
+预检只读并报告 `purpose=operator-controlled-deployment-readiness`。运维方传入刚观测到的 Server/Runner 身份；命令把它们与本地 CLI、生成 manifest、provider generation/build/capabilities、检查 key/owner、规范主体映射来源、固定的 `post-merge-idempotent` 协调模式和 `provider-authority-token` 执行方式比较。它是受信部署切换检查，不是持久化 receipt 或合并权威，合并命令也不消费其输出。真正承载权威的命令会在读取或写入前独立重验 provider generation、build、capabilities、主体映射、精确 subject 和 fresh authority token。
+
+缺少 merge-authority provider 不阻塞 `init`、Proposal、Design 或直接手工开发。Init 会报告 `workflow_readiness.mode=planning-only` 与 `merge_capable=false`，且不生成 provider-authority Skill。运维方必须让 Runner dispatch 保持 quiesced；`merge-check` 和条件合并会独立 fail closed。即使 provider capability 完整，init 时也只报告 `operator-preflight-required`、`provider_authority_capable=true` 和 `merge_capable=false`，因为 init 不会建立主体映射、配置 check identity 或部署就绪性。
 
 ## 评审与检查归提供方所有
 

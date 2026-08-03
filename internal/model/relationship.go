@@ -48,8 +48,8 @@ func (ref ArtifactRef) Validate() error {
 		return errors.New("artifact url must be canonical")
 	}
 	parsed, err := url.Parse(ref.URL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Opaque != "" {
-		return errors.New("artifact url must be an absolute HTTPS provider identity")
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil || parsed.Opaque != "" {
+		return errors.New("artifact url must be an absolute HTTP(S) provider identity")
 	}
 	return nil
 }

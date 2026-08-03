@@ -174,6 +174,15 @@ func TestParseCanonicalGitRemoteConfigRejectsCredentialAndAmbiguousAlias(t *test
 	}
 }
 
+func TestProjectServerHostnameUsesHandshakeWebIdentity(t *testing.T) {
+	if got := projectServerHostname("http://11.164.3.16:18080", "127.0.0.1"); got != "11.164.3.16" {
+		t.Fatalf("project server hostname = %q", got)
+	}
+	if got := projectServerHostname("not a URL", "127.0.0.1"); got != "127.0.0.1" {
+		t.Fatalf("fallback project server hostname = %q", got)
+	}
+}
+
 func TestInitJournalResumesOnlyExactServerTarget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".issue-spec", "init-state.json")
 	profile := auth.Profile{Name: "e2e", Kind: auth.ProfileKindHosted, APIURL: "https://issues.example.test/api/v3",
@@ -201,7 +210,7 @@ func TestInitJournalResumesOnlyExactServerTarget(t *testing.T) {
 	}
 }
 
-func TestSelfHostedInitRejectsLegacyAndPartialProvidersBeforeMutation(t *testing.T) {
+func TestSelfHostedInitKeepsLegacyAndPartialProvidersPlanningOnly(t *testing.T) {
 	for _, test := range []struct {
 		name, providerKey, displayName, generation, build string
 		capabilities                                      []string
@@ -226,6 +235,8 @@ func TestSelfHostedInitRejectsLegacyAndPartialProvidersBeforeMutation(t *testing
 			runInitTestGit(t, "remote", "add", "origin", "git@git.example.test:acme/widgets.git")
 
 			orgID := uuid.New()
+			repoID := uuid.New()
+			bindingID := uuid.New()
 			mutationCalls := 0
 			description := map[string]any{"provider_key": test.providerKey, "display_name": test.displayName,
 				"remote_authorities": []string{"git.example.test"}, "code_change_label": "Merge request",
@@ -236,7 +247,7 @@ func TestSelfHostedInitRejectsLegacyAndPartialProvidersBeforeMutation(t *testing
 			}
 			var server *httptest.Server
 			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet {
+				if r.Method != http.MethodGet && r.Method != http.MethodPut {
 					mutationCalls++
 					http.Error(w, "unexpected mutation", http.StatusInternalServerError)
 					return
@@ -255,7 +266,22 @@ func TestSelfHostedInitRejectsLegacyAndPartialProvidersBeforeMutation(t *testing
 						"credential":    map[string]any{"kind": "pat", "scopes": []string{"repo", "admin:repo"}},
 						"organizations": []map[string]any{{"id": orgID, "name": "acme"}}})
 				case "/api/v1/context/orgs/" + orgID.String() + "/repos":
-					writeTestJSON(w, map[string]any{"repositories": []any{}})
+					writeTestJSON(w, map[string]any{
+						"repositories": []any{
+							map[string]any{"repository": map[string]any{
+								"id": repoID, "organization_id": orgID, "name": "widgets-spec",
+							}},
+						},
+					})
+				case "/api/v1/orgs/" + orgID.String() + "/repos/" + repoID.String() + "/bindings/active":
+					if r.Method == http.MethodGet {
+						http.NotFound(w, r)
+						return
+					}
+					mutationCalls++
+					binding := testBinding(bindingID)
+					binding["provider_key"] = test.providerKey
+					writeTestJSON(w, map[string]any{"created": true, "binding": binding})
 				default:
 					http.NotFound(w, r)
 				}
@@ -275,18 +301,36 @@ func TestSelfHostedInitRejectsLegacyAndPartialProvidersBeforeMutation(t *testing
 			app := newApp(strings.NewReader(""), &out, &errOut)
 			code := app.runSelfHostedInit(t.Context(), profile, selfHostedInitOptions{Repo: "local/source",
 				ServerOrg: "acme", ServerRepo: "widgets-spec", ProviderKey: test.providerKey,
-				SourceWebURL: "https://git.example.test/acme/widgets", CreateLabels: true,
-				Tools: "codex", Delivery: "skills", Yes: true})
-			if code == 0 || !strings.Contains(errOut.String(), "incompatible with minimal merge authority") {
+				SourceWebURL: "https://git.example.test/acme/widgets",
+				Tools:        "codex", Delivery: "skills", Yes: true, JSON: true})
+			if code != 0 {
 				t.Fatalf("init exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
 			}
-			if mutationCalls != 0 {
-				t.Fatalf("provider preflight failure reached %d remote mutations", mutationCalls)
+			if mutationCalls != 1 {
+				t.Fatalf("planning-only init mutations=%d, want one Source Binding write", mutationCalls)
 			}
-			for _, path := range []string{".issue-spec", "issue-spec", ".agents", ".claude"} {
-				if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
-					t.Fatalf("provider preflight failure created local path %q: %v", path, err)
+			var result struct {
+				WorkflowReadiness selfHostedWorkflowReadiness `json:"workflow_readiness"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if !result.WorkflowReadiness.PlanningOnly || result.WorkflowReadiness.MergeCapable ||
+				!result.WorkflowReadiness.ProviderFresh || result.WorkflowReadiness.ProviderKey != test.providerKey {
+				t.Fatalf("workflow readiness = %+v", result.WorkflowReadiness)
+			}
+			projectConfig := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
+			for _, want := range []string{`"mode": "planning-only"`, `"planning_only": true`, `"merge_capable": false`} {
+				if !strings.Contains(projectConfig, want) {
+					t.Fatalf("planning-only project config missing %q:\n%s", want, projectConfig)
 				}
+			}
+			workflowConfig := readTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"))
+			if !strings.Contains(workflowConfig, "provider_key: "+test.providerKey) || strings.Contains(workflowConfig, "evidence:") {
+				t.Fatalf("planning-only workflow config =\n%s", workflowConfig)
+			}
+			if _, err := os.Stat(filepath.Join(root, ".agents", "skills", "issue-spec-code-provider", "SKILL.md")); !os.IsNotExist(err) {
+				t.Fatalf("planning-only init generated provider authority skill: %v", err)
 			}
 		})
 	}
@@ -502,7 +546,9 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		}
 		neutralOutput = out.String()
 	}
-	for _, want := range []string{`"language_applied": false`, `"provider_key": "code.example"`, "openspec/config.yaml"} {
+	for _, want := range []string{`"language_applied": false`, `"provider_key": "code.example"`,
+		`"mode": "operator-preflight-required"`, `"merge_capable": false`,
+		`"provider_authority_capable": true`, "openspec/config.yaml"} {
 		if !strings.Contains(neutralOutput, want) {
 			t.Fatalf("tools-none init output missing %q: %s", want, neutralOutput)
 		}
@@ -562,8 +608,55 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	if got := readTestFile(t, openspecPath); got != openspecConfig {
 		t.Fatalf("tools-none invalid-config rerun changed OpenSpec config:\nwant %q\n got %q", openspecConfig, got)
 	}
+	projectConfigBefore := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
+	journalBefore := readTestFile(t, filepath.Join(root, ".issue-spec", "init-state.json"))
+	remoteCallsBefore := [3]int{ensureCalls, bindingCalls, labelCalls}
+	noProviderArgs := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
+		"--skip-source-binding", "--skip-labels", "--tools", "codex", "--delivery", "skills", "--json"}
+	{
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.profileName = "e2e"
+		code := app.runInit(t.Context(), noProviderArgs)
+		preflightError := strings.Contains(errOut.String(), "validate workflow generation inputs") ||
+			strings.Contains(errOut.String(), "validate existing provider workflow config")
+		if code == 0 || !preflightError {
+			t.Fatalf("invalid workflow init exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+		}
+	}
+	if got := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json")); got != projectConfigBefore {
+		t.Fatalf("invalid workflow init changed project config:\nwant %s\n got %s", projectConfigBefore, got)
+	}
+	if got := readTestFile(t, filepath.Join(root, ".issue-spec", "init-state.json")); got != journalBefore {
+		t.Fatalf("invalid workflow init changed journal:\nwant %s\n got %s", journalBefore, got)
+	}
+	if got := [3]int{ensureCalls, bindingCalls, labelCalls}; got != remoteCallsBefore {
+		t.Fatalf("invalid workflow init mutated remote state: before=%v after=%v", remoteCallsBefore, got)
+	}
 	if err := os.RemoveAll(filepath.Join(root, "issue-spec")); err != nil {
 		t.Fatal(err)
+	}
+	{
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.profileName = "e2e"
+		if code := app.runInit(t.Context(), noProviderArgs); code != 0 {
+			t.Fatalf("provider-neutral rerun exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+		}
+	}
+	preservedConfig := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
+	for _, want := range []string{`"key": "code.example"`, `"external_repository": "acme/widgets"`, `"change.merge-conditional"`,
+		`"mode": "planning-only"`, `"planning_only": true`, `"merge_capable": false`} {
+		if !strings.Contains(preservedConfig, want) {
+			t.Fatalf("provider-neutral rerun dropped existing provider metadata %q:\n%s", want, preservedConfig)
+		}
+	}
+	var preservedJournal selfHostedInitJournal
+	if err := json.Unmarshal([]byte(readTestFile(t, filepath.Join(root, ".issue-spec", "init-state.json"))), &preservedJournal); err != nil {
+		t.Fatal(err)
+	}
+	if stage := preservedJournal.Stages["provider"]; stage.State != "complete" || stage.Detail != "code.example" {
+		t.Fatalf("provider-neutral rerun journal provider stage = %+v", stage)
 	}
 	var finalOutput string
 	for run := 1; run <= 2; run++ {
@@ -581,11 +674,16 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	if labelCalls != 2*len(issueSpecLabels()) {
 		t.Fatalf("label calls=%d, want %d on the exact server target", labelCalls, 2*len(issueSpecLabels()))
 	}
-	if !strings.Contains(finalOutput, `"repo": "browser-e2e/httpbin"`) || strings.Contains(finalOutput, "local-source/local-checkout") {
+	if !strings.Contains(finalOutput, `"repo": "browser-e2e/httpbin"`) ||
+		!strings.Contains(finalOutput, `"mode": "operator-preflight-required"`) ||
+		!strings.Contains(finalOutput, `"merge_capable": false`) ||
+		!strings.Contains(finalOutput, `"provider_authority_capable": true`) || strings.Contains(finalOutput, "local-source/local-checkout") {
 		t.Fatalf("init output did not use the resolved server target: %s", finalOutput)
 	}
 	config := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
-	for _, want := range []string{`"version": 2`, `"repo": "browser-e2e/httpbin"`, `"profile": "e2e"`, `"key": "code.example"`, `"external_repository": "acme/widgets"`} {
+	for _, want := range []string{`"version": 2`, `"repo": "browser-e2e/httpbin"`, `"profile": "e2e"`, `"key": "code.example"`,
+		`"external_repository": "acme/widgets"`, `"mode": "operator-preflight-required"`,
+		`"merge_capable": false`, `"provider_authority_capable": true`} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("project config missing %q:\n%s", want, config)
 		}

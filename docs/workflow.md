@@ -32,7 +32,7 @@ A bare display name is not an identity. The old `external_code.evidence` keys ar
 
 ## Preflight one immutable release set
 
-Before Runner dispatch or merge, quiesce mutations and validate the same pinned CLI, Server, Runner, generated assets, and provider bridge:
+As an operator-controlled deployment procedure before enabling Runner dispatch or merge, quiesce mutations and validate the same pinned CLI, Server, Runner, generated assets, and provider bridge:
 
 ```sh
 issue-spec workflow preflight \
@@ -47,7 +47,9 @@ issue-spec workflow preflight \
   --json
 ```
 
-Preflight is read-only. It validates `issue-spec.code-provider/v1`, semantic generation `minimal-merge-authority/v1`, the immutable bridge build, `evidence.review-decision`, `evidence.authoritative-check-conclusion`, `change.merge-conditional`, generated-asset release/digest, configured key/owner pairs, the operator-owned canonical-principal mapping source, fixed `post-merge-idempotent` reconciliation, and fixed `provider-authority-token` enforcement. These modes are reported invariants, not caller-selected flags. Missing, unknown, or mixed identities fail before authority is consumed or anything mutates.
+Preflight is read-only and reports `purpose=operator-controlled-deployment-readiness`. The operator supplies freshly observed Server/Runner identities; the command compares them with the local CLI, generated manifest, provider generation/build/capabilities, configured key/owner pairs, canonical-principal mapping source, fixed `post-merge-idempotent` reconciliation, and fixed `provider-authority-token` enforcement. It is a trusted cutover check, not a persisted receipt or merge authority, and merge commands do not consume its output. Authority-bearing commands independently revalidate provider generation, build, capabilities, principal mapping, exact subject, and a fresh authority token before collection or mutation.
+
+An unavailable merge-authority provider does not block `init`, Proposal, Design, or direct manual development. Init reports `workflow_readiness.mode=planning-only` and `merge_capable=false` and generates no provider-authority Skill. The operator must keep Runner dispatch quiesced; `merge-check` and conditional merge independently fail closed. Even a capability-complete provider is reported as `operator-preflight-required`, `provider_authority_capable=true`, and `merge_capable=false` at init time because init does not establish principal mapping, configured check identity, or deployment readiness.
 
 ## Review and checks stay provider-owned
 
