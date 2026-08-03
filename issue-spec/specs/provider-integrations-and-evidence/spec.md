@@ -58,16 +58,34 @@ Source SPEC comments:
 
 ### Requirement: implementation rationale remains an ordinary provider discussion for human review
 
-Once an exact code change is reviewable, the workflow MUST publish or refresh one ordinary top-level provider discussion headed `### Implementation Rationale` before requesting human review, for both direct single-writer and managed PROCESS implementation. The discussion MUST summarize intent, important decisions and tradeoffs, boundaries and non-goals, known risks, validation and current results, exact review subject/head, and selected Issue, Proposal, or Design links without requiring an Implement, TASK, PROCESS, SPEC, typed carrier, machine marker, rationale ID, PROCESS/SPEC binding, evidence field, or gate. It MUST remain mutable human-review UX that merge-check and conditional merge ignore completely.
+Every actual code writer MUST own zero or more line-rationale drafts for non-obvious design decisions in the code it changes. The direct-path actual writer owns its drafts, whether that writer is the coordinator or one delegated child; under managed PROCESS each worker owns the drafts for its code. Each useful draft MUST identify a repository-relative path, a stable symbol plus changed-line anchor, and concise why, tradeoff, and risk text, and MUST NOT contain a secret, raw payload, or credential. A writer MUST NOT require provider credentials, guess a final provider diff position, or create filler to satisfy a quota or coverage target.
+
+After integrating and pushing the reviewable exact head, the coordinator MUST validate each supplied anchor against that head, confirm the rationale remains applicable and contains no sensitive information, map it to a changed line, and publish the worker-authored text as provider-native non-blocking inline discussion. An invalid, stale, or sensitive draft MUST be returned to the writer for correction or dropped with an explanation; the coordinator MUST NOT rewrite it and impersonate the worker's authorship. The coordinator MUST publish or refresh one ordinary top-level provider discussion headed `### Implementation Rationale` before requesting human review; it MUST summarize intent, important decisions and tradeoffs, boundaries and non-goals, risks, validation and results, exact subject/head, selected planning links, and index the published inline rationale. If the provider lacks non-blocking inline discussion or an inline discussion would itself become an unresolved merge blocker, the coordinator MUST preserve `path:symbol/line` plus the worker rationale in the top-level discussion instead. These discussions MUST require no Implement, TASK, PROCESS, SPEC, typed carrier, machine marker, rationale ID, PROCESS/SPEC binding, evidence field, or gate, and MUST remain mutable human-review UX that merge-check and conditional merge ignore completely.
 
 #### Scenario: direct and managed implementation have the same review handoff
 
 - **WHEN** either a direct single writer or selected managed PROCESS work produces a reviewable exact change
-- **THEN** the coordinator publishes or refreshes the same ordinary provider-native `### Implementation Rationale` discussion before requesting human review without manufacturing planning or evidence state
+- **THEN** the actual writer returns only valuable path/symbol/changed-line rationale drafts and never provider positions, while the coordinator validates and publishes those drafts against the pushed exact head
+- **THEN** the coordinator publishes or refreshes the same ordinary provider-native `### Implementation Rationale` summary and index before requesting human review without manufacturing planning or evidence state
+
+#### Scenario: obvious code does not manufacture inline rationale
+
+- **WHEN** the actual writer made no non-obvious design decision that benefits from line-local explanation
+- **THEN** the writer returns no line-rationale draft and the coordinator creates no placeholder, quota, or coverage comment
+
+#### Scenario: unsafe or stale worker text is not silently rewritten
+
+- **WHEN** a draft no longer applies to the exact pushed head, its anchor is invalid, or it contains a secret, raw payload, credential, or other sensitive information
+- **THEN** the coordinator returns it to the writer for correction or drops it with an explanation, and does not publish Coordinator-rewritten text under worker authorship
+
+#### Scenario: unsafe inline discussion degrades to the top-level rationale
+
+- **WHEN** the provider lacks non-blocking inline discussion or publishing inline would create an unresolved merge blocker
+- **THEN** the coordinator keeps the worker-authored `path:symbol/line` rationale in the ordinary top-level discussion and creates no blocking inline discussion
 
 #### Scenario: discussion publication failure is visible but non-authoritative
 
-- **WHEN** the provider-native discussion cannot be published or refreshed
+- **WHEN** a required top-level or inline rationale discussion cannot be published or refreshed and cannot be safely preserved through the top-level fallback
 - **THEN** the coordinator reports the provider error, retains the rendered body for retry or manual posting, and does not claim the human-review handoff is complete
 - **THEN** merge-check and conditional merge neither consume the failure nor reinterpret it as a legacy delivery gate or authority result
 

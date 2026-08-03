@@ -139,6 +139,29 @@ for asset in $rationale_assets; do
     exit 1
   }
 done
+for asset in \
+  "$root/.agents/skills/issue-spec-workflow/SKILL.md" \
+  "$root/.agents/skills/issue-spec-apply/SKILL.md" \
+  "$root/.claude/commands/issue-spec/apply.md"; do
+  for phrase in \
+    'line-rationale drafts' \
+    'stable symbol plus changed-line anchor' \
+    'secret, raw payload, or credential' \
+    'non-blocking inline discussion' \
+    'path:symbol/line' \
+    'Invalid, stale, or sensitive drafts'; do
+    grep -Fq -- "$phrase" "$asset" || {
+      echo "active generated workflow omits worker-owned inline rationale rule '$phrase': $asset" >&2
+      exit 1
+    }
+  done
+done
+for phrase in 'commit_id' 'side=RIGHT' 'never rewrite them while claiming worker authorship'; do
+  grep -Fq -- "$phrase" "$root/.agents/skills/issue-spec-github/SKILL.md" || {
+    echo "generated GitHub guidance omits inline rationale publication rule '$phrase'" >&2
+    exit 1
+  }
+done
 if grep -En 'issue-spec (review sync|verify submit|code-change rationale)' $generated_assets; then
   echo "active generated workflow retains a retired authority command" >&2
   exit 1

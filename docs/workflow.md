@@ -53,21 +53,40 @@ An unavailable merge-authority provider does not block `init`, Proposal, Design,
 
 ## Review and checks stay provider-owned
 
-Before requesting human review of a reviewable exact change, publish or refresh
-one ordinary top-level provider discussion headed `### Implementation
-Rationale`. Do this for both direct single-writer and managed PROCESS
-implementation; no Implement, TASK, PROCESS, or SPEC is required. Summarize the
-intent, key decisions and tradeoffs, boundaries and non-goals, known risks,
+The actual code writer owns line-rationale drafts for non-obvious design
+decisions in its changed code. On the direct path that means the actual single
+writer, whether coordinator or delegated child; with managed PROCESS it means
+each worker for its own change. A useful draft names a repository-relative path,
+a stable symbol plus changed-line anchor, and concise why/tradeoff/risk text,
+with no secret, raw payload, or credential. The writer needs no provider access
+and does not guess a final diff position.
+Obvious code produces no draft: there is no quota, coverage target, or filler.
+
+After integrating and pushing the reviewable exact head, the coordinator
+validates each supplied anchor, confirms the rationale still applies and has no
+sensitive information, maps it to a changed line, and publishes the unchanged
+worker-authored text as provider-native non-blocking inline discussion. Return
+an invalid, stale, or sensitive draft to the writer for correction, or drop it
+with an explanation; never rewrite it while claiming worker authorship. Before
+requesting human review, publish or refresh one ordinary
+top-level discussion headed `### Implementation Rationale` as the change
+summary and inline-rationale index. It also covers intent, boundaries, risks,
 validation and current results, exact review subject/head, and selected
-Issue/Proposal/Design links.
+Issue/Proposal/Design links. No Implement, TASK, PROCESS, or SPEC is required.
+
+If the provider does not support non-blocking inline discussion, or inline
+discussion would itself become an unresolved merge blocker, preserve
+`path:symbol/line` and the worker rationale in the top-level discussion instead.
+The coordinator publishes but does not replace the writer's rationale.
 
 Use the provider-native discussion surface, not the deprecated `code-change
 rationale` evidence command. Add no machine marker, rationale ID, typed
-carrier, PROCESS/SPEC binding, evidence field, or gate. If the write fails,
-report the provider error, retain the rendered body for retry or manual posting,
-and do not claim the human-review handoff is complete. The comment and its
-publication status remain mutable review UX only; `merge-check` and conditional
-merge never consume them.
+carrier, PROCESS/SPEC binding, evidence field, or gate. If a required top-level
+or inline write fails and cannot use the safe fallback, report the provider
+error, retain the rendered body for retry or manual posting, and do not claim
+the human-review handoff is complete. The comments and their publication status
+remain mutable review UX only; `merge-check` and conditional merge never
+consume them.
 
 The provider returns one policy-complete exact-subject review snapshot. Reviewer independence compares trusted canonical principals against the complete opener, author, coauthor, and committer set. Current changes-requested decisions, unresolved required conversations, and open P0/P1 findings block. At least one qualifying approval must be independent.
 

@@ -122,10 +122,14 @@ review in the browser:
 - `issue-spec runner` executes authorized comment commands (`/new`, `/resume`)
   in managed workspaces, so work can be triggered straight from an issue
 
-Before requesting human review, the coordinator publishes or refreshes one
-ordinary provider discussion headed `### Implementation Rationale`. Provider
-review and current configured checks remain the only merge authority; the
-rationale is human-facing context and never a gate or `merge-check` input.
+The actual code writer records line-local rationale only for non-obvious design
+decisions, using stable code anchors rather than provider diff positions. After
+the exact head is pushed, the coordinator validates those anchors and publishes
+the worker-authored text as non-blocking inline comments. The ordinary
+`### Implementation Rationale` discussion summarizes and indexes them, or
+carries `path:symbol/line` fallbacks when safe inline discussion is unavailable.
+No rationale quota or gate exists; provider review and current configured checks
+remain the only merge authority.
 
 ## Works with GitHub too
 

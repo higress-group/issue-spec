@@ -373,7 +373,7 @@ issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process P
 
 旧的理由、评审发布/同步、验证提交/finalization 与 Archive 命令会在任何写入前返回 `deprecated_workflow`。历史制品仅供显式审计读取，绝不会成为合并权威。
 
-用于解释实现的替代方案不是另一条 issue-spec 证据命令。精确代码变更可供评审后，Coordinator 在请求人类评审前发布或刷新一条标题为 `### Implementation Rationale` 的普通顶层提供方讨论。直接单写者与 managed PROCESS 路径使用同一条轻量评论；它没有 marker、rationale ID、类型化 carrier、PROCESS/SPEC 绑定、证据字段、门禁或合并效力。提供方写入失败时，应连同已渲染正文一起报告，并保持人类评审交接未完成；`merge-check` 与条件合并仍与此完全独立。
+用于解释实现的替代方案不是另一条 issue-spec 证据命令。direct 路径的实际写作者或各 managed PROCESS worker，只为非显然设计决策产出零条或多条行级 rationale 草稿，包含仓库相对路径、稳定 symbol 加 changed-line anchor 以及 why/tradeoff/risk，而不是 provider diff position，并且不得包含 secret、raw payload 或 credential。精确 head 集成并推送后，Coordinator 校验并映射这些 anchor、内容继续适用性及敏感信息缺失，再把未经改写的 worker 原文发布成非阻塞的 provider 行级讨论。无效、过时或敏感的草稿应退回 writer，或说明原因后丢弃，不能由 Coordinator 改写后冒充 worker。普通顶层 `### Implementation Rationale` 负责摘要和索引。安全行级讨论不可用或会产生 unresolved merge blocker 时，顶层评论改为保留 `path:symbol/line` 和 worker 原文。显然代码不制造草稿或配额。这些讨论没有 marker、rationale ID、类型化 carrier、PROCESS/SPEC 绑定、证据字段、门禁或合并效力。必需的提供方写入失败时，应连同已渲染正文一起报告，并保持人类评审交接未完成；`merge-check` 与条件合并仍与此完全独立。
 
 `change-bearing` 使用可写的独占分支；历史 `review` 与 `verification` execution class 仅保留审计解析，生成与 workspace mutation 会拒绝它们；`orchestration` 只记录生命周期账本，不创建 checkout；`external` 使用 mode `none`。这些完成状态只是实现记账，绝不会成为合并门禁。
 

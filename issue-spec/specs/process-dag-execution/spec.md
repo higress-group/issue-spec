@@ -146,12 +146,17 @@ Source SPEC comments:
 
 ### Requirement: Coordinator retains only orchestration state during agent-executed implementation
 
-During agent-executed implementation the coordinator MUST retain only planning, scheduling, workspace management, gate evaluation, integration, synchronization, blocker handling, and bounded handoff state. It MUST consume bounded worker outputs and issue-spec read results rather than implementing, testing, committing, writing legacy rationale evidence, or inlining full issue or pull request bodies or full diffs into its own context. After the exact integrated change becomes reviewable, the coordinator MAY compose the ordinary provider-native `### Implementation Rationale` human-review discussion from those bounded outputs without creating PROCESS/SPEC-bound rationale state.
+During agent-executed implementation the coordinator MUST retain only planning, scheduling, workspace management, gate evaluation, integration, synchronization, blocker handling, and bounded handoff state. It MUST consume bounded worker outputs and issue-spec read results rather than implementing, testing, committing, writing legacy rationale evidence, or inlining full issue or pull request bodies or full diffs into its own context. Each implementation worker MUST own zero or more bounded line-rationale drafts for non-obvious decisions in its changed code, anchored by repository-relative path and stable symbol plus changed line with why/tradeoff/risk and containing no secret, raw payload, or credential. After the exact integrated change is pushed, the coordinator MUST validate and map those anchors, confirm continued applicability and sensitive-data absence, and MUST publish each valid unchanged worker-authored text as non-blocking provider-native inline discussion when safe; otherwise it MUST preserve `path:symbol/line` plus that text in the top-level fallback. It MUST return or explain dropping invalid drafts and MUST NOT compose or replace the workers' line rationale. The coordinator owns only provider publication and the ordinary top-level `### Implementation Rationale` summary/index without creating PROCESS/SPEC-bound rationale state.
 
 #### Scenario: Coordinator integrates via bounded outputs
 
 - **WHEN** workers complete coding PROCESS nodes
-- **THEN** the coordinator SHALL integrate their results using bounded summaries, handoff evidence, and issue-spec read rather than re-reading full bodies or diffs inline
+- **THEN** the coordinator SHALL integrate their results using bounded summaries, handoff evidence, zero or more worker-owned line-rationale drafts, and issue-spec read rather than re-reading full bodies or diffs inline
+
+#### Scenario: Coordinator publishes but does not author worker rationale
+
+- **WHEN** a worker returns a valuable stable-anchor rationale draft and the exact integrated head is pushed
+- **THEN** the coordinator validates its changed-line anchor and publishes the worker-authored text inline or preserves it in the top-level fallback without substituting coordinator-written rationale
 
 #### Scenario: Coordinator does not accumulate implementation detail
 

@@ -230,12 +230,20 @@ Provider 与外部仓库身份来自 Source Binding。`code-change attach` 不�
 的 Active Reference，再重试；禁止猜测或静默覆盖。GitHub 继续使用原有 PR 流程；
 self-hosted 的 Review、Merge 与关闭仍由所选 Code Provider 负责。
 
-精确代码变更可供评审后，应在请求人类评审前发布或刷新一条标题为
-`### Implementation Rationale` 的普通顶层提供方讨论。直接单写者和 managed
-PROCESS 变更使用同一条评论。它只是可变的评审体验，不包含类型化 carrier、
-rationale ID、PROCESS/SPEC 绑定、证据字段、门禁或合并效力。提供方写入失败时必须
-报告并保留已渲染正文；讨论存在前不能宣告评审交接完成，但绝不能把它送入
-`merge-check`。
+direct 路径的实际写作者或各 managed PROCESS worker，只为非显然决策返回零条或
+多条行级 rationale 草稿：仓库相对路径、稳定 symbol 加 changed-line anchor，以及
+why/tradeoff/risk，且不得包含 secret、raw payload 或 credential。写作者不需要
+provider 权限，也不猜最终 diff position。精确 head 集成并推送后，coordinator 校验
+anchor、内容继续适用性及敏感信息缺失，再映射并发布未经改写的 worker 原文。无效、
+过时或敏感的草稿应退回 writer，或说明原因后丢弃，不能由 coordinator 改写后冒充
+worker。没有配额；显然代码不产生行级评论。
+
+人类评审前，发布或刷新普通顶层 `### Implementation Rationale`，作为摘要和行级评论
+索引。非阻塞行级讨论不可用，或者会产生 unresolved merge blocker 时，应在顶层评论
+保留 `path:symbol/line` 和 worker 原文，并且不创建阻塞 thread。这些讨论只是可变的
+评审体验，不包含类型化 carrier、rationale ID、PROCESS/SPEC 绑定、证据字段、门禁或
+合并效力。必需的提供方写入失败时必须报告并保留已渲染正文；不能宣告评审交接完成，
+但绝不能把评论或失败送入 `merge-check`。
 
 Provider 原生评审与已配置检查在精确 head 上收敛后，只运行只读 `merge-check`；不要
 把权威同步到 REVIEW/VERIFY、理由或 PROCESS 状态。只能使用 `code-change merge

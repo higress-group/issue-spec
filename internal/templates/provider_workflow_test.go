@@ -48,6 +48,8 @@ func TestProviderWorkflowOrdersReadOnlyDecisionBeforeConditionalMerge(t *testing
 		"active Source Binding", "Run release preflight", "provider-native policy-complete review",
 		"### Implementation Rationale", "before requesting human review", "direct single writer or managed PROCESS",
 		"retain the rendered body", "do not claim review handoff complete",
+		"writer anchors", "map them to changed lines", "valid text",
+		"non-blocking inline discussion", "summary/index", "path:symbol/line", "Publish no filler",
 		"issue-spec merge-check --repo acme/widgets", "read-only current decision",
 		"issue-spec code-change merge", "caller-observed `--expected-head`",
 		"Freshly observe merged state", "idempotent selected-Issue reconciliation",
@@ -68,6 +70,9 @@ func TestProviderWorkflowKeepsPlanningAndHistoryOutOfAuthority(t *testing.T) {
 		"never become merge input",
 		"ordinary top-level provider discussion", "no typed carrier, marker, rationale ID, PROCESS/SPEC binding, evidence field, gate, or merge input",
 		"merge-check and merge authority remain unchanged",
+		"Writers need no provider access", "never guess final diff positions", "no filler, quota, or coverage comments",
+		"would become an unresolved merge blocker", "secret, raw payload, or credential",
+		"continued applicability", "sensitive-data absence", "Invalid, stale, or sensitive drafts",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("provider workflow missing boundary %q:\n%s", want, content)

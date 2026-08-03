@@ -119,6 +119,13 @@ func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
 		"reconcile exactly the selected Issue set idempotently", "Deprecated review sync/submit completion",
 		"### Implementation Rationale", "both direct single-writer and managed PROCESS implementation",
 		"Before requesting human review", "do not claim human-review handoff complete", "never enter `merge-check` or merge authority",
+		"actual code writer", "line-rationale drafts", "stable symbol plus changed-line anchor", "why/tradeoff/risk",
+		"Writers need no provider credentials", "MUST NOT guess final diff positions",
+		"needs no draft, quota, coverage target, or placeholder", "maps it to a changed line",
+		"valid worker text", "non-blocking inline discussion", "decisions/tradeoffs", "boundaries/risks", "validation/results", "indexes inline rationale",
+		"would create an unresolved merge blocker", "path:symbol/line",
+		"secret, raw payload, or credential", "confirms the text still applies and contains no sensitive data",
+		"Invalid, stale, or sensitive drafts", "never rewrites and impersonates the writer",
 	}
 	for _, want := range wants {
 		if !strings.Contains(workflow, want) {
@@ -146,8 +153,9 @@ func TestApplyGuidanceDefaultsToDirectSingleWriterDelegation(t *testing.T) {
 		"dispatch exactly one code-writing child or subagent",
 		"coordinator performs no concurrent code writes",
 		"do not manufacture PROCESS, workspace lifecycle, role receipt, handoff, a typed rationale carrier, or evidence state",
-		"### Implementation Rationale", "After either the direct path or selected managed PROCESS work",
-		"no Implement, TASK, PROCESS, or SPEC is required", "do not claim human-review handoff complete",
+		"### Implementation Rationale", "both direct single-writer and managed PROCESS implementation",
+		"No Implement, TASK, PROCESS, or SPEC is required", "do not claim human-review handoff complete",
+		"On the direct path this is the actual single writer", "under managed PROCESS each worker owns its drafts",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply guidance missing direct delegation rule %q:\n%s", want, apply)
@@ -172,8 +180,10 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 			required: []string{"sealed implementation assignment", "design_context.read_mode=complete-issue-body",
 				"issue-spec read issue --repo owner/repo", "Stop and report any conflict", "assigned worktree and owned paths",
 				"assigned generators", "exactly one DCO commit", `{"decisions":[],"risks":[],"rationale_draft":"..."}`,
+				"Collect zero or more line-rationale drafts", "stable symbol plus changed-line anchor", "Do not guess a provider diff position",
+				"leaving it empty when none are valuable", "Provider access and final diff positions are not worker responsibilities",
 				"issue-spec role complete", "derives Git facts", "runs every sealed test", "publishes atomically",
-				"An amendment invalidates the receipt", "Coordinator acceptance"},
+				"secret, raw payload, or credential", "An amendment invalidates the receipt", "line-rationale drafts", "anchor validation", "publishes worker-authored text"},
 			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
 	}
@@ -256,9 +266,9 @@ func TestGeneratedGuidanceDeterministicSizeBudgets(t *testing.T) {
 		maxItems    int
 	}
 	budgets := map[string]budget{
-		"issue-spec-workflow": {maxBytes: 10600, maxHeadings: 8, maxItems: 40},
+		"issue-spec-workflow": {maxBytes: 11800, maxHeadings: 8, maxItems: 40},
 		"issue-spec-propose":  {maxBytes: 5000, maxHeadings: 4, maxItems: 16},
-		"issue-spec-apply":    {maxBytes: 5900, maxHeadings: 5, maxItems: 12},
+		"issue-spec-apply":    {maxBytes: 7300, maxHeadings: 5, maxItems: 12},
 	}
 	for _, skill := range IssueSpecSkills("owner/repo") {
 		limit, ok := budgets[skill.Name]
@@ -547,7 +557,9 @@ func TestReferenceOwnershipExamplesUseRecursiveDirectoryDeclarations(t *testing.
 func TestIssueSpecSkillsIncludeBoundedGitHubSupport(t *testing.T) {
 	github := skillContent(t, IssueSpecSkills("owner/repo"), "issue-spec-github")
 	for _, want := range []string{"Requires GitHub CLI (gh).", "gh auth login", "gh pr checks", "issue-spec comment create", "Never use GitHub CLI",
-		"### Implementation Rationale", "gh pr comment <pr> --body-file <file>", "without treating the comment as evidence or merge authority"} {
+		"### Implementation Rationale", "gh pr comment <pr> --body-file <file>", "without treating any rationale comment as evidence or merge authority",
+		"line-rationale drafts", "stable path/symbol/changed-line anchor", "commit_id", "side=RIGHT", "summary/index", "path:symbol/line",
+		"secret, raw payload, or credential", "invalid, stale, or sensitive drafts", "never rewrite them while claiming worker authorship"} {
 		if !strings.Contains(github, want) {
 			t.Fatalf("github skill missing %q", want)
 		}

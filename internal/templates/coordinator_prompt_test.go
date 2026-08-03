@@ -25,8 +25,13 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 		"workspace prepare -> real non-Coordinator", "never implements/tests/commits", "sealed assignment",
 		"design_context.source_url", "without comments, timeline, history, or gates", "stops on conflict",
 		"result revision, DCO, ownership, generators, tests", "Provider-native review", "current configured checks alone own authority",
-		"### Implementation Rationale", "Before requesting human review", "direct single-writer and managed PROCESS paths",
+		"### Implementation Rationale", "Before requesting human review", "direct-path writer", "managed PROCESS worker",
 		"do not claim review handoff complete", "never enter merge-check or merge authority",
+		"actual code writer", "line-rationale drafts", "stable symbol plus changed-line anchor", "why/tradeoff/risk",
+		"secret, raw payload, or credential", "continued applicability", "sensitive-data absence",
+		"invalid, stale, or sensitive drafts", "never rewrite and impersonate the writer",
+		"map to changed lines", "valid unchanged text", "non-blocking inline discussions", "summary/index",
+		"inline discussion is unsupported or would create an unresolved merge blocker", "path:symbol/line", "Never demand filler, quota, coverage",
 		"Phase projections are ordinary statusless human synthesis",
 		"Persist the selected phase body, perform the first QUESTION pass, upsert the projection",
 		"PROCESS only when managed coordination was selected",
@@ -61,6 +66,7 @@ func TestCoordinatorPromptRolePacketBoundary(t *testing.T) {
 		"Give the child only its sealed assignment", "exact worktree/branch/ownership", "parent TASK", "predecessor handoff",
 		"Do not copy proposal/Design bodies, full DAGs, link matrices, closure/archive, or provider-routing policy into role packets",
 		"The role owns one result commit, focused tests, and a bounded result",
+		"each managed PROCESS worker owns its drafts", "guessed diff position", "Publish valid unchanged text",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing role boundary %q", want)

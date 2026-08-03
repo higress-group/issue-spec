@@ -53,17 +53,31 @@ issue-spec workflow preflight \
 
 ## 评审与检查归提供方所有
 
-在请求人类评审一个已经可评审的精确代码变更前，先发布或刷新一条标题为
-`### Implementation Rationale` 的普通顶层提供方讨论。直接单写者与 managed
-PROCESS 实现都遵循同一规则，且不要求 Implement、TASK、PROCESS 或 SPEC。内容应
-简明说明改动意图、关键决策与权衡、边界与非目标、已知风险、执行的验证及当前结果、
-精确评审 subject/head，以及所选 Issue、Proposal 或 Design 链接。
+实际代码写作者负责为自己所改代码中的非显然设计决策产出零条或多条行级 rationale
+草稿。direct 路径由实际单写者负责（无论是 coordinator 还是受委派 child）；managed
+PROCESS 路径由各 worker 对自己的代码负责。每条有价值的草稿应包含仓库相对路径、
+稳定 symbol 加 changed-line anchor，以及简明的 why/tradeoff/risk，且不得包含
+secret、raw payload 或 credential。写作者不需要 provider 权限，也不猜测最终 diff
+position。显然的代码不产出草稿；没有配额、覆盖率目标或占位评论。
+
+精确 head 集成并推送后，coordinator 校验 worker 提供的 anchor，确认内容仍适用且
+无敏感信息，再映射到 changed line，把未经改写的 worker rationale 发布成 provider
+原生、非阻塞的行级讨论。无效、过时或敏感的草稿应退回 writer 修正，或在说明原因后
+丢弃；禁止 coordinator 自行改写后冒充 worker 作者。
+在请求人类评审前，发布或刷新标题为 `### Implementation Rationale` 的普通顶层讨论，
+作为变更摘要和行级 rationale 索引；它还说明意图、边界、风险、验证与当前结果、精确
+subject/head 及所选 Issue/Proposal/Design 链接。不要求 Implement、TASK、PROCESS
+或 SPEC。
+
+如果 provider 不支持非阻塞行级讨论，或者行级讨论会自身成为 unresolved merge
+blocker，则不创建阻塞讨论，而在顶层评论中保留 `path:symbol/line` 和 worker 原文。
+Coordinator 负责发布，但不能替 worker 重写 rationale。
 
 使用提供方原生讨论界面，不要调用已弃用的 `code-change rationale` 证据命令，
 也不要添加机器 marker、rationale ID、类型化 carrier、PROCESS/SPEC 绑定、
-证据字段或门禁。发布或刷新失败时，必须报告提供方错误，保留已渲染正文以供重试或
-手工发布，并且不能宣告人类评审交接完成。该评论及其发布状态只是可变的评审体验；
-`merge-check` 与条件合并永远不会消费它们。
+证据字段或门禁。如果必需的顶层或行级写入失败且无法使用安全降级，必须报告提供方
+错误，保留已渲染正文以供重试或手工发布，并且不能宣告人类评审交接完成。这些评论
+及其发布状态只是可变的评审体验；`merge-check` 与条件合并永远不会消费它们。
 
 提供方返回一个策略完整、绑定精确版本的评审快照。独立性通过受信规范主体，与完整的发起人、作者、共同作者和提交者集合比较。当前 changes-requested、未解决的必需会话以及开放的 P0/P1 发现都会阻塞；至少一个有效批准者必须独立。
 

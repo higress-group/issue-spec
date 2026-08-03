@@ -353,15 +353,29 @@ trusted workflow evidence. The removed code-author rationale workflow cannot
 invoke this surface: `metadata.kind=rationale` is deprecated and rejected
 before provider mutation.
 
-A human-facing implementation explanation is a different surface. Before
-requesting review, an operator tool may publish or refresh one ordinary
-top-level provider discussion headed `### Implementation Rationale`, using a
-provider-native UI/CLI or the general non-authoritative comment capability when
-available. It carries no `metadata.kind=rationale`, machine marker, rationale
-ID, typed carrier, PROCESS/SPEC binding, evidence field, or gate. Providers and
-Core MUST NOT return it in the merge-authority snapshot or make its publication
-status part of conditional merge. Failure remains a visible review-handoff
-problem with a retryable/manual body, not an authority result.
+A human-facing implementation explanation is a different surface. The actual
+code writer supplies only valuable line-rationale drafts with path, stable
+symbol plus changed-line anchor, why/tradeoff/risk, and no secret, raw payload,
+or credential; it needs no provider credential and does not construct a final
+diff position. After the exact head is pushed, an operator tool validates the
+anchor, continued applicability, and sensitive-data absence and may publish the
+unchanged worker text through a provider-native non-blocking inline-discussion
+surface. Invalid, stale, or sensitive drafts return to the writer or are dropped
+with explanation, never tool-rewritten under worker authorship. This optional
+UX surface is not a merge-authority bridge capability.
+
+Before requesting review, the operator tool publishes or refreshes one ordinary
+top-level provider discussion headed `### Implementation Rationale` as summary
+and inline-comment index, using a provider-native UI/CLI or the general
+non-authoritative comment capability when available. When the provider lacks a
+non-blocking inline surface, or inline discussion would itself create an
+unresolved merge blocker, the top-level discussion keeps `path:symbol/line`
+plus the worker rationale instead. No filler or coverage quota is created. The
+discussions carry no `metadata.kind=rationale`, machine marker, rationale ID,
+typed carrier, PROCESS/SPEC binding, evidence field, or gate. Providers and Core
+MUST NOT return them in the merge-authority snapshot or make publication status
+part of conditional merge. A required write failure remains a visible
+review-handoff problem with a retryable/manual body, not an authority result.
 
 ## Versioning and compatibility
 

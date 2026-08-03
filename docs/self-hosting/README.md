@@ -243,13 +243,26 @@ delete only the unwanted active reference, and retry—never guess or silently
 overwrite. GitHub keeps its existing PR workflow; self-hosted review, merge,
 and closure stay with the selected code provider.
 
-When the exact change is reviewable, publish or refresh one ordinary top-level
-provider discussion headed `### Implementation Rationale` before requesting
-human review. Direct single-writer and managed PROCESS changes use the same
-comment. It is mutable review UX with no typed carrier, rationale ID,
-PROCESS/SPEC binding, evidence field, gate, or merge effect. Report provider
-write failures and retain the rendered body; do not claim review handoff is
-complete until the discussion exists, but never feed it to `merge-check`.
+The actual direct-path writer or each managed PROCESS worker returns zero or
+more line-rationale drafts for non-obvious decisions: repository-relative path,
+stable symbol plus changed-line anchor, and why/tradeoff/risk, with no secret,
+raw payload, or credential. Writers need no provider permission and never guess
+final diff positions. After the exact head is integrated and pushed, the
+coordinator validates anchors, continued applicability, and sensitive-data
+absence, then publishes unchanged worker text as non-blocking provider-native
+inline discussion. Invalid, stale, or sensitive drafts return to the writer or
+are dropped with explanation, never rewritten under worker authorship. There is
+no quota; obvious code produces no inline comment.
+
+Before human review, publish or refresh the ordinary top-level `###
+Implementation Rationale` discussion as summary and inline-comment index. If
+non-blocking inline discussion is unsupported or would create an unresolved
+merge blocker, keep `path:symbol/line` plus the worker rationale in this
+top-level discussion and do not create the blocking thread. These discussions
+are mutable review UX with no typed carrier, rationale ID, PROCESS/SPEC binding,
+evidence field, gate, or merge effect. Report required provider write failures
+and retain the rendered body; do not claim review handoff is complete, but
+never feed the comments or failure to `merge-check`.
 
 After provider-native review and configured checks converge at the exact head,
 run read-only `merge-check`; do not synchronize authority into REVIEW/VERIFY,

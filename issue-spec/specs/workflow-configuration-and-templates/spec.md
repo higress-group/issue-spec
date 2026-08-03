@@ -64,7 +64,7 @@ Source SPEC comments:
 
 ### Requirement: active workflow artifacts remain issue-native
 
-Selected Proposal, Design, SPEC, QUESTION, TASK, PROCESS, and handoff artifacts MUST remain issue-native optional planning state, repository durable materialization MAY update only declared durable paths on the implementation branch, and provider checks, review decisions, findings, conversations, and merge readiness MUST remain provider authority rather than being projected into REVIEW, VERIFY, rationale evidence, receipt, or finalization artifacts. An ordinary provider-native `### Implementation Rationale` discussion MAY explain the implementation to human reviewers but MUST NOT be treated as one of those artifacts or authority inputs.
+Selected Proposal, Design, SPEC, QUESTION, TASK, PROCESS, and handoff artifacts MUST remain issue-native optional planning state, repository durable materialization MAY update only declared durable paths on the implementation branch, and provider checks, review decisions, findings, conversations, and merge readiness MUST remain provider authority rather than being projected into REVIEW, VERIFY, rationale evidence, receipt, or finalization artifacts. Generated guidance MAY require actual code writers to return zero or more valuable stable-anchor line-rationale drafts and the coordinator to publish them as non-blocking provider-native inline discussions with an ordinary top-level `### Implementation Rationale` summary/index, but MUST NOT treat those discussions as artifacts or authority inputs.
 
 #### Scenario: issue-native planning does not become merge evidence
 

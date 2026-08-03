@@ -43,7 +43,7 @@ Source SPEC comments:
 
 ### Requirement: generated workflow guidance stays coding-agent-neutral
 
-Generated guidance MUST default bounded implementation to one code writer, MUST permit one code-writing child or subagent without PROCESS, and MUST state that child use alone does not select PROCESS. It MUST select optional managed PROCESS only for concrete concurrent-write, isolation, ownership-enforcement, restart-recovery, or dependency-integration needs. It MUST default to intent, an ordinary provider-native `### Implementation Rationale` human-review discussion, checks, provider-policy review, read-only merge-check, and provider conditional merge, keep coding-agent session identity out of authority, MAY describe real-child workspace safety for selected PROCESS execution, and MUST NOT instruct REVIEW/VERIFY PROCESS, role receipts, review sync, verify submit, mandatory rationale evidence, coverage, or finalization.
+Generated guidance MUST default bounded implementation to one code writer, MUST permit one code-writing child or subagent without PROCESS, and MUST state that child use alone does not select PROCESS. It MUST select optional managed PROCESS only for concrete concurrent-write, isolation, ownership-enforcement, restart-recovery, or dependency-integration needs. It MUST make the actual code writer own zero or more stable-anchor line-rationale drafts for non-obvious decisions, assign exact-head anchor validation and provider publication to the coordinator, default to an ordinary provider-native `### Implementation Rationale` summary/index, checks, provider-policy review, read-only merge-check, and provider conditional merge, keep coding-agent session identity out of authority, MAY describe real-child workspace safety for selected PROCESS execution, and MUST NOT instruct rationale quotas, writer-owned provider positions, REVIEW/VERIFY PROCESS, role receipts, review sync, verify submit, mandatory rationale evidence, coverage, or finalization.
 
 #### Scenario: one generated model
 
@@ -60,7 +60,7 @@ Source SPEC comments:
 
 ### Requirement: coordinator owns orchestration and gates only
 
-The coordinator MUST own only selected planning, scheduling, workspace preparation and integration, the ordinary provider-native `### Implementation Rationale` human-review handoff discussion, blocker routing, and bounded handoff. It MUST NOT impersonate workers or reviewers and MUST NOT own review sync, verify, legacy rationale evidence, finding resolution, evidence publication, or merge readiness; merge-check computes readiness from provider authority.
+The coordinator MUST own only selected planning, scheduling, workspace preparation and integration, exact-head anchor/applicability/sensitive-data validation and provider publication of worker-authored line rationale, the ordinary provider-native `### Implementation Rationale` summary/index, blocker routing, and bounded handoff. It MUST return or explain dropping invalid, stale, or sensitive drafts and MUST NOT rewrite the actual code writers' line rationale, impersonate workers or reviewers, or own review sync, verify, legacy rationale evidence, finding resolution, evidence publication, or merge readiness; merge-check computes readiness from provider authority.
 
 #### Scenario: coordinator routes but does not create authority
 
