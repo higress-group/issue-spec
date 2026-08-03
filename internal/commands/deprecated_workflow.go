@@ -32,7 +32,7 @@ func deprecatedWorkflowSelection(args []string) (deprecatedWorkflowResult, bool)
 			command += " " + args[1]
 		}
 	case "verify":
-		command, replacement = "verify", "merge-check"
+		command, replacement = "verify", "project tests and human review handoff"
 		if len(args) > 1 && args[1] == "submit" {
 			command = "verify submit"
 		}
@@ -41,7 +41,7 @@ func deprecatedWorkflowSelection(args []string) (deprecatedWorkflowResult, bool)
 			command = "pr " + args[1]
 			replacement = "provider-native discussion"
 			if args[1] == "verify-closure" {
-				replacement = "post-merge close reconciliation"
+				replacement = "provider-native closing or manual issue close"
 			}
 		}
 	case "code-change":
@@ -49,7 +49,7 @@ func deprecatedWorkflowSelection(args []string) (deprecatedWorkflowResult, bool)
 			command, replacement = "code-change rationale", "provider-native discussion"
 		}
 	case "finalize":
-		command, replacement = "finalize", "code-change merge"
+		command, replacement = "finalize", "human review handoff"
 		if len(args) > 1 {
 			command += " " + args[1]
 		}
@@ -60,11 +60,11 @@ func deprecatedWorkflowSelection(args []string) (deprecatedWorkflowResult, bool)
 		}
 	case "issue":
 		if len(args) > 1 && args[1] == "close-change" {
-			command, replacement = "issue close-change", "post-merge close reconciliation"
+			command, replacement = "issue close-change", "provider-native closing or manual issue close"
 		}
 	case "status":
 		if selectedFinalStatusGate(args[1:]) {
-			command, replacement = "status --gate final", "merge-check"
+			command, replacement = "status --gate final", "project tests and human review handoff"
 		}
 	}
 	if command == "" {
@@ -80,7 +80,7 @@ func (a *app) runReview(_ context.Context, args []string) int {
 }
 
 func (a *app) runVerify(_ context.Context, args []string) int {
-	return a.outputDeprecatedWorkflow(deprecatedResultFor("verify", args, "merge-check"), append([]string{"verify"}, args...))
+	return a.outputDeprecatedWorkflow(deprecatedResultFor("verify", args, "project tests and human review handoff"), append([]string{"verify"}, args...))
 }
 
 func (a *app) runArchive(_ context.Context, args []string) int {
@@ -88,7 +88,7 @@ func (a *app) runArchive(_ context.Context, args []string) int {
 }
 
 func (a *app) runIssueCloseChange(_ context.Context, args []string) int {
-	return a.outputDeprecatedWorkflow(deprecatedResultFor("issue close-change", args, "post-merge close reconciliation"), append([]string{"issue", "close-change"}, args...))
+	return a.outputDeprecatedWorkflow(deprecatedResultFor("issue close-change", args, "provider-native closing or manual issue close"), append([]string{"issue", "close-change"}, args...))
 }
 
 func deprecatedResultFor(command string, args []string, replacement string) deprecatedWorkflowResult {

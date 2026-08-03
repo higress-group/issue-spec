@@ -20,14 +20,14 @@ Related history (audit trail, not part of the durable contract):
 
 ## Requirements
 
-### Requirement: selected issue closure is idempotent post-merge bookkeeping
+### Requirement: Post-merge Issue closure is provider-native or human-owned
 
-After freshly observing provider merge, the workflow MUST reconcile the exact selected issue set idempotently on every provider, MUST NOT make mutable closing links or split issue storage pre-merge authority, and MUST NOT introduce a distributed lock, receipt, or merge state machine.
+issue-spec MUST NOT poll or ingest a merge result in order to close Issues, reconcile a selected Issue set, create closure evidence, or advance a post-merge workflow lifecycle. Provider-native closing links MAY remain as human-readable delivery metadata, and users MAY close Issues explicitly through the normal Issue backend.
 
-#### Scenario: closure follows observed merge
+#### Scenario: merged change causes no issue-spec reconciliation write
 
-- **WHEN** the provider reports the selected code change merged
-- **THEN** the closure reconciler closes exactly the selected simple Issue or Proposal phase set idempotently and a retry repairs bookkeeping without changing merge authority
+- **WHEN** a human merges the handed-off PR or MR in the code provider
+- **THEN** issue-spec performs no automatic close, archive, evidence, relationship, or board-lifecycle mutation
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764772
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908

@@ -108,7 +108,7 @@ security boundary:
 5. confirm the PAT includes these minimum scopes and create it:
 
 ```text
-read:user, issues:read, issues:write, evidence:write
+read:user, issues:read, issues:write
 ```
 
 ![Issue a Runner Managed PAT to an independent service account](assets/self-hosted-runner-service-account.png)
@@ -131,7 +131,7 @@ runner may use your own issue-spec account:
 3. save the one-time personal PAT;
 4. pass your exact login to `--runner` when starting the process.
 
-The personal PAT requires the same four minimum scopes and may cover all
+The personal PAT requires the same three minimum scopes and may cover all
 repositories site-wide or a selected set of repositories. Site-wide access
 follows the account's live permissions and does not grant repository authority.
 By default, only the account named by `--runner` can issue commands; add
@@ -141,22 +141,14 @@ disablement remain coupled to a person. Prefer a service account for shared or
 long-running production automation. Never substitute a browser session cookie
 or login session for the PAT.
 
-Evidence publication is decided by the Server when evidence is appended. The
-active PAT must explicitly carry `evidence:write`, allow the exact repository,
-and authenticate an active identity with live `write`-or-higher repository
-permission. Repository roles and `repo`, `admin:repo`, or `issues:write` scopes
-never replace `evidence:write`; `evidence:write` never replaces repository
-permission. The Runner preset selects the four minimum scopes above; additional
-scopes no longer prevent startup, but remove any that the automation does not
-need.
-
-Legacy Evidence Writer assignments and native assignment routes remain
-deprecated, non-authoritative compatibility data for one release window and
-rollback. New Runner versions do not query them. Upgrade Runner before or with
-Server; an older Runner still performs its client-side assignment preflight, so
-keep legacy rows until every Runner is upgraded. Rolling back to an older Server
-restores its former assignment gate. See
-[Legacy Evidence Writer compatibility API](bridges/code-provider-v1.md#deprecated-evidence-writer-compatibility-api).
+The baseline Runner never publishes workflow evidence and therefore neither
+requests `evidence:write` nor consults an Evidence Writer designation. If an
+operator explicitly retains a separate legacy audit append, that operation is
+authorized independently by the Server: its PAT must carry `evidence:write`,
+allow the exact repository, and authenticate an active identity with live
+`write`-or-higher permission. That optional scope does not change Runner
+readiness. Historical designation records have no authorization effect and do
+not need to be configured for current Runners.
 
 Read the public origins and instance ID from `/api/v1/meta`, then create the
 origin-bound profile as the runner system user:
@@ -182,7 +174,7 @@ The Managed PAT or personal PAT selected above is the credential used by every
 stable file outside the repository workspaces, then exposes that same file to
 each agent session. It does not mint or revoke a delegated issue token per job.
 Before each job, the Runner revalidates that the file still authenticates as the
-configured identity, includes the four scopes above, grants the current job's
+configured identity, includes the three scopes above, grants the current job's
 repository, and still has the required repository role.
 The job fails closed on authentication, permission, repository-cap, or network
 drift; Git clone and push remain independently proven by the Git credential
@@ -498,13 +490,10 @@ team workflow:
    URL back to the issue. Without that capability, treat push evidence as the
    endpoint and create the change outside the sandbox; do not mount arbitrary
    host CLIs into bubblewrap;
-6. run the current provider validator and confirm both reserved local action
-   probes report zero mutation, then run read-only preflight and exercise a real
-   non-production `merge_snapshot` at the exact head; confirm the provider
-   returns policy-complete native review/check authority and a token, and that
-   Runner dispatch neither synchronizes legacy evidence nor executes a
-   pre-gate. Treat the local probes as wire/action conformance, not proof of
-   platform merge atomicity;
+6. run the current provider validator and confirm runtime capabilities exactly
+   match the private operator description, then exercise each advertised create,
+   comment, or snapshot operation in a non-production repository. Confirm exact
+   repository/change/head binding, idempotency, bounded output, and redaction;
 7. verify `/resume` by a different authorized maintainer, then revoke the test
    credential and remove the test workspace.
 
@@ -513,8 +502,8 @@ team workflow:
 | Webhook returns `401` | Subscription ID, current secret, and server/runner clocks |
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
-| Profile PAT authentication fails | Confirm the origin-bound profile still resolves the intended Runner identity and includes `read:user`, `issues:read`, `issues:write`, and `evidence:write` |
-| Legacy audit evidence publication returns `403` | This path is audit-only and cannot satisfy merge authority. If retained during a pinned rollback window, the active PAT explicitly includes `evidence:write`, allows the exact repository, and its authenticated identity still has live `write`-or-higher permission |
+| Profile PAT authentication fails | Confirm the origin-bound profile still resolves the intended Runner identity and includes `read:user`, `issues:read`, and `issues:write` |
+| Legacy audit evidence publication returns `403` | This path is audit-only. If retained during a pinned rollback window, confirm the active PAT explicitly includes `evidence:write`, allows the exact repository, and its authenticated identity still has live `write`-or-higher permission |
 | Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
 | Commit reports an unknown author | Configure both `--git-author-name` and `--git-author-email` with values accepted by the code host; do not restore the host global Git config |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |

@@ -12,19 +12,14 @@ import (
 // init. Repository-owned workflow files may select the provider key and gate
 // policy, but never the executable or credentials behind this description.
 type ProviderPlan struct {
-	ProviderKey                  string                    `json:"provider_key"`
-	DisplayName                  string                    `json:"display_name"`
-	CodeChangeLabel              string                    `json:"code_change_label"`
-	SemanticGeneration           string                    `json:"semantic_generation,omitempty"`
-	ProviderBuildIdentity        string                    `json:"provider_build_identity,omitempty"`
-	Capabilities                 []codereview.Capability   `json:"capabilities"`
-	RecommendedEvidence          []codereview.EvidenceKind `json:"recommended_evidence,omitempty"`
-	ChangeCreate                 bool                      `json:"change_create"`
-	ChangeComment                bool                      `json:"change_comment"`
-	EvidenceSnapshot             bool                      `json:"evidence_snapshot"`
-	ReviewDecision               bool                      `json:"review_decision"`
-	AuthoritativeCheckConclusion bool                      `json:"authoritative_check_conclusion"`
-	MergeConditional             bool                      `json:"merge_conditional"`
+	ProviderKey         string                    `json:"provider_key"`
+	DisplayName         string                    `json:"display_name"`
+	CodeChangeLabel     string                    `json:"code_change_label"`
+	Capabilities        []codereview.Capability   `json:"capabilities"`
+	RecommendedEvidence []codereview.EvidenceKind `json:"recommended_evidence,omitempty"`
+	ChangeCreate        bool                      `json:"change_create"`
+	ChangeComment       bool                      `json:"change_comment"`
+	EvidenceSnapshot    bool                      `json:"evidence_snapshot"`
 }
 
 func NewProviderPlan(description codereview.ProviderDescription, capabilities codereview.Capabilities) (ProviderPlan, error) {
@@ -42,13 +37,8 @@ func NewProviderPlan(description codereview.ProviderDescription, capabilities co
 	if strings.Join(capabilityStrings(described), "\x00") != strings.Join(capabilityStrings(discovered), "\x00") {
 		return ProviderPlan{}, fmt.Errorf("provider %q advertised capabilities do not match the registered bridge", normalized.ProviderKey)
 	}
-	if normalized.SemanticGeneration != capabilities.SemanticGeneration ||
-		normalized.ProviderBuildIdentity != capabilities.ProviderBuildIdentity {
-		return ProviderPlan{}, fmt.Errorf("provider %q generation or immutable build does not match the registered bridge", normalized.ProviderKey)
-	}
 	plan := ProviderPlan{ProviderKey: normalized.ProviderKey, DisplayName: normalized.DisplayName,
-		CodeChangeLabel: normalized.CodeChangeLabel, SemanticGeneration: capabilities.SemanticGeneration,
-		ProviderBuildIdentity: capabilities.ProviderBuildIdentity, Capabilities: discovered,
+		CodeChangeLabel: normalized.CodeChangeLabel, Capabilities: discovered,
 		RecommendedEvidence: append([]codereview.EvidenceKind(nil), normalized.RecommendedEvidence...)}
 	for _, capability := range discovered {
 		switch capability {
@@ -58,12 +48,6 @@ func NewProviderPlan(description codereview.ProviderDescription, capabilities co
 			plan.ChangeComment = true
 		case codereview.CapabilityEvidenceSnapshot:
 			plan.EvidenceSnapshot = true
-		case codereview.CapabilityReviewDecision:
-			plan.ReviewDecision = true
-		case codereview.CapabilityAuthoritativeCheckConclusion:
-			plan.AuthoritativeCheckConclusion = true
-		case codereview.CapabilityMergeConditional:
-			plan.MergeConditional = true
 		}
 	}
 	return plan, nil

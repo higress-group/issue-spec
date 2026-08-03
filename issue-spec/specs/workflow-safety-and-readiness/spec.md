@@ -32,9 +32,10 @@ The CLI MUST provide optimistic, link-preserving TASK/PROCESS transitions and an
 #### Scenario: workspace reconciliation resumes local implementation safety
 
 - **WHEN** interruption leaves an implementation lease between prepare, complete, and integrate
-- **THEN** the coordinator MUST inspect or reconcile that exact owned lease and continue without producing review, verification, receipt-projection, or merge authority
+- **THEN** the coordinator MUST inspect or reconcile that exact owned lease and continue without producing review, verification, receipt-projection, readiness, or merge state
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/166#issuecomment-4951036404
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: Delegated work starts only after scoped agent capability preflight
 

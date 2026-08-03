@@ -1,111 +1,65 @@
-# Code wrapper mapping
+# Code provider wrapper mapping
 
-Map provider APIs to the neutral contract; do not leak vendor response shapes
-through the bridge.
-
-## Coordinates
-
-| issue-spec field | Provider source | Rule |
-|---|---|---|
-| `provider_key` | Operator registration | Lowercase stable key; never infer from request URLs |
-| `external_repository` | Project ID or canonical namespace | Stable across display-name changes when possible |
-| `change_id` | PR/MR immutable ID or repository-local IID | Preserve the provider's documented identity semantics |
-| `subject_revision` | Head commit SHA | Fetch and compare exactly; never substitute latest head |
-| `canonical_url` | Browser HTTPS URL | No credential, query, fragment, userinfo, or redirect alias |
+Map only provider operations required by the repository. The command receives
+one `issue-spec.code-provider/v1` JSON request on stdin and emits one strict JSON
+response on stdout. It is executed directly without a shell.
 
 ## Capabilities
 
-- `evidence.review-decision`: return current provider-native reviewer decisions,
-  a closed exact-subject author set, effective approval/CODEOWNER/stale/
-  conversation policy, and provider-owned findings.
-- `evidence.authoritative-check-conclusion`: return exactly one
-  provider-selected current conclusion for every requested stable check
-  key/owner and configuration generation.
-- `change.merge-conditional`: atomically validate expected head and every
-  review/check/policy fact bound by the fresh opaque authority token while
-  performing the native protected merge.
+The `capabilities` action returns `protocol_version` and a duplicate-free
+`values` array containing any implemented subset of:
 
-All three are required with semantic generation `minimal-merge-authority/v1`
-and one immutable provider build identity. Do not advertise any of them until
-the complete set and its unhappy paths are tested. Capability discovery must
-not require a repository token when the wrapper can answer from static
-configuration. `evidence.snapshot`, `change.create`, and `change.comment` are
-legacy audit/navigation surfaces and never satisfy merge-authority preflight.
+- `change.create`
+- `change.comment`
+- `evidence.snapshot`
 
-## Merge-authority snapshot
+Runtime values and the private registry description must match exactly. Keep a
+new scaffold empty until each selected handler and its unhappy paths are tested.
 
-`merge_snapshot` receives the exact reference, expected subject revision, and
-the complete requested check identity set. Observe one coherent native
-generation; never substitute current HEAD for the requested head and never let
-Core choose a CI retry by time or list order.
+## Create change
 
-| Authority fact | Provider source | Important checks |
-|---|---|---|
-| Exact-subject authors | opener plus commit authors/coauthors/committers | closed set, stable source actor IDs, services included |
-| Review policy and decisions | native approval policy and current reviews | full count/CODEOWNER/stale/conversation rules, current reviewer identity and verdict |
-| Findings and conversations | native discussions/findings | stable owner, P0/P1/P2, reviewer-owned resolution, unresolved conversation IDs |
-| Current checks | native required-check/ruleset APIs | exact key/owner/configuration, one provider-selected attempt, exact subject |
-| Authority token | native policy generation or protected merge token | binds head, policy, decisions, findings, conversations, and all required checks |
+The `mutate` action with `kind=create_change` receives provider key, external
+repository, empty change ID, title, optional body/base revision, exact pushed
+head revision, and bounded metadata. Return the new complete reference,
+canonical HTTPS URL, and stable external ID. Reject repository or head mismatch
+before mutation. Make retries idempotent by an operator-defined stable key.
 
-Return source actors without trusted cross-domain identity. Core overwrites
-their canonical principal using `principal_mappings` from the operator registry
-and rejects unmapped, duplicate, or conflicting actors. Never infer identity
-from login spelling, email, display text, logical Agent, or bridge process.
+## Comment
 
-## Conditional merge
+The `mutate` action with `kind=comment` receives a complete existing reference,
+body, and exact head. Return the same reference, canonical URL, and comment
+external ID. Use it only for ordinary human review context such as line
+rationale or the top-level Implementation Rationale; it creates no evidence or
+acceptance state.
 
-`merge_change` requires the same exact reference, caller-required
-`expected_head`, and the opaque token returned by a fresh `merge_snapshot`.
-Call only a platform primitive that atomically rejects head, policy, decision,
-finding, conversation, or required-check drift. A local mutex, double read,
-saved snapshot, expected-head-only API, or read-then-unprotected merge cannot
-implement `change.merge-conditional`.
+Core does not define portable diff coordinates in the comment request. Treat
+ordinary top-level publication as the base contract. Inline comments require an
+operator-approved provider-native review tool or a documented provider-specific
+metadata extension whose exact-head behavior is tested independently.
 
-## Runtime conformance probe
+If safe line discussion is unavailable, put `path:symbol/line` and the original
+writer rationale in the top-level discussion. A failure to publish stays
+visible and retryable but does not authorize or reject merge.
 
-The public validator sends both actions an optional `conformance_probe` marker
-with schema `issue-spec.code-provider-conformance/v1`, the exact action, a
-per-request nonce, and `mutation: forbidden`. Every accompanying repository,
-change, revision, check, and token coordinate is the reserved sentinel
-`__issue_spec_conformance_probe__:<nonce>`.
+## Snapshot
 
-Intercept this marker locally before treating the sentinel as a provider
-coordinate or making any upstream request. After the production action and its
-unhappy paths have been implemented and tested, return the normal action
-envelope containing only an exact `conformance_probe` acknowledgement with the
-same schema, action, and
-nonce plus `mutation_performed: false`. Never forward the sentinel, turn the
-probe into a platform dry-run, or return a real snapshot/merge result. The
-generated scaffold remains `not_implemented`, so declarations alone fail both
-probes.
+The `snapshot` action receives a complete reference and subject revision. Return
+only facts for that exact revision with stable IDs, timestamps, canonical URLs,
+and payload digests. This optional surface supports audit and navigation. Do not
+turn provider review, check, or merge state into issue-spec delivery authority.
 
-The acknowledgement proves bounded runtime dispatch, strict request/response
-identity, and local non-mutation only. Operator-reviewed platform tests must
-still prove that production `merge_change` atomically enforces the complete
-native authority token and expected head.
+## Contract tests
 
-## Errors
+Cover:
 
-Return stable lowercase codes such as `unauthorized`, `forbidden`,
-`not_found`, `revision_mismatch`, `rate_limited`, `upstream_unavailable`, or
-`not_implemented`. Keep messages safe and short. Never return upstream bodies,
-headers, tokens, cookies, or filesystem paths.
+- strict request/response shape, duplicate fields, protocol and request identity;
+- capability empty/subset/full, duplicate, unknown, and description mismatch;
+- repository, change, and head mismatch;
+- create idempotency and canonical URL safety;
+- comment exact-reference preservation and non-blocking behavior;
+- snapshot wrong-revision, duplicate fact, stale observation, and oversized output;
+- timeout, malformed output, upstream rejection, and secret redaction.
 
-## Contract test matrix
-
-- capabilities: complete, empty/inert, partial, legacy-only, duplicate, unknown,
-  generation/build mismatch, and description mismatch;
-- envelope: wrong protocol/request ID, duplicate/unknown fields, trailing JSON;
-- mapping: absent identity, duplicate source actor, conflicting principal,
-  unmapped author/reviewer/finding owner, and bridge-supplied conflict;
-- merge snapshot: wrong provider/repository/change/revision, incomplete author
-  set/policy, duplicate reviewer, unresolved P0/P1, conversation, wrong token;
-- checks: missing/duplicate key-owner, pending, failed, success, renamed,
-  configuration drift, and provider-selected retry;
-- merge: expected-head race, same-head policy/review/check drift, stale token,
-  unknown native result, and exact response identity;
-- conformance: both reserved action acknowledgements, declarations-only
-  `not_implemented`, unsupported action, malformed output, action/nonce/request
-  mismatch, mutation claim, and normal action success rejection;
-- operations: timeout, cancellation, output overflow, upstream 401/403/404/429/5xx;
-- security: no inherited ambient token, no shell invocation, no secret on stderr.
+Registry validation proves local file/process safety and the capability
+handshake only. It never performs provider mutations and does not replace these
+non-production operation tests.

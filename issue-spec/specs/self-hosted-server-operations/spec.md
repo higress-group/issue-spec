@@ -11,30 +11,20 @@ Proposal Issues:
 
 ### Requirement: Every self-hosted capability has an executable end-to-end acceptance case
 
-The project MUST provide a reproducible conformance and security harness that boots the production server, database, identity fixtures, Runner, external source repository, and code-provider bridge, drives production CLI and browser surfaces, proves every active SPEC through executable tests, and evaluates delivery readiness only through read-only merge-check, provider-issued complete authority-token conditional merge, and idempotent post-merge issue reconciliation rather than final, evidence, VERIFY, or Archive gates.
+The project MUST provide a reproducible conformance and security harness that boots the production server, database, identity fixtures, Runner, external source repository, and code-provider bridge, drives production CLI and browser surfaces, proves every active SPEC through executable tests, and exercises issue planning, implementation dispatch, change creation, ordinary discussion, rationale, and human handoff without final, evidence, VERIFY, Archive, merge-authority, or post-merge lifecycle gates.
 
-#### Scenario: issue workflow and protocol run without external GitHub
+#### Scenario: human-handoff workflow runs without external GitHub
 
 - **WHEN** the harness starts an isolated server and points a production CLI profile at it
-- **THEN** simple-Issue and optional proposal/design/implement planning, typed planning upsert/link/status/verify-links, labels/reactions, marker fidelity, pagination, ETag/304, rate headers, compatible errors, provider review/check normalization, merge-check, and conditional merge pass without calling github.com
+- **THEN** planning, typed authoring, Runner implementation, change attachment or creation, ordinary discussion, and handoff pass through the configured bridge without requiring normalized review, authoritative checks, or conditional merge
 
-#### Scenario: authority and merge fail and pass for the right generation
-
-- **WHEN** the harness supplies valid and invalid exact-subject review, check, finding, conversation, policy, provider-token, and merge generations
-- **THEN** only the current trusted complete authority generation passes read-only merge-check and conditional merge, while stale, untrusted, mismatched, pending, failed, same-head-drifted, or incomplete authority blocks deterministically and no legacy evidence or Archive artifact can satisfy it
-
-#### Scenario: post-merge bookkeeping is independently retryable
-
-- **WHEN** conditional merge succeeds and issue reconciliation initially fails or races
-- **THEN** the harness preserves the observed merged state and proves idempotent reconciliation can retry without a receipt, distributed lock, final gate, or rollback of merge authority
-
-#### Scenario: packaging and operations conformance remain reproducible
+#### Scenario: packaging and operations remain reproducible
 
 - **WHEN** CI runs the release matrix target
-- **THEN** frontend packaging, migrations, health/readiness, delivery retry and HA behavior, provider-mode regression suites, and executable coverage of every active SPEC pass without reconstructing final VERIFY or Archive gates
+- **THEN** frontend packaging, migrations, health, readiness, delivery retry, HA behavior, provider-mode regression suites, and executable active-SPEC coverage pass without reconstructing retired authority gates
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: The server is packaged and observable as a recoverable production service
 

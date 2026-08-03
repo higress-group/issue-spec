@@ -107,8 +107,6 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runLink(ctx, args[1:])
 	case "status":
 		return a.runStatus(ctx, args[1:])
-	case "merge-check":
-		return a.runMergeCheck(ctx, args[1:])
 	case "verify":
 		return a.runVerify(ctx, args[1:])
 	case "verify-links":
@@ -242,13 +240,11 @@ Usage:
   issue-spec link --repo owner/repo --targets-file relationships.json [--allow-nonatomic --expected-digest SHA256]
   issue-spec link --repo owner/repo --from SPEC-001 --from-issue N --to TASK-001 --to-issue M [--allow-nonatomic --expected-digest SHA256]
   issue-spec status --repo owner/repo --proposal N [--design N] [--implement N]
-	issue-spec merge-check --repo owner/repo (--issue N|--proposal N [--design N] [--implement N]) (--pr N|--change-id ID --head REV)
   issue-spec verify-links --repo owner/repo --proposal N --design N --implement N
   issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only]
   issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]
   issue-spec search issues --repo owner/repo --query TEXT [--state all|open|closed] [--source all|issue|comments|change] [--stage proposal|design|implement] [--limit 10]
   issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
-	issue-spec code-change merge --repo owner/repo (--issue N|--proposal N [--design N] [--implement N]) (--pr N|--change-id ID) --expected-head REV
   issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
 	issue-spec requirements setup --server URL [--token-stdin] [--yes] [--json]
   issue-spec requirements status [--repo owner/repo] [--json]

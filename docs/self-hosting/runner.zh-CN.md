@@ -106,8 +106,7 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 2. 在目标仓库的 **协作者** 页面解析该 Login，并授予最低的 `write` 角色；
 3. 在 **管理后台 > 托管访问令牌** 中解析该 Service Account；
 4. 选择 **运行器预设**，再选择 **全站全部仓库**，或选中该 Runner 进程要服务的所有仓库；
-5. 确认 Scope 至少包含 `read:user`、`issues:read`、`issues:write` 和
-   `evidence:write`；
+5. 确认 Scope 至少包含 `read:user`、`issues:read` 和 `issues:write`；
 6. 创建并保存只显示一次的 Managed PAT。
 
 ![为独立服务账号签发 Runner Managed PAT](assets/self-hosted-runner-service-account.zh-CN.png)
@@ -127,23 +126,16 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 3. 保存只显示一次的个人 PAT；
 4. 启动时把自己的准确 Login 传给 `--runner`。
 
-个人 PAT 至少需要相同的四个 Scope，可以覆盖全站全部仓库或指定的多个仓库；全站访问
+个人 PAT 至少需要相同的三个 Scope，可以覆盖全站全部仓库或指定的多个仓库；全站访问
 始终跟随账号的实时权限，本身不会授予仓库权限。默认只有
 `--runner` 对应的自己可以发出命令；需要允许其他维护者时再增加 `--allowed-user`。
 这种方式配置更少，但 Runner 写入、凭据轮换和账号停用都与个人身份绑定，不适合作为
 团队长期运行或多人共用的生产自动化。不要用浏览器 Session Cookie 或登录会话替代 PAT。
 
-证据发布权限由 Server 在写入时决定：有效 PAT 必须显式包含 `evidence:write`，允许访问
-准确的目标仓库，并且认证到的有效身份仍具有实时 `write` 或更高仓库权限。仓库角色以及
-`repo`、`admin:repo`、`issues:write` 都不能替代 `evidence:write`；`evidence:write`
-也不能替代仓库权限。Runner PAT 通过运行器预设可快速选择上述四个最低必需 Scope；
-多余 Scope 不再阻止启动，但仍建议取消自动化不需要的权限。
-
-旧版 Evidence Writer 指定和 Native 指定接口仅在一个版本窗口内作为已弃用、无授权效力的
-兼容数据保留，以支持混合版本升级和回滚。新版 Runner 不再查询这些接口。应先升级 Runner，
-或与 Server 同时升级；旧版 Runner 仍会执行客户端指定预检，因此在全部 Runner 升级前需保留
-旧数据。回滚到旧版 Server 会恢复原指定门禁。接口说明见
-[旧版 Evidence Writer 兼容接口](bridges/code-provider-v1.md#deprecated-evidence-writer-compatibility-api)。
+基线 Runner 不发布工作流证据，因此不申请 `evidence:write`，也不查询 Evidence Writer
+指定。运维方若明确保留独立的旧审计追加操作，Server 只在该次写入时单独校验：PAT 必须
+包含 `evidence:write`、允许准确仓库，且有效身份仍有实时 `write` 或更高权限。该可选 Scope
+不改变 Runner readiness；历史指定记录没有授权效力，当前 Runner 无需配置。
 
 从 Server 的 `/api/v1/meta` 读取公开地址和 Instance ID，然后在 Runner 系统用户下
 创建与 Origin 绑定的 Profile：
@@ -167,7 +159,7 @@ issue-spec --profile team auth status --json
 上述 Managed PAT 或个人 PAT 会由每个 `/new` 与 `/resume` 作业直接使用。
 `runner serve` 启动时把它写入仓库 Workspace 之外的固定私有文件，所有 Agent Session
 都复用同一个文件，不再为每个作业签发和撤销委托 Issue Token。Server 的委托 Token
-每个作业开始前，Runner 都会重新确认该文件仍以配置的身份通过认证、至少包含上述四个
+每个作业开始前，Runner 都会重新确认该文件仍以配置的身份通过认证、至少包含上述三个
 Scope、允许访问当前作业仓库，并且当前仓库角色仍满足所需操作；身份、权限、
 仓库限制或网络状态发生漂移时，作业会闭合失败。Git Clone 与 Push 仍由独立的 Git
 凭据 Provider 证明。Server 的委托 Token API 仍可供其他集成使用，但不在 Runner
@@ -486,11 +478,9 @@ workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-s
 5. 当 code-provider bridge 广告 `change.create` 时，确认 Agent 通过该 provider 创建 PR/MR，
    并把变更 URL 回写到 Issue。未提供该能力时，把推送证据作为终点，在沙箱外创建变更；不要
    为此向 bubblewrap 挂载任意宿主 CLI；
-6. 运行当前 Provider Validator，确认两个保留的本地 Action Probe 均报告零 Mutation；
-   随后运行只读 Preflight，并对准确 Head 执行一次真实的非生产 `merge_snapshot`。确认
-   Provider 返回 Policy-complete 的原生 Review/Check Authority 和 Token，同时 Runner
-   Dispatch 不会同步 Legacy Evidence，也不会执行 Pre-gate。这个本地 Probe 只能证明
-   Wire/Action Conformance，不能证明平台 Merge 的原子性；
+6. 运行当前 Provider Validator，确认运行时能力与私有运维描述完全一致；随后在
+   非生产仓库逐一测试所声明的创建、评论或快照操作，确认仓库/change/head 绑定、
+   幂等、输出边界和脱敏行为；
 7. 让另一位被授权维护者执行 `/resume`，然后撤销测试凭据并删除测试 Workspace。
 
 | 现象 | 优先检查 |
@@ -498,8 +488,8 @@ workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-s
 | Webhook 为 `401` | Subscription ID、当前 Secret、Runner 与 Server 时钟 |
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
-| Profile PAT 认证失败 | 与 Origin 绑定的 Profile 是否仍解析到预期 Runner 身份，以及 PAT 是否包含 `read:user`、`issues:read`、`issues:write`、`evidence:write` |
-| Legacy 审计证据发布返回 `403` | 该路径仅供审计，不能满足 Merge Authority。若固定回滚窗口仍保留它，请确认有效 PAT 显式包含 `evidence:write`、允许访问准确仓库，且认证身份仍具有实时 `write` 或更高权限 |
+| Profile PAT 认证失败 | 与 Origin 绑定的 Profile 是否仍解析到预期 Runner 身份，以及 PAT 是否包含 `read:user`、`issues:read`、`issues:write` |
+| Legacy 审计证据发布返回 `403` | 该路径仅供审计。若固定回滚窗口仍保留它，请确认有效 PAT 显式包含 `evidence:write`、允许访问准确仓库，且认证身份仍具有实时 `write` 或更高权限 |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | 提交时报作者身份未知 | 同时配置 `--git-author-name` 与 `--git-author-email`，并使用代码平台认可的值；不要恢复宿主全局 Git 配置 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |

@@ -49,8 +49,8 @@ func EvaluateWorkspaceSafety(input WorkspaceEvaluationInput) (WorkspaceEvaluatio
 		}
 		if class.Class == model.ProcessExecutionReview || class.Class == model.ProcessExecutionVerification {
 			diagnostics = append(diagnostics, workspaceDiagnostic(process, input.Target, CodeProcessExecutionClassRemoved,
-				SeverityError, true, "REVIEW/VERIFY PROCESS execution classes were removed; use provider review and configured checks",
-				string(class.Class), "change-bearing|orchestration|external", "merge-check"))
+				SeverityError, true, "REVIEW/VERIFY PROCESS execution classes were removed; use ordinary engineering review and project checks",
+				string(class.Class), "change-bearing|orchestration|external", "human review handoff"))
 			continue
 		}
 		if management.Explicit && management.Management == model.ProcessWorkspaceIndependent {

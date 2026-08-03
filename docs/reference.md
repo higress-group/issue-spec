@@ -39,7 +39,7 @@ When `html_review` is absent, `enabled` resolves to `true` for backward compatib
 
 With `enabled: false`, `issue-spec init` omits the projection checkpoints from generated skills, slash commands, and prompts, does not emit the embedded `human-review-projections.md` resource, and removes only that exact managed stale resource from an earlier enabled generation. Built-in Proposal, Design, and Implement issue bodies omit their Human Review Projection sections. Custom workflow templates and explicit `--body-file` content remain authoritative.
 
-This setting controls repository authoring guidance only. Typed planning artifacts, stored historical REVIEW/VERIFY audit data, projection comments, HTML preview parsing/storage, and Web preview execution are unchanged. Provider-native review, configured checks, read-only merge-check, and conditional merge remain the sole merge authority.
+This setting controls repository authoring guidance only. Typed planning artifacts, stored historical REVIEW/VERIFY audit data, projection comments, HTML preview parsing/storage, and Web preview execution are unchanged. Current provider-native review, checks, approval, and merge remain in the provider UI under human control.
 
 ### Preferred natural language
 
@@ -147,10 +147,6 @@ caller-provided `--id` as the ANSWER identity.
 issue-spec --profile team code-change attach --repo acme/widgets --implement 3 --change-id 42 --revision abc123 [--refresh --expected-version 7] [--json]
 issue-spec --profile team code-change link-process --repo acme/widgets --implement 3 --process PROCESS-3001 --expected-version 5 [--json]
 
-issue-spec workflow preflight --repo owner/repo --release-set 2.0.0 --server-release 2.0.0 --runner-release 2.0.0 --generated-digest sha256:... --provider-build bridge@sha256:... --json
-issue-spec merge-check --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --json
-issue-spec code-change merge --repo owner/repo --proposal 1 --design 2 --implement 3 --change-id 42 --expected-head abc123 --json
-
 issue-spec runner preflight --repo owner/repo --runner login
 issue-spec runner poll --repo owner/repo --runner login --once --dry-run
 issue-spec runner poll --repo owner/repo --runner login --agent codex
@@ -238,23 +234,11 @@ delete only the unwanted active reference with the corresponding
 `DELETE .../references/{reference-id}`, then retry. Never guess a winner or
 silently overwrite another active relationship.
 
-After provider-native review and configured checks converge, evaluate the exact
-active revision without synchronizing it into Issue comments:
-
-```bash
-issue-spec --profile team merge-check \
-  --repo acme/widgets \
-  --proposal 1 --design 2 --implement 3 \
-  --change-id 42 --head abc123 \
-  --json
-```
-
-`merge-check` is a read-only current decision: it writes no REVIEW/VERIFY,
-evidence, rationale, links, receipts, or lifecycle state. Merge only with
-`code-change merge --expected-head`, which recollects authority and passes the
-provider-issued complete token to conditional merge. Ordinary GitHub REST
-read-then-write remains fail-closed. After freshly observing merged state,
-reconcile exactly the selected Issue set idempotently.
+Provider-aware delivery stops after the exact pushed head and PR/MR are ready
+for human review. Report the head, change URL, tests, rationale, known risks,
+and unsupported provider operations. The human reads current provider-native
+CI, approvals, conversations, ownership, and branch policy and decides whether
+to merge in the provider UI.
 
 `comment create` writes an ordinary issue timeline comment through the selected
 hosted GitHub or self-hosted REST issue backend. It accepts `--body-file -` for
@@ -383,27 +367,27 @@ issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process P
 issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
 ```
 
-The assigned implementation worker does not invoke `complete` or `integrate`. It returns a bounded handoff containing the exact result commit, focused-test results, and, when used, a sealed result receipt. The Coordinator supplies its owner token and runs `workspace complete --result-file`. That command validates the exact assignment id, digest, generation, schema, base/result revisions, one-commit/DCO/ownership Git contract, changed paths, and required tests before recording the result commit and advancing the workspace lifecycle.
+The assigned implementation worker does not invoke `complete` or `integrate`. It returns a bounded handoff containing the exact result commit, changed paths, focused-test results, decisions, risks, and useful line-rationale drafts. The Coordinator supplies its owner token and runs `workspace complete --result-commit`. That command validates the one-commit/DCO/ownership Git contract and changed paths before recording the result commit and advancing the workspace lifecycle; the Coordinator reruns configured integration checks before accepting the result.
 
 For every implementation role assignment, `design_context` is required and covered by the portable assignment digest. It contains the canonical Design `source_url`, fixed `read_mode: complete-issue-body`, fixed `conflict_policy: design-authoritative-stop`, and the Coordinator-authored `invariant`, `applicable_decisions`, `implementation_direction`, `must_preserve`, `must_not`, and `minimum_verification` fields. The workspace compiler derives the Design URL from the current Implement issue's canonical predecessor chain and fails closed on a missing, ambiguous, or mismatched source. It emits the structured values without sorting, summarizing, or reinterpreting them.
 
 Before changing or reviewing code, the assigned role reads the complete Design issue body with `issue-spec read issue --repo owner/repo --issue <design_context.source_url>` without comments, timeline, history, or gate expansion. If that body conflicts with the structured projection, the role stops and reports the conflict. Runtime-specific session IDs are not collected or passed as Design authority, audit metadata, or correctness inputs.
 
-Generated guidance follows the same bounded read model. Coordinator guidance selects optional planning by risk, uses exact `comment get` and filtered lists, dispatches sealed implementation assignments when needed, runs immutable release preflight, and then follows provider review/checks, read-only `merge-check`, conditional merge, and post-merge reconciliation. The implementation role section contains only its sealed assignment, authoritative Design read, owned invariant/work, focused checks, and bounded result responsibilities. Complete proposal/Design copies, full DAGs, link matrices, closure/archive policy, and provider-routing policy stay out of role sections. Deterministic regression budgets count UTF-8 bytes, headings/fields, and instruction-array items; they never use a model tokenizer or justify removing an uncovered safety rule.
+Generated guidance follows the same bounded read model. Coordinator guidance selects optional planning by risk, uses exact `comment get` and filtered lists, dispatches sealed implementation assignments when needed, validates and pushes one exact reviewable head, creates or selects its PR/MR, reports the human handoff, and stops before approval or merge. The implementation role section contains only its sealed assignment, authoritative Design read, owned invariant/work, focused checks, and bounded result responsibilities. Complete proposal/Design copies, full DAGs, link matrices, closure/archive policy, and provider-routing policy stay out of role sections. Deterministic regression budgets count UTF-8 bytes, headings/fields, and instruction-array items; they never use a model tokenizer or justify removing an uncovered safety rule.
 
 Compatibility is deliberately asymmetric. A pre-D14 version-1 assignment without `design_context` remains readable in an existing local registry or PROCESS workspace so inspection, cleanup, and recovery do not declare the registry corrupt. That historical object is read-only compatibility evidence: strict implementation issuance, redispatch digests, assignment-file parsing, and new implementation submissions still reject it. The CLI never synthesizes missing Design context.
 
 An imported result file is not an identity or provenance trust root. Its writer, subject, logical agent name, credentials, and assurance labels are informational and cannot create accepted implementation receipt authority or satisfy a non-Coordinator/independence gate. Unverified imports and reserved assurance values may be structurally validated, but the resulting PROCESS workspace contains no accepted-implementation-receipt marker. Runtime-attested Coordinator import is explicitly deferred until a real runtime attestation trust root exists; there is no signer, secret, or caller-named attestor interface in this workflow.
 
-Legacy rationale, review publication/synchronization, verification submission/finalization, and Archive commands return `deprecated_workflow` before mutation. Their historical artifacts remain explicit audit-read data and never become merge authority.
+Legacy rationale, review publication/synchronization, verification submission/finalization, and Archive commands return `deprecated_workflow` before mutation. Their historical artifacts remain explicit audit-read data and never become delivery acceptance.
 
-The replacement for review explanation is not another issue-spec evidence command. The actual direct-path writer or each managed PROCESS worker owns zero or more line-rationale drafts for non-obvious decisions, identified by repository-relative path, stable symbol plus changed-line anchor, and why/tradeoff/risk—not a provider diff position—and containing no secret, raw payload, or credential. After the exact head is integrated and pushed, the Coordinator validates and maps those anchors, continued applicability, and sensitive-data absence, then publishes unchanged worker-authored text as non-blocking inline provider discussions. Invalid, stale, or sensitive drafts return to the writer or are dropped with explanation, never Coordinator-rewritten under worker authorship. The ordinary top-level `### Implementation Rationale` discussion summarizes and indexes them. If safe inline discussion is unavailable or would create an unresolved merge blocker, it instead preserves `path:symbol/line` plus the worker text in that top-level discussion. Obvious code creates no draft or quota. These discussions have no marker, rationale ID, typed carrier, PROCESS/SPEC binding, evidence field, gate, or merge effect. A required provider write failure is reported with the rendered body and leaves the human-review handoff incomplete, while `merge-check` and conditional merge remain independent.
+The replacement for review explanation is not another issue-spec evidence command. The actual direct-path writer or each managed PROCESS worker owns zero or more line-rationale drafts for non-obvious decisions, identified by repository-relative path, stable symbol plus changed-line anchor, and why/tradeoff/risk—not a provider diff position—and containing no secret, raw payload, or credential. After the exact head is integrated and pushed, the Coordinator validates and maps those anchors, continued applicability, and sensitive-data absence, then publishes unchanged worker-authored text as non-blocking inline provider discussions. Invalid, stale, or sensitive drafts return to the writer or are dropped with explanation, never Coordinator-rewritten under worker authorship. The ordinary top-level `### Implementation Rationale` discussion summarizes and indexes them. If safe inline discussion is unavailable or would create an unresolved merge blocker, it instead preserves `path:symbol/line` plus the worker text in that top-level discussion. Obvious code creates no draft or quota. These discussions have no marker, rationale ID, typed carrier, PROCESS/SPEC binding, evidence field, gate, or merge effect. A required provider write failure is reported with the rendered body for retry or manual publication.
 
 `change-bearing` uses a writable owned branch. Historical `review` and `verification` execution classes remain parseable for audit but generation and workspace mutation reject them. `orchestration` records lifecycle bookkeeping without a checkout. `external` uses mode `none`. Their completion state is implementation bookkeeping and never a merge gate.
 
 Runner commands never carry a PROCESS selector. The runner launches exactly one ACPX coordinator and keeps its cwd and primary sandbox workspace at the public session clone. The coordinator selects a ready PROCESS from the typed DAG and invokes the workspace CLI. Runner mode supplies trusted session-local defaults through `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` and `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT`; a standalone coordinator passes explicit roots.
 
-After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors a result commit, runs focused tests, seals an optional receipt, and returns that bounded handoff. The coordinator revalidates the exact Git result while running `complete` and `integrate` from its unchanged session clone before synchronizing status and cleanup; importing the receipt does not attest who produced it. These implementation controls never become review, check, or merge authority.
+After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors one result commit, runs focused tests, and returns that bounded handoff without creating a role receipt. The coordinator revalidates the exact Git result while running `complete --result-commit` and `integrate` from its unchanged session clone before synchronizing status and cleanup. These implementation controls never become delivery acceptance.
 
 After runner resume or restart, the top-level runner recovers only the ACPX/session job. From the unchanged session clone, the coordinator owns the PROCESS lifecycle: it uses `inspect` or `reconcile` on the exact lease before `complete` and `integrate`, then invokes owner-token cleanup only after an explicit integration or retention decision. Top-level runner session-clone retention calls `git worktree list` and fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails. It does not own, persist, or retry child PROCESS cleanup.
 

@@ -96,19 +96,20 @@ workflow_english="$root/docs/workflow.md"
 workflow_chinese="$root/docs/workflow.zh-CN.md"
 for document in "$workflow_english" "$workflow_chinese"; do
   for marker in \
-    'minimal-merge-authority/v1' \
-    'issue-spec workflow preflight' \
-    '--generated-digest' \
-    'issue-spec merge-check' \
-    'issue-spec code-change merge' \
-    'post-merge-idempotent' \
-    'provider-authority-token' \
+    'change.create' \
+    'change.comment' \
+    'evidence.snapshot' \
+    '### Implementation Rationale' \
     'deprecated_workflow'; do
     grep -Fq -- "$marker" "$document" || {
-      echo "workflow cutover document missing $marker: $document" >&2
+      echo "human-handoff workflow document missing $marker: $document" >&2
       exit 1
     }
   done
+  if grep -Eq 'minimal-merge-authority|issue-spec merge-check|issue-spec code-change merge|issue-spec workflow preflight|provider-authority-token' "$document"; then
+    echo "human-handoff workflow document retains automatic merge machinery: $document" >&2
+    exit 1
+  fi
 done
 
 release_manifest="$root/.agents/skills/issue-spec-workflow/release.json"

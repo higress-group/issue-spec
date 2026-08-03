@@ -117,8 +117,8 @@ review in the browser:
   PROCESS workspaces only when concurrency, isolation, ownership, recovery, or
   dependency-ordered integration requires them
 - teammates and their agents pick up planning mid-flight because optional
-  decisions and blockers live in Issues, while review findings, current checks,
-  and merge authority remain owned by the code provider
+  decisions and blockers live in Issues, while current review, checks, approval,
+  and merge remain owned by people and the code provider
 - `issue-spec runner` executes authorized comment commands (`/new`, `/resume`)
   in managed workspaces, so work can be triggered straight from an issue
 
@@ -128,8 +128,8 @@ the exact head is pushed, the coordinator validates those anchors and publishes
 the worker-authored text as non-blocking inline comments. The ordinary
 `### Implementation Rationale` discussion summarizes and indexes them, or
 carries `path:symbol/line` fallbacks when safe inline discussion is unavailable.
-No rationale quota or gate exists; provider review and current configured checks
-remain the only merge authority.
+No rationale quota or gate exists. Issue-spec reports one exact-head human
+handoff; the current provider UI remains authoritative for review and merge.
 
 ## Works with GitHub too
 

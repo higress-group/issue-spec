@@ -60,9 +60,9 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 
 	workflowSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "SKILL.md"))
 	for _, want := range []string{
-		"provider-native review",
-		"read-only `issue-spec merge-check",
-		"provider-issued complete authority token",
+		"exact-head human review handoff",
+		"Stop before approval or merge",
+		"current provider-native CI",
 	} {
 		if !strings.Contains(workflowSkill, want) {
 			t.Fatalf("workflow skill missing %q:\n%s", want, workflowSkill)
@@ -100,7 +100,7 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 		"Ordinary issue discussion writes",
 		"issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json",
 		"selected issue backend owns the write",
-		"issue-spec owns optional planning, durable projection, read-only merge-check",
+		"issue-spec owns optional planning, implementation coordination, durable projection, PR context, and human handoff",
 	} {
 		if !strings.Contains(githubSkill, want) {
 			t.Fatalf("github skill missing %q:\n%s", want, githubSkill)
@@ -608,11 +608,11 @@ func TestWriteWorkflowArtifactsWithProviderFollowsCapabilityMatrix(t *testing.T)
 	}
 	generated := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-code-provider", "SKILL.md"))
 	for _, want := range []string{
-		"Provider-bound Merge Workflow",
-		"minimal-merge-authority/v1",
-		"provider-native policy-complete review",
-		"read-only current decision",
-		"provider atomically validates its complete token",
+		"Provider-bound Human Handoff Workflow",
+		"change-create=true change-comment=true audit-snapshot=true",
+		"provider and human reviewer own CI",
+		"Report the exact head",
+		"Stop. The human reviews current provider-native CI",
 		"Project/work-item tracker authority is independent",
 	} {
 		if !strings.Contains(generated, want) {

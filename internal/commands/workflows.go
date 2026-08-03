@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/buildinfo"
-	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
@@ -129,11 +128,6 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 	}
 	if len(tools) == 0 {
 		return result, nil
-	}
-	if provider != nil {
-		if err := validateMinimalProviderPlan(*provider); err != nil {
-			return result, err
-		}
 	}
 	if delivery != workflowDeliveryCommands && workflowToolSelected(tools, "claude") {
 		if err := validateClaudeSkillsLinkMigration(root); err != nil {
@@ -309,16 +303,6 @@ func readWorkflowReleaseManifest(root, path string) (workflowReleaseManifest, er
 		return workflowReleaseManifest{}, fmt.Errorf("generated workflow release manifest content digest mismatch")
 	}
 	return manifest, nil
-}
-
-func validateMinimalProviderPlan(provider workflow.ProviderPlan) error {
-	if provider.SemanticGeneration != codereview.MergeAuthorityGeneration ||
-		strings.TrimSpace(provider.ProviderBuildIdentity) == "" || !provider.ReviewDecision ||
-		!provider.AuthoritativeCheckConclusion || !provider.MergeConditional {
-		return fmt.Errorf("provider %q is incompatible with minimal merge authority: require generation %s, immutable build identity, review-decision, authoritative-check-conclusion, and merge-conditional",
-			provider.ProviderKey, codereview.MergeAuthorityGeneration)
-	}
-	return nil
 }
 
 func skillResourcePath(skillDir, relative string) (string, error) {

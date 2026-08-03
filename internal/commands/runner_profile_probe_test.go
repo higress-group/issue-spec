@@ -73,7 +73,7 @@ func TestRunnerProfileCapabilityProbeFailsClosedOnPATDrift(t *testing.T) {
 			native.current.User.Login = "other"
 		}, wantCode: capability.FailureAuthenticationFailed, wantNetwork: "reachable"},
 		{name: "scope removed", mutate: func(native *fakeRunnerProfileNative, _ *fakeRunnerProfileCompatibility) {
-			native.current.Credential.Scopes = runnerProfileScopes[:3]
+			native.current.Credential.Scopes = runnerProfileScopes[:len(runnerProfileScopes)-1]
 		}, wantCode: capability.FailureInsufficientPermission, wantNetwork: "reachable"},
 		{name: "configured repository removed", mutate: func(native *fakeRunnerProfileNative, _ *fakeRunnerProfileCompatibility) {
 			native.page.Repositories = []github.NativeRepositoryContext{{Repository: github.NativeRepositorySummary{

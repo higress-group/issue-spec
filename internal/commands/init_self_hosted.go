@@ -70,19 +70,8 @@ type selfHostedInitPlan struct {
 	Repository        selfHostedRepositoryPlan         `json:"repository"`
 	Source            *discoveredSource                `json:"source,omitempty"`
 	Provider          *workflow.ProviderPlan           `json:"provider,omitempty"`
-	WorkflowReadiness selfHostedWorkflowReadiness      `json:"workflow_readiness"`
 	Mutations         []string                         `json:"mutations,omitempty"`
 	GlobalPromptFiles []string                         `json:"global_prompt_files,omitempty"`
-}
-
-type selfHostedWorkflowReadiness struct {
-	Mode                     string `json:"mode"`
-	PlanningOnly             bool   `json:"planning_only"`
-	MergeCapable             bool   `json:"merge_capable"`
-	ProviderKey              string `json:"provider_key,omitempty"`
-	ProviderFresh            bool   `json:"provider_fresh"`
-	ProviderAuthorityCapable bool   `json:"provider_authority_capable"`
-	Reason                   string `json:"reason,omitempty"`
 }
 
 type selfHostedRepositoryPlan struct {
@@ -113,15 +102,14 @@ type initJournalStage struct {
 }
 
 type selfHostedProjectConfig struct {
-	Version           int                         `json:"version"`
-	Repo              string                      `json:"repo"`
-	Hostname          string                      `json:"hostname"`
-	Profile           string                      `json:"profile"`
-	ServerInstanceID  string                      `json:"server_instance_id"`
-	OrganizationID    string                      `json:"organization_id"`
-	RepositoryID      string                      `json:"repository_id"`
-	Provider          *selfHostedProviderConfig   `json:"provider,omitempty"`
-	WorkflowReadiness selfHostedWorkflowReadiness `json:"workflow_readiness"`
+	Version          int                       `json:"version"`
+	Repo             string                    `json:"repo"`
+	Hostname         string                    `json:"hostname"`
+	Profile          string                    `json:"profile"`
+	ServerInstanceID string                    `json:"server_instance_id"`
+	OrganizationID   string                    `json:"organization_id"`
+	RepositoryID     string                    `json:"repository_id"`
+	Provider         *selfHostedProviderConfig `json:"provider,omitempty"`
 }
 
 type selfHostedProviderConfig struct {
@@ -279,23 +267,6 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 	} else if existingProjectConfig != nil && existingProjectConfig.Provider != nil {
 		selectedProviderKey = existingProjectConfig.Provider.Key
 	}
-	mergeProviderPlan := providerPlan
-	plan.WorkflowReadiness = planningOnlyWorkflowReadiness(selectedProviderKey,
-		"no merge-authority provider was selected")
-	if providerPlan != nil {
-		if capabilityErr := validateMinimalProviderPlan(*providerPlan); capabilityErr != nil {
-			mergeProviderPlan = nil
-			plan.WorkflowReadiness = planningOnlyWorkflowReadiness(providerPlan.ProviderKey, capabilityErr.Error())
-			plan.WorkflowReadiness.ProviderFresh = true
-		} else {
-			plan.WorkflowReadiness = selfHostedWorkflowReadiness{Mode: "operator-preflight-required", PlanningOnly: true,
-				ProviderKey: providerPlan.ProviderKey, ProviderFresh: true, ProviderAuthorityCapable: true,
-				Reason: "provider capabilities are complete, but operator deployment preflight has not been established by init"}
-		}
-	} else if selectedProviderKey != "" {
-		plan.WorkflowReadiness = planningOnlyWorkflowReadiness(selectedProviderKey,
-			"provider metadata was preserved without a fresh merge-authority capability check")
-	}
 	if selectedProviderKey != "" && !workflowNeutral {
 		if err := validateExistingWorkflowProvider(".", selectedProviderKey); err != nil {
 			return a.selfHostedInitError("validate existing provider workflow config", err)
@@ -317,7 +288,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		if options.GlobalPromptsDryRun {
 			preview := workflowGenerationResult{Delivery: options.Delivery}
 			previewOptions := globalPromptInstallOptions{Enabled: true, Directory: options.GlobalPromptsDir, DryRun: true}
-			if err := installGlobalCodexPrompts(".", serverRepoKey, mergeProviderPlan, previewOptions, &preview); err != nil {
+			if err := installGlobalCodexPrompts(".", serverRepoKey, providerPlan, previewOptions, &preview); err != nil {
 				return a.selfHostedInitError("plan global Codex prompts", err)
 			}
 			plan.GlobalPromptFiles = preview.GlobalPromptFiles
@@ -407,7 +378,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 	configPath := filepath.Join(".issue-spec", "config.json")
 	projectConfig := selfHostedProjectConfig{Version: selfHostedInitConfigVersion, Repo: serverRepoKey,
 		Hostname: projectServerHostname(metadata.WebURL, profile.Hostname), Profile: profile.Name, ServerInstanceID: profile.ServerInstanceID,
-		OrganizationID: organization.ID, RepositoryID: repositoryID, WorkflowReadiness: plan.WorkflowReadiness}
+		OrganizationID: organization.ID, RepositoryID: repositoryID}
 	if providerPlan != nil {
 		projectConfig.Provider = &selfHostedProviderConfig{Key: providerPlan.ProviderKey,
 			Capabilities: capabilityNames(providerPlan.Capabilities)}
@@ -438,8 +409,8 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 				return a.selfHostedInitError("write provider workflow config", err)
 			}
 		}
-		if mergeProviderPlan != nil {
-			workflows, err = writeWorkflowArtifactsWithProvider(".", serverRepoKey, options.Tools, options.Delivery, *mergeProviderPlan)
+		if providerPlan != nil {
+			workflows, err = writeWorkflowArtifactsWithProvider(".", serverRepoKey, options.Tools, options.Delivery, *providerPlan)
 		} else {
 			workflows, err = writeWorkflowArtifacts(".", serverRepoKey, options.Tools, options.Delivery)
 		}
@@ -451,7 +422,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 			Directory: options.GlobalPromptsDir,
 			DryRun:    options.GlobalPromptsDryRun,
 		}
-		if err := installGlobalCodexPrompts(".", serverRepoKey, mergeProviderPlan, globalPromptOptions, &workflows); err != nil {
+		if err := installGlobalCodexPrompts(".", serverRepoKey, providerPlan, globalPromptOptions, &workflows); err != nil {
 			return a.selfHostedInitError("install global Codex prompts", err)
 		}
 		markJournalStage(&journal, "workflow", "complete", fmt.Sprintf("%d skills, %d commands", len(workflows.SkillFiles), len(workflows.CommandFiles)))
@@ -466,7 +437,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		"server_instance_id": profile.ServerInstanceID, "organization_id": organization.ID,
 		"repository_id": repositoryID, "auth": map[string]any{"source": token.Source, "user": user.Login, "scopes": scopes},
 		"plan": plan, "config": filepath.ToSlash(configPath), "journal": filepath.ToSlash(journalPath),
-		"labels": labels, "workflows": workflows, "workflow_readiness": plan.WorkflowReadiness}
+		"labels": labels, "workflows": workflows}
 	if plan.LanguageApplied != nil {
 		result["language"] = plan.Language
 		result["language_applied"] = false
@@ -480,11 +451,6 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		organization.Name, options.ServerRepo, repositoryID, filepath.ToSlash(configPath), filepath.ToSlash(journalPath))
 	if providerPlan != nil {
 		fmt.Fprintf(a.out, "external code provider: %s (%s)\n", providerPlan.ProviderKey, providerPlan.DisplayName)
-	}
-	fmt.Fprintf(a.out, "workflow readiness: %s (planning_only=%t merge_capable=%t)\n",
-		plan.WorkflowReadiness.Mode, plan.WorkflowReadiness.PlanningOnly, plan.WorkflowReadiness.MergeCapable)
-	if plan.WorkflowReadiness.Reason != "" {
-		fmt.Fprintf(a.out, "workflow readiness reason: %s\n", plan.WorkflowReadiness.Reason)
 	}
 	if plan.LanguageApplied != nil {
 		fmt.Fprintf(a.out, "workflow language not applied: %s (--tools none); %s\n", plan.Language, plan.LanguageGuidance)
@@ -503,7 +469,7 @@ func (a *app) selfHostedInitError(action string, err error) int {
 func (a *app) outputSelfHostedInitPlan(plan selfHostedInitPlan, user string, scopes []string, jsonOutput bool) int {
 	if jsonOutput {
 		result := map[string]any{"ok": true, "plan_only": true, "plan": plan,
-			"auth": map[string]any{"user": user, "scopes": scopes}, "workflow_readiness": plan.WorkflowReadiness}
+			"auth": map[string]any{"user": user, "scopes": scopes}}
 		if plan.LanguageApplied != nil {
 			result["language"] = plan.Language
 			result["language_applied"] = false
@@ -516,11 +482,6 @@ func (a *app) outputSelfHostedInitPlan(plan selfHostedInitPlan, user string, sco
 		map[bool]string{true: "reuse", false: "create"}[plan.Repository.Existing])
 	if plan.Provider != nil {
 		fmt.Fprintf(a.out, "provider: %s (%s)\n", plan.Provider.ProviderKey, plan.Provider.DisplayName)
-	}
-	fmt.Fprintf(a.out, "workflow readiness: %s (planning_only=%t merge_capable=%t)\n",
-		plan.WorkflowReadiness.Mode, plan.WorkflowReadiness.PlanningOnly, plan.WorkflowReadiness.MergeCapable)
-	if plan.WorkflowReadiness.Reason != "" {
-		fmt.Fprintf(a.out, "workflow readiness reason: %s\n", plan.WorkflowReadiness.Reason)
 	}
 	if plan.LanguageApplied != nil {
 		fmt.Fprintf(a.out, "workflow language not applied: %s (--tools none); %s\n", plan.Language, plan.LanguageGuidance)
@@ -638,11 +599,6 @@ func capabilityNames(values []codereview.Capability) []string {
 		result[i] = string(values[i])
 	}
 	return result
-}
-
-func planningOnlyWorkflowReadiness(providerKey, reason string) selfHostedWorkflowReadiness {
-	return selfHostedWorkflowReadiness{Mode: "planning-only", PlanningOnly: true,
-		ProviderKey: strings.TrimSpace(providerKey), Reason: strings.TrimSpace(reason)}
 }
 
 func projectServerHostname(webURL, fallback string) string {
@@ -772,7 +728,10 @@ func writeExternalCodeWorkflowConfig(root string, provider workflow.ProviderPlan
 	}
 	external["provider_key"] = provider.ProviderKey
 	if _, legacy := external["evidence"]; legacy {
-		return fmt.Errorf("existing %s external_code.evidence is deprecated; remove it and configure provider-native external_code.merge.required_checks", filepath.ToSlash(path))
+		return fmt.Errorf("existing %s external_code.evidence is retired; remove it before initialization", filepath.ToSlash(path))
+	}
+	if _, legacy := external["merge"]; legacy {
+		return fmt.Errorf("existing %s external_code.merge is retired; remove it before initialization", filepath.ToSlash(path))
 	}
 	config["external_code"] = external
 	raw, err := yaml.Marshal(config)

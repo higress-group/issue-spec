@@ -35,7 +35,7 @@ test("runner managed PAT keeps identity and authority controls explicit", async 
   await expect(page.getByRole("checkbox", { name: "read:user" })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "issues:read" })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "issues:write" })).toBeChecked();
-  await expect(page.getByRole("checkbox", { name: "evidence:write" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "evidence:write" })).not.toBeChecked();
   await expect(page.getByRole("checkbox", { name: "admin:repo" })).not.toBeChecked();
   await expect(page.getByRole("checkbox", { name: documentationText("workflow", "workflow") })).toBeChecked();
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);

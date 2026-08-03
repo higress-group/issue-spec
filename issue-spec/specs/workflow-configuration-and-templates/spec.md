@@ -14,12 +14,12 @@ Proposal Issues:
 
 ### Requirement: workflow configuration discovery is deterministic
 
-The CLI MUST resolve repository-local issue-spec workflow configuration before compatible legacy configuration and built-in defaults, MUST preserve explicit durable_specs mode selection, and the built-in fallback MUST provide a bounded simple-Issue path plus optional Proposal, SPEC, QUESTION, Design, TASK, and PROCESS planning with provider review, read-only merge-check, and conditional merge, without required REVIEW, VERIFY, final verification, or Archive behavior.
+The CLI MUST resolve repository-local issue-spec workflow configuration before compatible legacy configuration and built-in defaults, MUST preserve explicit durable_specs mode selection, and the built-in fallback MUST provide a bounded simple-Issue path plus optional Proposal, SPEC, QUESTION, Design, TASK, and PROCESS planning ending at human PR or MR handoff without REVIEW, VERIFY, final verification, Archive, merge-check, conditional merge, or post-merge reconciliation stages.
 
-#### Scenario: built-in workflow uses the minimal authority model
+#### Scenario: built-in workflow ends at human handoff
 
 - **WHEN** no project or compatible legacy workflow configuration exists
-- **THEN** the CLI selects the built-in issue-spec workflow with optional planning and provider merge authority but no REVIEW, VERIFY, final-verification, or Archive stage
+- **THEN** the CLI selects optional planning and implementation guidance whose terminal provider operation is PR or MR creation plus ordinary review context
 
 #### Scenario: repository configuration still wins deterministically
 
@@ -27,7 +27,7 @@ The CLI MUST resolve repository-local issue-spec workflow configuration before c
 - **THEN** the CLI selects issue-spec/config.yaml and reports the legacy source shadowed before generating assets
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: schema and template resolution is safe and explainable
 
@@ -64,15 +64,15 @@ Source SPEC comments:
 
 ### Requirement: active workflow artifacts remain issue-native
 
-Selected Proposal, Design, SPEC, QUESTION, TASK, PROCESS, and handoff artifacts MUST remain issue-native optional planning state, repository durable materialization MAY update only declared durable paths on the implementation branch, and provider checks, review decisions, findings, conversations, and merge readiness MUST remain provider authority rather than being projected into REVIEW, VERIFY, rationale evidence, receipt, or finalization artifacts. Generated guidance MAY require actual code writers to return zero or more valuable stable-anchor line-rationale drafts and the coordinator to publish them as non-blocking provider-native inline discussions with an ordinary top-level `### Implementation Rationale` summary/index, but MUST NOT treat those discussions as artifacts or authority inputs.
+Selected Proposal, Design, SPEC, QUESTION, TASK, PROCESS, and handoff artifacts MUST remain issue-native optional planning state, repository durable materialization MAY update only declared durable paths on the implementation branch, and provider checks, review decisions, conversations, merge, and closing behavior MUST remain native human-visible provider state rather than issue-spec authority.
 
-#### Scenario: issue-native planning does not become merge evidence
+#### Scenario: issue-native planning does not become delivery acceptance
 
 - **WHEN** a change uses optional planning artifacts and repository durable projection
-- **THEN** the artifacts remain readable and durable files merge with code while merge-check ignores their lifecycle and consumes provider authority directly
+- **THEN** the artifacts remain readable and materialized files travel with the code while human handoff does not depend on their lifecycle
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: project templates cannot weaken issue-spec validation
 
@@ -99,15 +99,15 @@ Source SPEC comments:
 
 ### Requirement: init-generated workflow assets reflect the resolved workflow
 
-Generated assets MUST reflect the selected schema, minimal merge authorities, optional planning aids, required provider capabilities, and pinned release identity, and MUST NOT generate legacy evidence stages or dual-mode guidance.
+Init MUST generate Skills and workflow guidance from the selected built-in or project workflow, MUST expose provider capabilities only for requested operations, and MUST produce a usable implementation-to-human-handoff path without classifying a repository as planning-only or disabling Runner dispatch because automatic merge is unavailable.
 
-#### Scenario: generated assets bind the cutover
+#### Scenario: non-merging provider receives complete handoff guidance
 
-- **WHEN** init resolves the built-in issue-spec schema and a compatible v1 provider
-- **THEN** all generated tools describe the same capability-gated minimal workflow and exact release set
+- **WHEN** init selects a provider with change creation and ordinary discussion but no conditional merge
+- **THEN** generated assets include implementation, PR or MR creation, rationale, and human handoff without provider-authority skills or merge-capability warnings
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: workflow diagnostics expose resolution and compatibility decisions
 
@@ -155,12 +155,12 @@ Source SPEC comments:
 
 ### Requirement: repository HTML review authoring policy is strict and default-enabled
 
-The selected workflow configuration MAY control HTML review authoring with a strict enabled boolean and MUST fail before writes on malformed or unknown policy; disabling HTML review MUST NOT weaken selected typed planning authoring, QUESTION discovery, optional PROCESS safety, provider-native independent review, or read-only merge-check, and MUST NOT preserve typed REVIEW, VERIFY, or final-verification obligations.
+The selected workflow configuration MAY control HTML review authoring with a strict enabled boolean and MUST fail before writes on malformed or unknown policy; disabling HTML review MUST NOT weaken selected typed planning authoring, QUESTION discovery, optional PROCESS safety, exact-head project validation, or human review handoff, and MUST NOT preserve typed REVIEW, VERIFY, or final-verification obligations.
 
 #### Scenario: disabled HTML review removes only presentation authoring
 
 - **WHEN** html_review.enabled is false
-- **THEN** generated assets omit HTML review projections and stale managed references while preserving provider review and merge-check without typed REVIEW or VERIFY duties
+- **THEN** generated assets omit HTML review projections and stale managed references while preserving exact-head human handoff without typed REVIEW or VERIFY duties
 
 #### Scenario: invalid HTML review policy fails before generation
 
@@ -168,19 +168,7 @@ The selected workflow configuration MAY control HTML review authoring with a str
 - **THEN** workflow resolution reports invalid_config and writes no generated asset or phase issue
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
-
-### Requirement: projects declare required check identities without verifier artifacts
-
-Projects MUST express mechanical business policy as configured required check identities and MUST NOT create verifier assignments, VERIFY artifacts, role receipts, or executable natural-language conclusions.
-
-#### Scenario: project policy selects an objective check
-
-- **WHEN** a business rule needs deterministic merge enforcement
-- **THEN** configuration names the provider or trusted external check whose current exact-subject conclusion merge-check consumes
-
-Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764758
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: selected phase creation validates lineage without planning gates
 
@@ -208,7 +196,7 @@ Legacy review sync, verify submit, evidence-only PROCESS completion, rationale-g
 #### Scenario: deprecated command cannot preserve old authority
 
 - **WHEN** a caller invokes a removed evidence writer after cutover
-- **THEN** the command fails before mutation and directs the caller to provider checks, review, or merge-check as applicable
+- **THEN** the command fails before mutation and directs the caller to current project checks, ordinary provider review context, or human handoff as applicable
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
