@@ -283,11 +283,12 @@ Runner 实际配置的沙箱、隔离运行目录、adapter override、Proxy 环
 命令、主机名或凭据写进目标仓库和公开文档。Runner 只会把这个显式本地输入复制到会话隔离的
 `CODEX_HOME`；其他 Agent 会拒绝该参数。
 
-Coordinator 必须分离 Issue Authority 与 Code Authority。运行方 Skill 或 Provider Bridge
-创建 PR/MR 后，使用 self-hosted `code-change attach` 校验并关联已经存在的精确 Revision，
-再用 `code-change link-process` 关联 PROCESS Comment。这两个命令不会创建代码变更，也不会
-导入证据。Runner 不能假设 self-hosted Issue Backend 提供 GitHub PR Endpoint；Review、
-Merge 与关闭继续通过所选 Code Provider 完成。
+Coordinator 必须分离 Issue Authority 与 Code Authority。人工交接只需要 PR/MR 链接和
+精确 Head。只有已经存在 Implement Issue 时，才可用 `code-change attach` 增加导航关系；
+只有已经采用 managed PROCESS 且 Comment 已存在时，才可用 `code-change link-process`
+关联它们。不得为了调用这些命令而创建 Implement 或 PROCESS，也不得把关系写入作为
+Runner 或交接前置条件。Runner 不能假设 self-hosted Issue Backend 提供 GitHub PR Endpoint；
+Review、Merge 与关闭继续通过所选 Code Provider 完成。
 
 ```bash
 cd /srv/issue-spec-workflows/acme-workflow

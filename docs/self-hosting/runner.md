@@ -306,13 +306,15 @@ hostnames, or credentials in the target repository or public documentation.
 The Runner copies only this explicit local input into the session's isolated
 `CODEX_HOME`; other agents reject this option.
 
-The coordinator must keep issue and code authority separate. After the
-operator skill or provider bridge creates a PR/MR, it uses self-hosted
-`code-change attach` to validate and associate the existing exact revision,
-then `code-change link-process` to link PROCESS comments. These commands do not
-create the change or ingest evidence. The Runner must not assume that a
-self-hosted issue backend provides GitHub PR endpoints; review, merge, and
-closure continue through the selected code provider.
+The coordinator must keep issue and code authority separate. A PR/MR link and
+exact head are sufficient for human handoff. When an Implement issue already
+exists, `code-change attach` MAY add a navigation relationship; when managed
+PROCESS comments already exist, `code-change link-process` MAY link those
+existing comments. Do not create Implement or PROCESS merely to use these
+commands, and do not make either relationship a Runner or handoff prerequisite.
+The Runner must not assume that a self-hosted issue backend provides GitHub PR
+endpoints; review, merge, and closure continue through the selected code
+provider.
 
 ```bash
 cd /srv/issue-spec-workflows/acme-workflow
