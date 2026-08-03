@@ -12,7 +12,7 @@ func TestEvaluateRejectsRemovedFinalTarget(t *testing.T) {
 	}
 }
 
-func TestImplementPlanningRequiresTaskAndProcess(t *testing.T) {
+func TestImplementPlanningAllowsOmittedOptionalTaskAndProcess(t *testing.T) {
 	body, err := model.EnsureTypedBody("SPEC", "SPEC-001", "## Requirement: x\n\nx MUST work.\n\n### Scenario: x\n\n- **WHEN** x\n- **THEN** x", model.BodyOptions{Status: "confirmed"})
 	if err != nil {
 		t.Fatal(err)
@@ -22,11 +22,7 @@ func TestImplementPlanningRequiresTaskAndProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]bool{}
-	for _, diagnostic := range report.Diagnostics {
-		seen[diagnostic.Code] = true
-	}
-	if report.Ready || !seen[CodeTaskRequired] || !seen[CodeProcessRequired] {
+	if !report.Ready || len(report.Diagnostics) != 0 {
 		t.Fatalf("unexpected implement planning report: %+v", report)
 	}
 }

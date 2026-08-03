@@ -182,6 +182,25 @@ Projects MUST express mechanical business policy as configured required check id
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764758
 
+### Requirement: selected phase creation validates lineage without planning gates
+
+Creating a selected Design or Implement issue MUST validate that each explicitly supplied predecessor exists, has the expected issue-spec phase marker, belongs to the same change, and uses a supported marker version. Phase creation MUST NOT require, read, or interpret optional SPEC, QUESTION, TASK, PROCESS, or relationship state. Planning completeness MAY be inspected separately, but it MUST NOT prevent the authoring of the next selected phase.
+
+#### Scenario: historical planning defects do not block a replacement Implement
+
+- **WHEN** a valid Design belongs to the requested change but its historical TASK or SPEC relationships are absent, stale, ambiguous, or otherwise invalid
+- **THEN** `issue create implement` SHALL create the explicitly requested Implement without reading those comments
+
+#### Scenario: explicit lineage mismatch still fails before mutation
+
+- **WHEN** a supplied predecessor is not the expected phase, belongs to another change, or uses an unsupported marker
+- **THEN** phase creation SHALL fail before creating an issue
+
+#### Scenario: omitted planning artifact types are valid
+
+- **WHEN** planning status evaluates a selected phase with no SPEC, TASK, or PROCESS of an optional type
+- **THEN** absence alone SHALL NOT emit a required-artifact blocker or remediation that asks the user to manufacture that artifact
+
 ### Requirement: deprecated evidence writers fail with zero mutation
 
 Legacy review sync, verify submit, evidence-only PROCESS completion, rationale-gate publication, and evidence-carrier finalization commands MUST return deprecated_workflow with focused replacement guidance and MUST perform zero local, issue, code-provider, or relationship writes. This deprecation MUST NOT prohibit an ordinary provider-native `### Implementation Rationale` discussion that contains no legacy carrier, identity, relationship, evidence, or gate semantics.

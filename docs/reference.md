@@ -97,6 +97,8 @@ issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --su
 issue-spec issue close --repo owner/repo --issue 1 --json
 issue-spec issue reopen --repo owner/repo --issue 1 --json
 
+Design and Implement creation validate the explicit predecessor phase and change lineage, but do not gate authoring on optional SPEC, QUESTION, TASK, PROCESS, or relationship state. Planning status validates selected artifacts that exist; it does not require omitted optional artifact types.
+
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
 issue-spec comment edit --repo owner/repo --comment-id 123 --body-file reply.md --json
 issue-spec comment delete --repo owner/repo --comment-id 123 --json

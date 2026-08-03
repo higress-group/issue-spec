@@ -97,6 +97,8 @@ issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --su
 issue-spec issue close --repo owner/repo --issue 1 --json
 issue-spec issue reopen --repo owner/repo --issue 1 --json
 
+创建设计与实施 Issue 时会校验显式前置 Issue 的阶段和变更归属，但不会因为可选的 SPEC、QUESTION、TASK、PROCESS 或关系状态而阻止创建。规划状态只校验已经选择并存在的产物，不会要求补造被省略的可选产物。
+
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
 issue-spec comment edit --repo owner/repo --comment-id 123 --body-file reply.md --json
 issue-spec comment delete --repo owner/repo --comment-id 123 --json

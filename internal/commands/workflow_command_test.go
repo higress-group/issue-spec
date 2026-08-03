@@ -135,6 +135,9 @@ artifacts:
 	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
 		return fakeGitHubBackend{
 			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
+			getIssue: func(_ context.Context, _ string, issueNumber int) (github.Issue, error) {
+				return github.Issue{Number: issueNumber, Body: "<!-- issue-spec:issue=proposal change=custom-workflow version=1 -->"}, nil
+			},
 			listIssueComments: func(_ context.Context, _ string, issueNumber int) ([]github.Comment, error) {
 				if issueNumber != 21 {
 					t.Fatalf("proposal issue = %d", issueNumber)

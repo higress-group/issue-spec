@@ -94,7 +94,6 @@ func (e *evaluator) add(code, message string, artifact ArtifactRef, current, exp
 }
 
 func (e *evaluator) evaluateArtifacts() {
-	activeSpecs, activeTasks, activeProcesses := 0, 0, 0
 	for _, artifact := range e.snapshot.Artifacts {
 		comment := artifact.Comment
 		if comment.Type == "" || comment.Status == "superseded" {
@@ -102,7 +101,6 @@ func (e *evaluator) evaluateArtifacts() {
 		}
 		switch comment.Type {
 		case "SPEC":
-			activeSpecs++
 			if comment.Status != "confirmed" && comment.Status != "done" {
 				e.add(CodeSpecStatusInvalid, fmt.Sprintf("%s must be confirmed or done", comment.ID), artifactRef(artifact),
 					comment.Status, "confirmed|done", "comment transition", "--id", comment.ID, "--to", "confirmed")
@@ -112,20 +110,7 @@ func (e *evaluator) evaluateArtifacts() {
 				e.add(CodeQuestionBlocked, fmt.Sprintf("%s remains unanswered", comment.ID), artifactRef(artifact),
 					comment.Status, "effective answer or resolution", "question answer", "--question-id", comment.ID)
 			}
-		case "TASK":
-			activeTasks++
-		case "PROCESS":
-			activeProcesses++
 		}
-	}
-	if activeSpecs == 0 {
-		e.add(CodeSpecRequired, "at least one active SPEC is required", ArtifactRef{}, "0", ">=1", "comment generate", "--type", "SPEC")
-	}
-	if e.snapshot.Target == TargetImplement && activeTasks == 0 {
-		e.add(CodeTaskRequired, "Implement planning requires at least one active TASK", ArtifactRef{}, "0", ">=1", "comment generate", "--type", "TASK")
-	}
-	if e.snapshot.Target == TargetImplement && activeProcesses == 0 {
-		e.add(CodeProcessRequired, "Implement planning requires at least one active PROCESS", ArtifactRef{}, "0", ">=1", "comment generate", "--type", "PROCESS")
 	}
 }
 
