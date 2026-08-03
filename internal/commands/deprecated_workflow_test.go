@@ -42,13 +42,13 @@ func TestDeprecatedWorkflowCommandsStopAtZeroWriteFrontDoor(t *testing.T) {
 	}
 }
 
-func TestDeprecatedWorkflowSelectionDoesNotCaptureSupportedSurfaces(t *testing.T) {
+func TestDeprecatedWorkflowSelectionDoesNotCaptureUnrelatedOrFullyRemovedSurfaces(t *testing.T) {
 	for _, args := range [][]string{
 		{"code-change", "merge"},
 		{"merge-check"}, {"durable-spec", "check"}, {"status", "--gate", "implement"},
 	} {
 		if result, deprecated := deprecatedWorkflowSelection(args); deprecated {
-			t.Fatalf("supported command %v selected as %+v", args, result)
+			t.Fatalf("unrelated or fully removed command %v selected as %+v", args, result)
 		}
 	}
 }

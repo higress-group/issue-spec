@@ -19,7 +19,7 @@ Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION
 4. Generate canonical SPEC comments with issue-spec comment generate --type SPEC. Requirements must be testable and include WHEN/THEN scenarios. --allow-noncanonical is a migration bypass, not normal authoring.
 5. Persist the authoritative self-contained Design, perform its first QUESTION discovery/create pass, then complete TASK planning.
 6. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. Execution modes such as coordinator-owned describe scheduling only; they never authorize coordinator-inline implementation of an agent-executed change-bearing PROCESS.
-7. Upsert each TASK with --covers-issue so it publishes its complete canonical SPEC coverage and verify planning relationships. Proposal, Design, Implement, TASK, and PROCESS remain optional aids and never become merge authority.
+7. Upsert each TASK with --covers-issue so it publishes its complete canonical SPEC coverage and verify planning relationships. Proposal, Design, Implement, TASK, and PROCESS remain optional aids and never certify delivery acceptance.
 
 ## Project Workflow
 

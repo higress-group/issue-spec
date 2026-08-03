@@ -1,385 +1,114 @@
-# 对接企业代码平台与工作项平台
+# 企业代码平台接入
 
-自托管 issue-spec 可以把 Change Spec 的流程状态保存在 issue-spec Server，源码、
-合并请求、Review 与 CI 则继续留在企业已有的代码平台。工作项平台可以关联或投影同一
-个变更，但不应在无意间变成第二套事实源。
+适用于这样的部署：issue-spec Server 管理 Issue 原生的规划工件，企业代码平台
+继续管理源码、PR/MR、CI、评审、批准和合并。
 
-本文介绍 Provider 选型、运维配置、代码平台 Wrapper 实现、Source Binding、Runner
-Git 凭据、OIDC，以及 Jira 类工作项同步。所有示例均使用虚构地址。
+目标是形成清晰的人机交接，而不是再实现一套代码平台策略引擎：issue-spec
+准备一个精确、可评审的 head 和对应 PR/MR；是否合并由人和代码平台原生界面
+决定。
 
-## 1. 先拆分集成边界
+## 权责划分
 
-不要实现一个同时掌管所有权限的“企业 Provider”。
-
-| 能力面 | 推荐事实源 | 对接方式 |
+| 表面 | 权威方 | 接入方式 |
 |---|---|---|
-| Issue、类型化评论、Change 视图 | issue-spec Server | Native API 与 self-hosted CLI Profile |
-| 源码、PR/MR、Review、CI、Merge | 企业代码平台 | `issue-spec.code-provider/v1` Bridge |
-| Clone 与 Push 凭据 | 企业 Git 服务 | `issue-spec-git-credential-v1` 或可信宿主 SSH |
-| 员工登录 | 企业身份平台 | OIDC |
-| 关联需求/工作项可见性与状态 | issue-spec Server | Jira 类平台：通过 Agent/Workflow 适配器或 API/Webhook 投影 Sidecar 对接 |
+| Issue、类型化规划、Change 状态、Runner 命令 | issue-spec Server | 原生 API/OIDC |
+| 仓库坐标 | 运维方 | Source Binding |
+| clone/push | Git 传输 | 受信 SSH 或 `git-credential-v1` |
+| 创建 PR/MR、普通讨论 | 企业代码平台 | 可选 `issue-spec.code-provider/v1` 操作 |
+| CI、评审、批准、合并 | 企业代码平台和人 | 原生策略/界面 |
+| 工作项投影 | 企业项目平台 | 独立、幂等的适配器 |
 
-```text
-浏览器 ------ OIDC ------> issue-spec Server <------ Runner Webhook
-                               ^                         |
-                               | Native API              | 固定 Source Binding
-工作项适配器或投影 Sidecar -----+                         v
-                                                 Git Credential Bridge
-issue-spec Server / CLI -- Code Provider Bridge --> 企业代码平台
-```
+各表面只保留一个权威方。尤其不要把代码平台的评审和检查状态复制成
+issue-spec 的 readiness gate。
 
-当前稳定的运维侧 Command 协议覆盖的是**代码平台 Provider**。工作项适配器是独立的
-CLI/API 集成，不是 `issue-spec.code-provider/v1`，也不能放入代码平台 Provider
-Registry。设计工作项集成前请先阅读[对接 Jira 类工作项平台](#6-对接-jira-类工作项平台)。
+## 最小 provider 能力
 
-## 2. 盘点企业平台能力
+代码桥接只支持三个相互独立的操作能力：
 
-实现 Wrapper 前先明确：
+- `change.create`：为精确推送的 head 创建 PR/MR；
+- `change.comment`：发布普通、非阻塞的评审讨论；
+- `evidence.snapshot`：可选的精确 head 审计/导航快照。
 
-- 稳定的仓库标识，以及不含凭据的规范 Clone URL 与 Web URL；
-- PR/MR 标识是全局 ID，还是仓库内 IID；
-- 不可变 Head Revision 与 Merge Revision 字段；
-- Review、Discussion、Pipeline、Job 与 Merge API；
-- Webhook 签名、Delivery ID、重试与事件顺序语义；
-- Service Account 权限，以及能否签发短期 Git 凭据；
-- API 限流、分页、最终一致性与幂等能力；
-- 哪个系统分别负责 Issue 文本、类型化产物、代码证据与工作项状态。
+可以声明任意已实现子集。缺少 `change.create` 时由人或外部工具创建 PR/MR，
+不会禁用规划和实现；缺少 `change.comment` 时返回可手工发布的 rationale
+正文；缺少 `evidence.snapshot` 只是不采集快照。
 
-启用 Onboarding 前必须评估完整的 Merge Authority Contract。只有 Provider 能对一个
-精确 Head 返回 Policy-complete 的原生 Review/Check 权威，并通过原生条件 Merge 原子
-校验该权威时，才具备 Merge 资格。旧的只读审计或 MR 导航仍可保留，但不能宣传成
-Merge Capability。
+协议不再包含合并权限、provider 策略归一化、主体映射、ready 状态或合并动作。
 
-## 3. 实现 Code Provider Bridge
-
-Bridge 是运维方持有的可执行程序。issue-spec 直接启动它，在标准输入写入一个严格
-JSON 请求，并只接受标准输出中的一个严格 JSON 响应。Bridge 只能获得显式配置的
-参数和环境变量。
-
-完整协议见 [`issue-spec.code-provider/v1`](bridges/code-provider-v1.md)。
-
-### 生成 Wrapper 脚手架
-
-仓库提供了通用技能和 Python 脚手架：
+## 生成桥接脚手架
 
 ```bash
 python3 .agents/skills/configure-enterprise-provider/scripts/scaffold_provider.py \
   --provider-key code.example \
   --display-name "Example Code" \
   --remote-authority git.example.test \
-  --provider-build-identity code-example@sha256:0123456789abcdef \
-  --principal-mappings-file "$HOME/.config/issue-spec/principal-mappings.json" \
+  --capability change.create \
+  --capability change.comment \
   --output "$HOME/.config/issue-spec/providers/code.example"
 ```
 
-私有 Principal Mapping 文件使用以下严格结构。数据必须来自运维方维护的身份目录，
-不能来自仓库或 Bridge 响应：
+输出包括：
 
-```json
-{
-  "principal_mapping_identity": "employee-directory@sha256:0123456789abcdef",
-  "principal_mappings": [
-    {
-      "provider": "code.example",
-      "stable_id": "provider-user-42",
-      "principal": {"realm": "employees", "stable_id": "person-42"}
-    }
-  ]
-}
-```
+- `provider_bridge.py`：默认不声明能力的严格命令桥；
+- `providers.json`：私有运维 registry；
+- `implementation-plan.json`：所选操作的实现和激活步骤。
 
-命令会生成：
+先实现并测试 handler，再把已实现能力同时写入运行时 `CAPABILITIES` 和 registry
+的 `description.capabilities`。不要添加评审结论、批准或合并能力。
 
-- `provider_bridge.py`：严格协议 Envelope 与安全错误处理；
-- `providers.json`：私有运维注册信息和可公开的 Provider 描述；
-- `implementation-plan.json`：目标 Capability 和启用检查清单。
-
-脚手架会故意对 `merge_snapshot` 和 `merge_change` 返回 `not_implemented`，因此运行时
-和 `providers.json` 默认都不启用任何 Capability。`implementation-plan.json` 会记录
-完整的三项 Capability、语义代际、不可变 Build 和 Mapping Identity。先实现并测试两个
-Action，再把三项 Capability 及同一 Generation/Build 作为一个不可变发布集，同时启用到
-`provider_bridge.py` 与 `providers.json`；禁止启用部分集合。
-
-生成的 Action Parser 能识别 Validator 的保留 Probe 结构，但仍会返回
-`not_implemented`。只有真实平台映射及其失败路径已经测试后，才在两个 Action 中实现本地
-Probe Acknowledgement；它不得发起上游请求，也不能转换成平台 Dry-run。因此，只修改
-Capability、Generation、Build 或 Mapping 声明时，两个 Handler 仍会使校验失败。
-
-### 把平台对象映射为中性证据
-
-| 中性坐标 | 常见平台字段 |
-|---|---|
-| `provider_key` | 运维注册 Key |
-| `external_repository` | 稳定 Project ID 或规范 Namespace |
-| `change_id` | 有明确仓库作用域的 PR/MR ID |
-| `expected_subject_revision` / `expected_head` | 精确 Head Commit SHA |
-| `canonical_url` | 不含凭据的规范 HTTPS 页面地址 |
-
-外部 Reference 的 metadata 与该 Reference 使用相同的可见性：`repository` Reference
-的 metadata 对仓库读者可见，公开仓库中也会公开；`maintainers` Reference 则对其他调用方
-整条隐藏。metadata 只能保存非敏感的流程坐标；Token、Cookie、Authorization Header 和
-Provider 凭据必须保存在 Operator Bridge 或委派凭据通道中。
-
-`merge_snapshot` 必须针对请求 Head 读取一个一致的 Provider Generation，不能替换成
-最新 Head。响应需要包含完整的 Opener/Author/Coauthor/Committer 集合、有效的 Approval/
-CODEOWNER/Stale/Conversation Policy、当前 Reviewer Decision、Provider-owned Finding 与
-Resolution、未解决 Conversation ID，并为每个稳定 Check Key/Owner/Configuration 返回
-唯一一个由 Provider 选择的当前结论，同时返回绑定全部事实的不透明 Authority Token。
-
-Bridge 只返回稳定的来源 Actor Identity。issue-spec 使用运维 Registry 中的
-`principal_mappings` 覆盖 Canonical Principal；Login、Email、Display Name、逻辑 Agent、
-Comment Writer 和 Bridge 身份都不能代替该映射。
-
-`merge_change` 必须接收同一 Reference、调用方要求的 Head 和新鲜 Token，并通过平台原生
-操作在 Merge 时原子校验 Head 及 Token 绑定的所有 Review/Check/Policy 事实。Bridge 本地
-锁、Double Read 或 Expected-head-only API 均不合格。`change.create` 和
-`change.comment` 可继续作为可选导航 Mutation，但不能替代三项 Merge Contract。
-
-## 4. 注册与配置 Provider
-
-Registry 必须位于代码仓库外，由服务运维方持有，权限为 `0600` 或更严格：
-
-```json
-{
-  "version": 1,
-  "providers": {
-    "code.example": {
-      "path": "/opt/issue-spec/providers/code-example/provider-bridge",
-      "args": ["serve-stdio"],
-      "environment": [
-        "CODE_EXAMPLE_API_URL=https://git.example.test/api",
-        "CODE_EXAMPLE_TOKEN_FILE=/run/secrets/code-example-token"
-      ],
-      "timeout": "30s",
-      "max_output_bytes": 1048576,
-      "principal_mapping_identity": "employee-directory@sha256:0123456789abcdef",
-      "principal_mappings": [
-        {
-          "provider": "code.example",
-          "stable_id": "provider-user-42",
-          "principal": {"realm": "employees", "stable_id": "person-42"}
-        }
-      ],
-      "description": {
-        "provider_key": "code.example",
-        "display_name": "Example Code",
-        "remote_authorities": ["git.example.test"],
-        "code_change_label": "Merge request",
-        "semantic_generation": "minimal-merge-authority/v1",
-        "provider_build_identity": "code-example@sha256:0123456789abcdef",
-        "capabilities": [
-          "evidence.review-decision",
-          "evidence.authoritative-check-conclusion",
-          "change.merge-conditional"
-        ]
-      }
-    }
-  }
-}
-```
-
-Server 和所有会执行 Provider 操作的 CLI 进程都应指向同一个可信 Registry：
-
-```bash
-export ISSUE_SPEC_CODE_PROVIDERS_FILE=/etc/issue-spec/code-providers.json
-```
-
-self-hosted Profile 也可以保存绝对路径 `operator_registry_file`；环境变量优先。不要在
-仓库的 `issue-spec/config.yaml` 中保存可执行路径、环境变量或凭据来源。
-
-对同一 self-hosted realm 重新执行 origin-bound `auth login` 时，应保留这一运维侧设置。
-任何 Profile 重新配置后，仍须先运行 `auth status` 和一次 Provider 相关的 Plan，再依赖
-该 Registry。不同 realm 必须独立配置；未经明确的运维审查，不得跨 realm 复制 Provider
-Registry。
-
-重启 Server 后，确认 `/api/v1/meta` 只公开安全的 Provider 描述，不得出现 Bridge
-路径、环境变量、Token File 或凭据。
-
-### 验证 Capability 握手与 Runtime Action Dispatch
+验证私有配置与握手：
 
 ```bash
 python3 .agents/skills/configure-enterprise-provider/scripts/validate_provider.py \
-  --registry /etc/issue-spec/code-providers.json \
+  --registry "$HOME/.config/issue-spec/providers/code.example/providers.json" \
   --provider-key code.example
 ```
 
-校验器会检查私有文件权限、严格 Registry 结构、可执行文件位置、响应大小、协议身份、
-完整三项 Capability、语义代际、不可变 Build 一致性及运维 Mapping Identity。对于完整
-声明，它还会有界调用 `merge_snapshot` 和 `merge_change` Runtime Probe。请求 Marker 使用
-`issue-spec.code-provider-conformance/v1`、保留坐标、绑定 Action 的 Nonce 以及
-`mutation=forbidden`。Bridge 必须在本地拦截 Probe，不得访问平台，并回显准确的
-Action/Nonce 和 `mutation_performed=false`。Error、格式错误/额外输出、Identity 不匹配、
-Mutation 声明或正常 Snapshot/Merge 结果都会导致校验失败。空的初始脚手架会被识别为
-Inert，不能 Merge；Legacy-only 或部分声明会给出聚焦错误。
+validator 不执行任何 provider 写操作。每个声明能力都要在非生产仓库单独完成
+正常与异常路径契约测试。
 
-这个结果只证明 Runtime Wire/Action Conformance，不证明平台原生 Merge 的原子性。启用前
-还必须在非生产仓库分别实测真实 `merge_snapshot` 和平台 Protected Merge，包括同 Head 的
-Policy/Review/Check 漂移以及 Expected-head Race。
+## 私有注册与仓库配置
 
-## 5. 为 issue-spec 仓库绑定源码
+`providers.json`、可执行路径、token 文件和 API 环境必须位于仓库外。Server 与
+需要 provider 操作的 CLI 进程通过 `ISSUE_SPEC_CODE_PROVIDERS_FILE` 或受信的
+`operator_registry_file` 使用同一描述。
 
-Source Binding 只保存坐标，不保存凭据。先用 Plan 模式检查，不做远端或本地写入：
+仓库内只写 provider key：
 
-```bash
-issue-spec --profile team init \
-  --repo acme/payments-spec \
-  --server-org acme \
-  --server-repo payments-spec \
-  --bind-source \
-  --provider code.example \
-  --external-repo platform/payments \
-  --source-clone-url https://git.example.test/platform/payments.git \
-  --source-web-url https://git.example.test/platform/payments \
-  --default-branch main \
-  --tools codex,claude \
-  --delivery skills \
-  --plan
+```yaml
+workflow:
+  external_code:
+    provider_key: code.example
 ```
 
-确认解析后的 Provider、Remote Authority、Server Repo、External Repo、Clone URL、
-Web URL 与默认分支。确认无误后去掉 `--plan`；只有经过批准的非交互变更才增加
-`--yes`。
+Source Binding 只保存无凭据坐标；clone/web URL 的 authority 必须匹配运维方
+声明。Runner Git 凭据与 provider API 凭据相互隔离。
 
-Clone URL 与 Web URL 的 authority 必须精确匹配所选 Provider 在握手中声明的 authority。
-代码平台返回的展示或跳转 URL 只是元数据，不能直接当作 Source Binding 坐标；应从选定的
-规范 Git remote 或运维维护的 canonical-host 映射推导 Binding URL。即使浏览器可以访问，
-也不能静默替换为别名。
+先运行 `issue-spec init --plan`。初始化根据实际操作能力生成 provider-aware
+Skills，不再把 provider 分类为 planning-only 或 merge-capable。
 
-仓库内生成的工作流配置可以选择 `code.example` 及其证据策略，但不能替换运维侧
-Provider 注册。
+## 人工评审交接
 
-### 关联已存在的 Provider 代码变更
+实际代码作者只为非显然实现返回有价值的行级 rationale 草稿。精确 head 集成
+并推送后，Coordinator 验证锚点和敏感信息，再将原文发布为非阻塞行级讨论，
+并维护顶层 `### Implementation Rationale` 摘要/索引。
 
-先通过获批的代码平台流程创建 PR/MR，再使用 self-hosted Profile 校验并关联这个已经
-存在的 Provider Change：
+如果平台不安全支持行级评论，就在顶层讨论保留 `path:symbol/line` 和作者原文。
+发布失败要显式返回、可重试。rationale 是给人看的上下文，不是证据或批准。
 
-```bash
-issue-spec --profile team code-change attach \
-  --repo acme/payments-spec \
-  --implement 3 \
-  --change-id 42 \
-  --revision abc123 \
-  --json
-```
+最终交付报告精确 head、PR/MR 链接、测试、rationale、风险和限制，然后停止。
+当前 CI、批准、策略和合并都留在代码平台原生界面，由人决定。
 
-Active Source Binding 固定 Provider 与外部仓库；调用方只提供 Provider 所有的 Change
-ID 和精确 Revision。这个操作不会调用 `change.create`，也不会导入证据。刷新同一个
-Relationship 时必须提供 `--refresh --expected-version <version>`。
+## 验收清单
 
-Implement Issue 恰好存在一个 Active `code_change` Reference 后，才能链接 PROCESS：
+- registry 是严格 JSON、绝对路径、私有且不含 secret 值；
+- 运行时能力与运维描述完全一致；
+- 每个声明操作都有非生产正常/异常路径测试；
+- 创建 PR/MR 绑定预期仓库和精确 head，并具备幂等策略；
+- 评论保持相同 change 身份且不制造阻塞评审；
+- 可选快照拒绝错误 head 且仅用于审计；
+- Source Binding 无凭据，Git 与 API 凭据隔离；
+- 流程在人工批准和合并之前停止。
 
-```bash
-issue-spec --profile team code-change link-process \
-  --repo acme/payments-spec \
-  --implement 3 \
-  --process PROCESS-001 \
-  --expected-version 5 \
-  --json
-```
-
-Server 返回 `ambiguous_active_references` 时，应检查冲突中返回的 Reference ID 和当前
-Native Reference 列表，通过已认证 Native References API 或 Server UI 只删除不需要
-的 Active Reference，再重试。运维方与 Agent 都不能按返回顺序猜测胜出项，也不能
-覆盖全部 Reference。Review、Merge 与关闭继续通过所选 Provider Bridge 或可信代码
-平台 Skill 完成，不能改走 GitHub PR Endpoint。
-
-## 6. 对接 Jira 类工作项平台
-
-issue-spec Server 仍是 Issue Body、类型化评论、权限、Change 状态和 Runner 命令的
-事实源。工作项平台只作为同一变更的关联视图，而不是第二套 Issue 事实源。
-
-工作项适配器不是 `issue-spec.code-provider/v1`；其可执行程序、配置和凭据都不能放入
-代码平台 Provider Registry，而应保存在获批的本地 Wrapper、Workflow Runner 或 Sidecar
-密钥存储中。
-
-### 首选：由 Agent/Workflow 驱动的 CLI/API 适配器
-
-当 Agent 或 Workflow 可以在对应的 issue-spec 阶段附近执行同步时，使用对企业工作项
-CLI 或 API 的轻量 Wrapper。
-
-1. 写入前动态发现项目、工作项类型、可写字段、状态和有效流转，避免硬编码会变化的
-   平台枚举值。
-2. Proposal 创建后，基于稳定关联 Key 查找或创建一个外部工作项，并持久化唯一映射；
-   同时保存双方规范 HTTPS 链接。
-3. Design 和 Implement 均复用该关联，不要为每个阶段新建工作项。
-4. 只有对应 issue-spec 阶段已成功，才推进工作项状态；使用平台幂等 Key 或本地操作
-   Ledger。
-5. 同步失败时，保留已成功的 issue-spec 阶段并记录可重试操作；不能因为工作项更新
-   失败而回滚 issue-spec。
-6. 定期 Reconcile 映射和预期状态，以修复失败重试、延迟事件及人工改动造成的偏差。
-
-Wrapper 可以提供 `discover`、`find-or-create`、`link`、`transition` 和 `reconcile` 等
-本地操作。这些名称只是工作流约定，并不是 issue-spec Provider ABI。
-
-### 集中式：Webhook/API 投影 Sidecar
-
-当一个服务需要同步多个仓库，或需要事件驱动的状态投影时，使用 Sidecar。
-
-1. 消费签名后的 issue-spec Webhook，或通过 Checkpoint 轮询 Native API。
-2. 使用以 Delivery 和关联 ID 为 Key 的 Inbox/Outbox Ledger。
-3. 使用条件更新、幂等写入和 Origin Marker，避免重复写入及事件回环。
-4. 只投影稳定摘要和双方链接；类型化产物保留在 issue-spec，不复制到自由文本评论。
-5. 定期 Reconcile，因为任一平台都可能丢失事件或被人工修改。
-
-## 7. 配置身份与 Runner Git 权限
-
-员工浏览器登录优先使用 [OIDC](authentication/v1/oidc.md)。OIDC 只建立身份，不会
-自动授予组织或仓库角色；issue-spec 权限需要独立配置。
-
-Runner Clone/Push 优先使用实现
-[`issue-spec-git-credential-v1`](bridges/git-credential-v1.md) 的短期凭据 Command，
-按固定 Source Binding 签发 Lease，并在 Job 完成时撤销。
-
-可信部署也可以选择专用 Runner OS 账号的宿主 SSH，但必须开启 Sandbox，并以只读方式
-挂载 `.ssh`。宿主 SSH 的权限范围大于 Job Scoped Credential，不应作为默认方案。
-
-## 8. 验收与运维
-
-先在非生产仓库验证：
-
-- Server 与 CLI 加载相同的 Provider 描述；
-- Source Binding Authority 与规范 URL 可以通过校验；
-- CLI 与 Server 使用同一 Capability Generation/Build 和运维 Principal Mapping；
-- 两个保留的本地 Conformance Probe 都回显准确 Identity、报告零 Mutation，且不发起上游
-  请求；
-- 所有声明的 Action 成功，所有未声明的 Action Fail Closed；
-- `merge_snapshot` 拒绝错误的 Provider、Repo、Change、Revision 或 Check Key/Owner，且只
-  返回一个由 Provider 选择的当前结论；
-- 未映射或冲突的 Author/Reviewer Fail Closed；
-- Changes-requested、Stale/Dismissed Decision、未解决 P0/P1 Finding、Conversation 以及
-  Pending/Failed Check 行为正确；
-- `merge_change` 在平台原生边界拒绝 Head、Policy、Review、Finding、Conversation、Check
-  或 Authority Token 漂移；
-- 重试不会创建重复 Change 或 Comment；
-- 401、403、404、429、Timeout、Cancellation 与 5xx 被映射为安全稳定的错误；
-- 响应大小限制、Secret Redaction、凭据轮转和回滚已经演练；
-- 工作项同步始终以 issue-spec 为事实源，拥有稳定关联且不会产生同步回环；
-- 重复的创建、关联和状态流转请求保持幂等，工作项更新失败可重试且不会回滚
-  issue-spec。
-
-### Legacy Aone 兼容边界
-
-现有运维侧 Aone Bridge 固定在旧的不可变发布集以及 `evidence.snapshot`、
-`change.create`、`change.comment` 接口。这些值仅用于审计/导航兼容；当前 self-hosted init
-会在任何本地或远端 Mutation 前拒绝它们。不能只修改 Registry 声明来伪装兼容。
-
-只有经过脱敏的稳定平台 API 与一致性测试证明完整当前 Contract 后，Aone 才能具备资格：
-精确 Author 和逐 Reviewer Decision、有效原生 Policy 与 Discussion/Finding、稳定且由
-Provider 选择的 Check Key/Owner 结论、运维 Principal Mapping 覆盖，以及能够校验完整
-新鲜 Authority Token 的原子 Expected-head Merge。在此之前必须固定整个 Aone 发布集，
-不得解析 Verbose CLI 原始输出，也不得宣传部分新 Capability。
-
-企业具体配置和详细证据只保存在获批的内部系统。公开文档、Issue 与 PR 只使用通用
-示例和脱敏后的通过/失败摘要。
-
-## 使用 Agent 辅助配置
-
-适配新平台时可直接调用仓库技能：
-
-```text
-Use $configure-enterprise-provider to assess our code and work-item APIs,
-scaffold the bridge, create a private provider registry, and produce a
-non-production validation plan.
-```
-
-技能入口位于 `.agents/skills/configure-enterprise-provider/SKILL.md`。
+回滚某个操作时，同时从运行时与 registry 删除该 capability。彻底停用时再从
+仓库 workflow 删除 provider key，并分别撤销 provider API 与 Runner Git 凭据。

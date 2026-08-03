@@ -21,9 +21,9 @@ import (
 
 func minimalProviderPlanForTest(key string) workflow.ProviderPlan {
 	return workflow.ProviderPlan{ProviderKey: key, DisplayName: "Example Code", CodeChangeLabel: "change",
-		SemanticGeneration: codereview.MergeAuthorityGeneration, ProviderBuildIdentity: "bridge@sha256:0123456789abcdef",
-		Capabilities: codereview.RequiredMergeAuthorityCapabilities(), ReviewDecision: true,
-		AuthoritativeCheckConclusion: true, MergeConditional: true}
+		Capabilities: []codereview.Capability{codereview.CapabilityEvidenceSnapshot,
+			codereview.CapabilityChangeCreate, codereview.CapabilityChangeComment},
+		EvidenceSnapshot: true, ChangeCreate: true, ChangeComment: true}
 }
 
 func TestGeneratedExternalCodeWorkflowDoesNotPreGateFirstRunnerDispatch(t *testing.T) {
@@ -58,7 +58,7 @@ func TestExternalCodeWorkflowConfigRejectsLegacyEvidenceWithoutOverwrite(t *test
 
 	before := readTestFile(t, path)
 	err := writeExternalCodeWorkflowConfig(root, minimalProviderPlanForTest("code.example"))
-	if err == nil || !strings.Contains(err.Error(), "deprecated") {
+	if err == nil || !strings.Contains(err.Error(), "retired") {
 		t.Fatalf("legacy evidence error = %v", err)
 	}
 	if after := readTestFile(t, path); after != before {
@@ -66,7 +66,7 @@ func TestExternalCodeWorkflowConfigRejectsLegacyEvidenceWithoutOverwrite(t *test
 	}
 }
 
-func TestExternalCodeWorkflowConfigRerunPreservesMergePolicy(t *testing.T) {
+func TestExternalCodeWorkflowConfigRerunPreservesUnrelatedConfig(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "issue-spec", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -76,12 +76,6 @@ func TestExternalCodeWorkflowConfigRerunPreservesMergePolicy(t *testing.T) {
   note: preserved
 external_code:
   provider_key: code.example
-  merge:
-    required_checks:
-      - source: provider
-        provider: code.example
-        key: app:7/context:unit
-        owner: app:7
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -105,10 +99,6 @@ external_code:
 	}
 	if plan.Config.ExternalCode.ProviderKey != "code.example" {
 		t.Fatalf("provider key = %q", plan.Config.ExternalCode.ProviderKey)
-	}
-	providerKey, checks, err := plan.MergeAuthorityConfiguration()
-	if err != nil || providerKey != "code.example" || len(checks) != 1 || checks[0].Key != "app:7/context:unit" {
-		t.Fatalf("existing merge policy was not preserved: provider=%q checks=%+v err=%v", providerKey, checks, err)
 	}
 	if !strings.Contains(afterSecondRun, "note: preserved") {
 		t.Fatalf("existing workflow config was not preserved:\n%s", afterSecondRun)
@@ -210,16 +200,15 @@ func TestInitJournalResumesOnlyExactServerTarget(t *testing.T) {
 	}
 }
 
-func TestSelfHostedInitKeepsLegacyAndPartialProvidersPlanningOnly(t *testing.T) {
+func TestSelfHostedInitSupportsOperationOnlyProvidersThroughHumanHandoff(t *testing.T) {
 	for _, test := range []struct {
-		name, providerKey, displayName, generation, build string
-		capabilities                                      []string
+		name, providerKey, displayName string
+		capabilities                   []string
 	}{
 		{name: "legacy Aone", providerKey: "aone", displayName: "Aone Legacy",
 			capabilities: []string{"evidence.snapshot"}},
-		{name: "partial merge authority", providerKey: "code.partial", displayName: "Partial Code",
-			generation: codereview.MergeAuthorityGeneration, build: "partial@sha256:0123456789abcdef",
-			capabilities: []string{"evidence.review-decision"}},
+		{name: "comment-only provider", providerKey: "code.partial", displayName: "Partial Code",
+			capabilities: []string{"change.comment"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -241,10 +230,6 @@ func TestSelfHostedInitKeepsLegacyAndPartialProvidersPlanningOnly(t *testing.T) 
 			description := map[string]any{"provider_key": test.providerKey, "display_name": test.displayName,
 				"remote_authorities": []string{"git.example.test"}, "code_change_label": "Merge request",
 				"capabilities": test.capabilities}
-			if test.generation != "" {
-				description["semantic_generation"] = test.generation
-				description["provider_build_identity"] = test.build
-			}
 			var server *httptest.Server
 			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet && r.Method != http.MethodPut {
@@ -289,8 +274,7 @@ func TestSelfHostedInitKeepsLegacyAndPartialProvidersPlanningOnly(t *testing.T) 
 			defer server.Close()
 
 			registryPath := writeProviderRegistryFixture(t, root, test.providerKey, description,
-				map[string]any{"protocol_version": codereview.ProtocolVersion, "semantic_generation": test.generation,
-					"provider_build_identity": test.build, "values": test.capabilities})
+				map[string]any{"protocol_version": codereview.ProtocolVersion, "values": test.capabilities})
 			t.Setenv("ISSUE_SPEC_TOKEN", "realm-token")
 			t.Setenv("ISSUE_SPEC_CODE_PROVIDERS_FILE", "")
 			profile := auth.Profile{Name: "preflight", Kind: auth.ProfileKindHosted, Hostname: "127.0.0.1",
@@ -307,30 +291,22 @@ func TestSelfHostedInitKeepsLegacyAndPartialProvidersPlanningOnly(t *testing.T) 
 				t.Fatalf("init exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
 			}
 			if mutationCalls != 1 {
-				t.Fatalf("planning-only init mutations=%d, want one Source Binding write", mutationCalls)
-			}
-			var result struct {
-				WorkflowReadiness selfHostedWorkflowReadiness `json:"workflow_readiness"`
-			}
-			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-				t.Fatal(err)
-			}
-			if !result.WorkflowReadiness.PlanningOnly || result.WorkflowReadiness.MergeCapable ||
-				!result.WorkflowReadiness.ProviderFresh || result.WorkflowReadiness.ProviderKey != test.providerKey {
-				t.Fatalf("workflow readiness = %+v", result.WorkflowReadiness)
+				t.Fatalf("operation-only init mutations=%d, want one Source Binding write", mutationCalls)
 			}
 			projectConfig := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
-			for _, want := range []string{`"mode": "planning-only"`, `"planning_only": true`, `"merge_capable": false`} {
-				if !strings.Contains(projectConfig, want) {
-					t.Fatalf("planning-only project config missing %q:\n%s", want, projectConfig)
+			for _, retired := range []string{"workflow_readiness", "planning_only", "merge_capable", "provider_authority_capable"} {
+				if strings.Contains(projectConfig, retired) {
+					t.Fatalf("operation-only project config retained %q:\n%s", retired, projectConfig)
 				}
 			}
 			workflowConfig := readTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"))
 			if !strings.Contains(workflowConfig, "provider_key: "+test.providerKey) || strings.Contains(workflowConfig, "evidence:") {
-				t.Fatalf("planning-only workflow config =\n%s", workflowConfig)
+				t.Fatalf("operation-only workflow config =\n%s", workflowConfig)
 			}
-			if _, err := os.Stat(filepath.Join(root, ".agents", "skills", "issue-spec-code-provider", "SKILL.md")); !os.IsNotExist(err) {
-				t.Fatalf("planning-only init generated provider authority skill: %v", err)
+			providerSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-code-provider", "SKILL.md"))
+			if !strings.Contains(providerSkill, "Human Handoff Workflow") || !strings.Contains(providerSkill, "Stop. The human") ||
+				strings.Contains(providerSkill, "merge-check") {
+				t.Fatalf("operation-only init did not generate human handoff guidance:\n%s", providerSkill)
 			}
 		})
 	}
@@ -366,9 +342,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 				"transport": map[string]any{"mode": "loopback-http", "secure": false},
 				"providers": []map[string]any{{"provider_key": "code.example", "display_name": "Example Code",
 					"remote_authorities": []string{"git.example.test"}, "code_change_label": "Merge request",
-					"semantic_generation": "minimal-merge-authority/v1", "provider_build_identity": "code-example@sha256:0123456789abcdef",
-					"capabilities": []string{"change.comment", "evidence.review-decision",
-						"evidence.authoritative-check-conclusion", "change.merge-conditional"}}}})
+					"capabilities": []string{"change.create", "change.comment", "evidence.snapshot"}}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/user":
 			w.Header().Set("X-OAuth-Scopes", "repo, admin:repo, evidence:write")
 			writeTestJSON(w, map[string]any{"login": "browser-admin"})
@@ -546,9 +520,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		}
 		neutralOutput = out.String()
 	}
-	for _, want := range []string{`"language_applied": false`, `"provider_key": "code.example"`,
-		`"mode": "operator-preflight-required"`, `"merge_capable": false`,
-		`"provider_authority_capable": true`, "openspec/config.yaml"} {
+	for _, want := range []string{`"language_applied": false`, `"provider_key": "code.example"`, "openspec/config.yaml"} {
 		if !strings.Contains(neutralOutput, want) {
 			t.Fatalf("tools-none init output missing %q: %s", want, neutralOutput)
 		}
@@ -570,7 +542,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	}
 	neutralConfig := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
 	for _, want := range []string{`"repo": "browser-e2e/httpbin"`, `"profile": "e2e"`, `"server_instance_id": "issue-spec:e2e"`,
-		`"key": "code.example"`, `"external_repository": "acme/widgets"`, `"change.comment"`, `"change.merge-conditional"`} {
+		`"key": "code.example"`, `"external_repository": "acme/widgets"`, `"change.create"`, `"change.comment"`} {
 		if !strings.Contains(neutralConfig, want) {
 			t.Fatalf("tools-none runtime config missing %q:\n%s", want, neutralConfig)
 		}
@@ -645,8 +617,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		}
 	}
 	preservedConfig := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
-	for _, want := range []string{`"key": "code.example"`, `"external_repository": "acme/widgets"`, `"change.merge-conditional"`,
-		`"mode": "planning-only"`, `"planning_only": true`, `"merge_capable": false`} {
+	for _, want := range []string{`"key": "code.example"`, `"external_repository": "acme/widgets"`, `"change.create"`, `"change.comment"`} {
 		if !strings.Contains(preservedConfig, want) {
 			t.Fatalf("provider-neutral rerun dropped existing provider metadata %q:\n%s", want, preservedConfig)
 		}
@@ -675,15 +646,13 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		t.Fatalf("label calls=%d, want %d on the exact server target", labelCalls, 2*len(issueSpecLabels()))
 	}
 	if !strings.Contains(finalOutput, `"repo": "browser-e2e/httpbin"`) ||
-		!strings.Contains(finalOutput, `"mode": "operator-preflight-required"`) ||
-		!strings.Contains(finalOutput, `"merge_capable": false`) ||
-		!strings.Contains(finalOutput, `"provider_authority_capable": true`) || strings.Contains(finalOutput, "local-source/local-checkout") {
+		!strings.Contains(finalOutput, `"provider_key": "code.example"`) || strings.Contains(finalOutput, "local-source/local-checkout") ||
+		strings.Contains(finalOutput, "merge_capable") || strings.Contains(finalOutput, "planning_only") {
 		t.Fatalf("init output did not use the resolved server target: %s", finalOutput)
 	}
 	config := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
 	for _, want := range []string{`"version": 2`, `"repo": "browser-e2e/httpbin"`, `"profile": "e2e"`, `"key": "code.example"`,
-		`"external_repository": "acme/widgets"`, `"mode": "operator-preflight-required"`,
-		`"merge_capable": false`, `"provider_authority_capable": true`} {
+		`"external_repository": "acme/widgets"`, `"change.create"`, `"change.comment"`, `"evidence.snapshot"`} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("project config missing %q:\n%s", want, config)
 		}
@@ -696,6 +665,9 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	}
 	if strings.Contains(workflowConfig, "evidence:") {
 		t.Fatalf("workflow config must not emit the retired evidence gate:\n%s", workflowConfig)
+	}
+	if strings.Contains(workflowConfig, "merge:") {
+		t.Fatalf("workflow config must not emit retired merge policy:\n%s", workflowConfig)
 	}
 	workflowSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "SKILL.md"))
 	if !strings.Contains(workflowSkill, "browser-e2e/httpbin") || strings.Contains(workflowSkill, "local-source/local-checkout") {
@@ -748,7 +720,7 @@ import json, sys
 request = json.load(sys.stdin)
 response = {"protocol": request["protocol"], "request_id": request["request_id"]}
 if request["action"] == "capabilities":
-    response["capabilities"] = {"protocol_version": request["protocol"], "semantic_generation": "minimal-merge-authority/v1", "provider_build_identity": "code-example@sha256:0123456789abcdef", "values": ["change.comment", "evidence.review-decision", "evidence.authoritative-check-conclusion", "change.merge-conditional"]}
+    response["capabilities"] = {"protocol_version": request["protocol"], "values": ["change.create", "change.comment", "evidence.snapshot"]}
 else:
     response["error"] = {"code": "unsupported", "message": "unsupported in init test"}
 json.dump(response, sys.stdout)
@@ -757,7 +729,7 @@ json.dump(response, sys.stdout)
 		t.Fatal(err)
 	}
 	registry := filepath.Join(root, "providers.json")
-	body := fmt.Sprintf(`{"version":1,"providers":{"code.example":{"path":%q,"description":{"provider_key":"code.example","display_name":"Example Code","remote_authorities":["git.example.test"],"code_change_label":"Merge request","semantic_generation":"minimal-merge-authority/v1","provider_build_identity":"code-example@sha256:0123456789abcdef","capabilities":["change.comment","evidence.review-decision","evidence.authoritative-check-conclusion","change.merge-conditional"]}}}}`, bridge)
+	body := fmt.Sprintf(`{"version":1,"providers":{"code.example":{"path":%q,"description":{"provider_key":"code.example","display_name":"Example Code","remote_authorities":["git.example.test"],"code_change_label":"Merge request","capabilities":["change.create","change.comment","evidence.snapshot"]}}}}`, bridge)
 	if err := os.WriteFile(registry, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,7 @@ Proposal Issues:
 
 ### Requirement: PROCESS execution classes determine coordinator-to-child workspace isolation
 
-When optional delegated change-bearing PROCESS execution is selected, the coordinator MUST isolate writable workers by worktree, preserve external or human self-managed workspaces, and avoid allocating writable workspaces to read-only orchestration; review decisions and merge-check MUST consume the provider exact subject without REVIEW or VERIFY PROCESS workspaces.
+When optional delegated change-bearing PROCESS execution is selected, the coordinator MUST isolate writable workers by worktree, preserve external or human self-managed workspaces, and avoid allocating writable workspaces to read-only orchestration; exact-head human review MUST remain outside REVIEW or VERIFY PROCESS workspaces.
 
 A bounded single-writer implementation MAY dispatch exactly one native child in the selected implementation checkout without PROCESS or managed workspace when the coordinator does not write concurrently, the checkout needs no protection from pre-existing work, and no path enforcement, restart recovery, or dependency-ordered integration is required. Read-only children require no workspace allocation.
 
@@ -31,22 +31,22 @@ A bounded single-writer implementation MAY dispatch exactly one native child in 
 #### Scenario: optional workers remain isolated
 
 - **WHEN** two delegated implementation PROCESS nodes may execute concurrently
-- **THEN** they receive distinct writable worktrees and ownership enforcement while review and merge use provider exact-head reads
+- **THEN** they receive distinct writable worktrees and ownership enforcement while the later human handoff reports the exact integrated head
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: Coordinator integration is revision-bound and dependency-ordered
 
 For optional delegated PROCESS implementation, the coordinator MUST integrate owned commits from explicit base revisions in dependency order and MUST require configured integration checks before accepting the code result, but MUST NOT require a review PROCESS, final rationale evidence, role receipt, or final-verification lifecycle to complete workspace integration. Direct single-writer delegation uses ordinary Git and provider checks without this managed integration lifecycle. The later ordinary provider-native `### Implementation Rationale` human-review discussion is a review handoff, not an integration prerequisite.
 
-#### Scenario: safe integration does not create merge authority
+#### Scenario: safe integration does not create delivery acceptance
 
 - **WHEN** a managed PROCESS worker returns an owned DCO commit and configured integration checks pass
-- **THEN** the coordinator may complete integration while provider checks and review independently determine merge readiness
+- **THEN** the coordinator may complete integration while current provider checks and human review remain outside PROCESS lifecycle
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: Workspace and commit scope enforce declared write ownership
 
@@ -112,10 +112,10 @@ For optional PROCESS execution, a Runner coordinator MUST remain at its session 
 #### Scenario: runner integration boundary survives workflow simplification
 
 - **WHEN** a Runner executes optional delegated or inline implementation work
-- **THEN** its coordinator root, child worktrees, integration, ownership, and handoff remain isolated while provider review and merge-check run outside PROCESS lifecycle
+- **THEN** its coordinator root, child worktrees, integration, ownership, and handoff remain isolated while provider review and the human merge decision stay outside PROCESS lifecycle
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: Managed workspace preparation rejects ambiguous directory ownership before allocation
 

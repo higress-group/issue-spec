@@ -43,12 +43,12 @@ Source SPEC comments:
 
 ### Requirement: generated workflow guidance stays coding-agent-neutral
 
-Generated guidance MUST default bounded implementation to one code writer, MUST permit one code-writing child or subagent without PROCESS, and MUST state that child use alone does not select PROCESS. It MUST select optional managed PROCESS only for concrete concurrent-write, isolation, ownership-enforcement, restart-recovery, or dependency-integration needs. It MUST make the actual code writer own zero or more stable-anchor line-rationale drafts for non-obvious decisions, assign exact-head anchor validation and provider publication to the coordinator, default to an ordinary provider-native `### Implementation Rationale` summary/index, checks, provider-policy review, read-only merge-check, and provider conditional merge, keep coding-agent session identity out of authority, MAY describe real-child workspace safety for selected PROCESS execution, and MUST NOT instruct rationale quotas, writer-owned provider positions, REVIEW/VERIFY PROCESS, role receipts, review sync, verify submit, mandatory rationale evidence, coverage, or finalization.
+Generated guidance MUST default bounded implementation to one code writer, MUST permit one code-writing child or subagent without PROCESS, and MUST state that child use alone does not select PROCESS. It MUST select optional managed PROCESS only for concrete concurrent-write, isolation, ownership-enforcement, restart-recovery, or dependency-integration needs. It MUST make the actual code writer own zero or more stable-anchor line-rationale drafts for non-obvious decisions, assign exact-head anchor validation and provider publication to the coordinator, default to an ordinary provider-native `### Implementation Rationale` summary/index, report project checks, exact head, PR or MR link, risks, and limitations, stop before human approval or merge, keep coding-agent session identity out of authority, MAY describe real-child workspace safety for selected PROCESS execution, and MUST NOT instruct rationale quotas, writer-owned provider positions, REVIEW/VERIFY PROCESS, role receipts, review sync, verify submit, mandatory rationale evidence, coverage, finalization, readiness, merge execution, or post-merge reconciliation.
 
 #### Scenario: one generated model
 
 - **WHEN** built-in skills and prompts are generated after the cutover
-- **THEN** they present only the minimal authority model and no legacy compatibility stages
+- **THEN** they present only the exact-head human handoff model and no legacy compatibility stages
 
 #### Scenario: one child does not manufacture planning state
 
@@ -56,19 +56,19 @@ Generated guidance MUST default bounded implementation to one code writer, MUST 
 - **THEN** it keeps one writer active and creates no TASK, PROCESS, workspace lease, role receipt, or merge evidence for the delegation
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: coordinator owns orchestration and gates only
 
-The coordinator MUST own only selected planning, scheduling, workspace preparation and integration, exact-head anchor/applicability/sensitive-data validation and provider publication of worker-authored line rationale, the ordinary provider-native `### Implementation Rationale` summary/index, blocker routing, and bounded handoff. It MUST return or explain dropping invalid, stale, or sensitive drafts and MUST NOT rewrite the actual code writers' line rationale, impersonate workers or reviewers, or own review sync, verify, legacy rationale evidence, finding resolution, evidence publication, or merge readiness; merge-check computes readiness from provider authority.
+The coordinator MUST own only selected planning, scheduling, workspace preparation and integration, exact-head anchor/applicability/sensitive-data validation and provider publication of worker-authored line rationale, the ordinary provider-native `### Implementation Rationale` summary/index, project validation summary, PR or MR handoff, blocker routing, and bounded handoff. It MUST return or explain dropping invalid, stale, or sensitive drafts and MUST NOT rewrite the actual code writers' line rationale, impersonate workers or reviewers, own review sync, verify, legacy rationale evidence, finding resolution, evidence publication, compute merge readiness, approve, or merge.
 
-#### Scenario: coordinator routes but does not create authority
+#### Scenario: coordinator routes but does not create provider policy
 
-- **WHEN** a provider finding or required check blocks the exact subject
-- **THEN** the coordinator routes implementation or reviewer work and later re-runs read-only merge-check without authoring the deciding evidence
+- **WHEN** a provider finding or required check blocks the exact subject during human review
+- **THEN** the coordinator may route implementation or reviewer work and refresh the exact-head handoff without authoring a merge decision
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: runner public session id is the public resume handle
 

@@ -4,7 +4,7 @@ package staticui
 
 func init() {
 	manifest = map[string]Asset{
-		".vite/manifest.json":                             {ContentType: "application/json", SHA256: "cb15a2f1832357b261a9fe58352e73b0286d6587dee8b223814ff5b06980f75e", Immutable: false},
+		".vite/manifest.json":                             {ContentType: "application/json", SHA256: "21cad20aabdadf06066dc6ac789a3c547b18504f40ea5d07bb4c96628a0f8cc2", Immutable: false},
 		"assets/abnfDiagram-VRR7QNED-BqmZpAB8.js":         {ContentType: "text/javascript; charset=utf-8", SHA256: "ed767cab7eb8d86df302da56bb148630b6a3d1d3b8d949c87f59fa84d1c8356b", Immutable: true},
 		"assets/arc-BjSQqbzd.js":                          {ContentType: "text/javascript; charset=utf-8", SHA256: "1a6f1860f0fef16eb6c08e7c3b9b29c054a91f2b22be3c146a72863ad8b14a42", Immutable: true},
 		"assets/architecture-TIHT7OUA-BWqzHezU.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "c97ab3b4e90eff4478f5ca8f6c6b9a9e2e81561edeee171098bb8f5e715e69e3", Immutable: true},
@@ -88,7 +88,7 @@ func init() {
 		"assets/gitGraphDiagram-IHSO6WYX-B-rRBdEd.js":     {ContentType: "text/javascript; charset=utf-8", SHA256: "b99eab114b18878f98b7d3b5c3524b14a037cdc1314136c9b6b77a65e863be50", Immutable: true},
 		"assets/graphlib-DS17s2tU.js":                     {ContentType: "text/javascript; charset=utf-8", SHA256: "6afce81d54f184820fad5ed0c9fa2dc42acc6e0cd0fd8fbcb0568dafc2cc7ab7", Immutable: true},
 		"assets/index-BC-CudaX.css":                       {ContentType: "text/css; charset=utf-8", SHA256: "582607af27b4234ebf56ba56a0c7530a30cd37b55873bff30376776f20ae8517", Immutable: true},
-		"assets/index-DaA4r7dM.js":                        {ContentType: "text/javascript; charset=utf-8", SHA256: "6c9b5edc266c38995606d988d8f3817477d32b72293a8e578893a7f76f6bfd6a", Immutable: true},
+		"assets/index-lXlFzgRM.js":                        {ContentType: "text/javascript; charset=utf-8", SHA256: "43f3ad407f14e48b85f6b712b9ef693d93a7608bad6a3be3005326299e1c850d", Immutable: true},
 		"assets/info-DKCQHKI2-DIc7uC4I.js":                {ContentType: "text/javascript; charset=utf-8", SHA256: "40fd4df74f06b3b38bf9e4c0a2c5292c8989730b07b3b8b05631b5890a8aadf4", Immutable: true},
 		"assets/infoDiagram-FWYZ7A6U-CvJULMA0.js":         {ContentType: "text/javascript; charset=utf-8", SHA256: "df8aede743ad7a116d86cf7e6cfe36c7240a82cbf123208dadef4503f9e3a2a6", Immutable: true},
 		"assets/init-D6jRqBbL.js":                         {ContentType: "text/javascript; charset=utf-8", SHA256: "b222c9e0d3a621c44983344965c7a99464019dbbcf2492843c49c611f31b5091", Immutable: true},
@@ -158,6 +158,6 @@ func init() {
 		"assets/workspace-page-DcDILaE6.js":               {ContentType: "text/javascript; charset=utf-8", SHA256: "b24811acca0be6a1ef4cee18a6084536999a3e0e4c523f2f92b4ed426b97a6e9", Immutable: true},
 		"assets/xychartDiagram-FW5EYKEG-CT3BVkPO.js":      {ContentType: "text/javascript; charset=utf-8", SHA256: "72bc2f17e48b6d8df6d69561512fa4af95d792a4482a8f14417ebbea1e2ad8fc", Immutable: true},
 		"favicon.svg": {ContentType: "image/svg+xml", SHA256: "eb7ac46eb3c97babd15fefaa58f745f2d4d33e12483ec88a541f1bf051e56646", Immutable: false},
-		"index.html":  {ContentType: "text/html; charset=utf-8", SHA256: "bd38cf5881485a71b4b79d4cd0fcc1ae97f99fcd63163e1400bb16a9ad5997d0", Immutable: false},
+		"index.html":  {ContentType: "text/html; charset=utf-8", SHA256: "4134edb70b64cb7b4cbbea95ed718f9e5d1562a86de0a58a1e264c79c888cd16", Immutable: false},
 	}
 }

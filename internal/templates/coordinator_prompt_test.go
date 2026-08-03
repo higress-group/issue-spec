@@ -24,9 +24,9 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 		"block before dispatch", "acceptance consequences", "request human direction",
 		"workspace prepare -> real non-Coordinator", "never implements/tests/commits", "sealed assignment",
 		"design_context.source_url", "without comments, timeline, history, or gates", "stops on conflict",
-		"result revision, DCO, ownership, generators, tests", "Provider-native review", "current configured checks alone own authority",
+		"exact result commit, DCO, ownership, generators, and tests", "without a role receipt", "exact reviewable head", "current provider-native CI",
 		"### Implementation Rationale", "Before requesting human review", "direct-path writer", "managed PROCESS worker",
-		"do not claim review handoff complete", "never enter merge-check or merge authority",
+		"stop before approval or merge", "decides whether to merge in the provider UI",
 		"actual code writer", "line-rationale drafts", "stable symbol plus changed-line anchor", "why/tradeoff/risk",
 		"secret, raw payload, or credential", "continued applicability", "sensitive-data absence",
 		"invalid, stale, or sensitive drafts", "never rewrite and impersonate the writer",
@@ -38,8 +38,7 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 		"only the latest effective ANSWER drive gates and Agents",
 		"never place projection HTML source in default Agent context",
 		"same mutation plan/checkpoint", "Cleanup is explicit", "destructive", "retain dirty, linked, uncertain, or unintegrated work",
-		"read-only merge-check", "freshly collected provider authority token", "ordinary GitHub REST read-then-write remains fail-closed",
-		"Reconcile the exact selected Issue set idempotently after freshly observed merge",
+		"report tests, risks, rationale, exact head, and change link", "human reviews current provider-native CI",
 		"issue_spec_coordinator_summary", `"diagnostics": []`, `"source_label": "authorized_command"`,
 	} {
 		if !strings.Contains(prompt, want) {
@@ -50,6 +49,7 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 		"CODEX_THREAD_ID may still override", "session source of truth", "runner-managed writeback action envelope",
 		"one PROCESS per command entry point", "one repair PROCESS per finding", "coordinator-inline execution",
 		"issue-spec code-change rationale", "issue-spec:code-change-rationale", "Rationale ID:",
+		"merge-check", "provider authority token", "post-merge reconciliation",
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("prompt contains stale rule %q", forbidden)
@@ -100,7 +100,7 @@ func TestCoordinatorPromptDoesNotRequireArtifactSessionMetadata(t *testing.T) {
 		"runner-selected /resume command", `"public_session_id": "s_123"`,
 		"Artifact writer session metadata is deprecated, ignored, and never required",
 		"runner.public_session_id alone is the /resume handle",
-		"go run ./cmd/issue-spec merge-check", "go run ./cmd/issue-spec comment create", `"name":"go test ./..."`,
+		"go run ./cmd/issue-spec comment create", `"name":"go test ./..."`, "stop before approval or merge",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("resume prompt missing %q:\n%s", want, prompt)

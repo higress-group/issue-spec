@@ -50,18 +50,18 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issu
 
 The server MUST continue to project caller-visible artifacts sharing a repository and change key into one permission-filtered card with deterministic stage and anomaly reporting. `closed` is the only produced terminal board lifecycle; the historical `completed` enum remains decodeable but inert and MUST NOT be derived from VERIFY, Archive, closure evidence, or a reconstructed provider observation.
 
-#### Scenario: reconciled issues remain closed
+#### Scenario: issue-native closure drives the terminal card state
 
-- **WHEN** the provider reports the selected code change merged and exact post-merge issue reconciliation succeeds
-- **THEN** the selected issues and their card report closed independently of optional planning artifacts or historical REVIEW and VERIFY state
+- **WHEN** the owning Issue backend reports the selected phase Issues closed through native provider behavior or explicit human action
+- **THEN** their card reports closed independently of optional planning artifacts, provider merge observation, or historical REVIEW and VERIFY state
 
 #### Scenario: legacy final evidence cannot produce a terminal variant
 
-- **WHEN** historical VERIFY, Archive, receipt, or closure-evidence artifacts exist without observed provider merge
+- **WHEN** historical VERIFY, Archive, receipt, merge observation, or closure-evidence artifacts exist while the Issue remains open
 - **THEN** the card does not derive completed lifecycle from those artifacts and reports only lifecycle observable from current Issue state
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: Provider-neutral external code-change relationships in the web UI
 

@@ -242,14 +242,11 @@ worker。没有配额；显然代码不产生行级评论。
 索引。非阻塞行级讨论不可用，或者会产生 unresolved merge blocker 时，应在顶层评论
 保留 `path:symbol/line` 和 worker 原文，并且不创建阻塞 thread。这些讨论只是可变的
 评审体验，不包含类型化 carrier、rationale ID、PROCESS/SPEC 绑定、证据字段、门禁或
-合并效力。必需的提供方写入失败时必须报告并保留已渲染正文；不能宣告评审交接完成，
-但绝不能把评论或失败送入 `merge-check`。
+合并效力。必需的提供方写入失败时必须报告并保留已渲染正文，以便重试或手工发布。
 
-Provider 原生评审与已配置检查在精确 head 上收敛后，只运行只读 `merge-check`；不要
-把权威同步到 REVIEW/VERIFY、理由或 PROCESS 状态。只能使用 `code-change merge
---expected-head` 合并；该命令重新采集新鲜权威，并把完整提供方令牌交给条件合并。
-普通 GitHub REST 的先读后写保持失败关闭。只有新鲜观察到提供方已合并后，才幂等
-协调精确选择的 Issue 集合。
+精确 head 推送并创建或选择 PR/MR 后，报告变更链接、测试、rationale、风险和
+provider 操作限制，然后停止。Provider 原生 CI、评审、批准、合并和关闭行为都留在
+原生界面由人控制；issue-spec 不创建 readiness 状态或自动合并后协调步骤。
 
 完整的 Provider-neutral 集成方案、运维 Registry 示例、Bridge 脚手架、代码证据
 映射和 Jira 类工作项投影模式见

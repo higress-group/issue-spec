@@ -261,16 +261,13 @@ merge blocker, keep `path:symbol/line` plus the worker rationale in this
 top-level discussion and do not create the blocking thread. These discussions
 are mutable review UX with no typed carrier, rationale ID, PROCESS/SPEC binding,
 evidence field, gate, or merge effect. Report required provider write failures
-and retain the rendered body; do not claim review handoff is complete, but
-never feed the comments or failure to `merge-check`.
+and retain the rendered body for retry or manual publication.
 
-After provider-native review and configured checks converge at the exact head,
-run read-only `merge-check`; do not synchronize authority into REVIEW/VERIFY,
-rationale, or PROCESS state. Merge only through `code-change merge
---expected-head`, which recollects fresh authority and passes the complete
-provider token to conditional merge. Ordinary GitHub REST read-then-write
-remains fail-closed. Reconcile the selected Issue set idempotently only after
-freshly observing provider merge.
+After pushing the exact head and creating or selecting its PR/MR, report the
+change link, tests, rationale, risks, and provider-operation limitations, then
+stop. Provider-native CI, review, approval, merge, and closing behavior remain
+in the provider UI under human control; issue-spec creates no readiness state
+or post-merge reconciliation step.
 
 For a provider-neutral integration plan, operator registry example, bridge
 scaffold, code-evidence mapping, and Jira-like work-item projection pattern,

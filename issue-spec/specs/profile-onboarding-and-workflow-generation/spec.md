@@ -11,12 +11,12 @@ Proposal Issues:
 
 ### Requirement: Profile-driven server onboarding and provider-aware workflow initialization
 
-Initialization MUST discover the operator-registered v1 provider and mandatory minimal-workflow capabilities, MUST generate only the intent-checks-review-merge model and optional execution aids, MUST record pinned provider and release identity, and MUST fail before generated assets or remote mutation when required capability or release identity is absent, unknown, or mixed.
+The CLI MUST initialize a repository from its selected profile and code provider, MUST generate operation-scoped workflow guidance for issue planning, implementation, change creation, ordinary discussion, rationale, and human handoff, and MUST NOT require merge-authority capabilities, operator merge preflight, canonical-principal mapping, configured check identities, or merge-capable readiness.
 
-#### Scenario: init rejects an old bridge
+#### Scenario: enterprise provider onboards for human merge
 
-- **WHEN** the selected provider omits evidence.review-decision or a configured check or merge capability
-- **THEN** initialization reports the exact incompatibility and generates no legacy or dual-mode workflow
+- **WHEN** an enterprise provider supports repository identity, change creation, and ordinary comments but the human merges in its native UI
+- **THEN** init completes the usable workflow and reports unsupported optional operations only when they are explicitly requested
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908

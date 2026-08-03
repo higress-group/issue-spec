@@ -41,9 +41,9 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issue
 
 ### Requirement: implement phase plans a PROCESS DAG before dispatch
 
-The workflow MUST default a bounded implementation to one code writer and MUST permit exactly one code-writing child or subagent without TASK or PROCESS when the coordinator performs no concurrent code writes and no managed-coordination need exists. Read-only investigation or review children MUST NOT require PROCESS. Child use, file count, independent review, and merge evidence MUST NOT select PROCESS.
+The workflow MUST default a bounded implementation to one code writer and MUST permit exactly one code-writing child or subagent without TASK or PROCESS when the coordinator performs no concurrent code writes and no managed-coordination need exists. Read-only investigation or review children MUST NOT require PROCESS. Child use, file count, independent review, and human handoff MUST NOT select PROCESS.
 
-When a change explicitly selects TASK/PROCESS coordination, the implement coordinator MUST plan the PROCESS DAG before dispatch. Selection requires at least one concrete managed-coordination need: concurrent code writers, isolation protecting pre-existing work, enforced path ownership, restartable cross-session handoff, or dependency-ordered integration. PROCESS planning state MUST NOT become merge evidence or a final blocker.
+When a change explicitly selects TASK/PROCESS coordination, the implement coordinator MUST plan the PROCESS DAG before dispatch. Selection requires at least one concrete managed-coordination need: concurrent code writers, isolation protecting pre-existing work, enforced path ownership, restartable cross-session handoff, or dependency-ordered integration. PROCESS planning state MUST NOT become delivery evidence or a final blocker.
 
 #### Scenario: one delegated writer stays on the direct path
 
@@ -58,10 +58,10 @@ When a change explicitly selects TASK/PROCESS coordination, the implement coordi
 #### Scenario: planning is selected by coordination risk
 
 - **WHEN** parallel ownership, protection of pre-existing work, enforced path ownership, restartable handoff, or dependency-ordered integration requires PROCESS coordination
-- **THEN** the coordinator plans the DAG before workers while merge-check remains independent of its lifecycle
+- **THEN** the coordinator plans the DAG before workers while exact-head human handoff remains independent of its lifecycle
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: serial PROCESS nodes hand off bounded context
 
@@ -127,10 +127,10 @@ When optional agent-executed change-bearing PROCESS work is selected, it MUST ru
 #### Scenario: optional change-bearing node uses a real child
 
 - **WHEN** a coordinator dispatches an agent-executed change-bearing PROCESS
-- **THEN** a real non-coordinator worker owns implementation and the managed workspace result while review and merge authority remain provider-owned
+- **THEN** a real non-coordinator worker owns implementation and the managed workspace result while current review and merge remain human- and provider-owned
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: Compatible serial PROCESS nodes may reuse a worker while preserving bounded handoff
 
@@ -244,63 +244,6 @@ Generated workflow instructions MUST remain role-bounded and concise by relying 
 - **THEN** regression tests enforce explicit size budgets while preserving all authoritative gate outcomes
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/295#issuecomment-5011082327
-
-### Requirement: implementation completion creates a canonical receipt without manual framing
-
-The issue-spec CLI MUST provide an implementation-only completion operation that derives every mechanical receipt fact from the sealed assignment and authoritative worktree, executes exactly the sealed required tests, combines only closed implementation semantic input, and emits one atomically written self-validating receipt whose digest uses the shared canonical logical representation and is independent of output-file framing. Coordinator-owned acceptance MUST remain separate, MUST recompute all applicable invariants, and MUST NOT repair, reseal, or strengthen a rejected result. Review and verification role completion MUST return `deprecated_workflow` without mutation.
-
-#### Scenario: implementation role completes with one command
-
-- **WHEN** an implementation Worker has a valid active assignment, a clean managed worktree with one DCO result commit, owned changed paths, and passing sealed required tests
-- **THEN** one role-owned completion command derives the assignment identity, generation, base and result revisions, changed paths, exact test evidence, and provenance, and emits a receipt accepted by independent workspace completion validation
-
-#### Scenario: removed role types fail before receipt production
-
-- **WHEN** a caller supplies a historical review or verification assignment to role completion
-- **THEN** the CLI returns `deprecated_workflow` and emits no new receipt
-
-#### Scenario: sealed tests cannot be replaced by the caller
-
-- **WHEN** a caller attempts to omit, add, duplicate, replace, or claim the outcome of a required test or to supply an arbitrary command or revision
-- **THEN** role completion fails closed and does not emit an acceptable success receipt
-
-#### Scenario: canonical digest ignores JSON file framing
-
-- **WHEN** the same valid receipt data is serialized with LF, CRLF, or trailing whitespace outside the top-level JSON value
-- **THEN** parsing and shared canonical re-serialization produce the same logical receipt digest, while any semantic field change produces a different digest or validation failure
-
-#### Scenario: output is atomic and self-validating
-
-- **WHEN** role completion reports success
-- **THEN** the final receipt has been atomically published, re-read, parsed, and verified by the same binary with a recomputed digest equal to the embedded digest
-
-#### Scenario: failed execution emits no acceptable receipt
-
-- **WHEN** a required test fails, the workspace is dirty, commit or ownership policy fails, assignment identity is stale, or revision binding cannot be resolved exactly
-- **THEN** the command exits non-zero with bounded diagnostics and Coordinator acceptance cannot treat its output as successful evidence
-
-#### Scenario: Coordinator validation does not repair role evidence
-
-- **WHEN** workspace complete or read-only receipt inspection observes a missing field, bad digest, stale generation, mismatched revision, or altered test result
-- **THEN** the validator reports the mismatch and remediation without editing, resealing, or replacing the role-owned receipt
-
-#### Scenario: existing receipt contracts remain compatible
-
-- **WHEN** an existing valid version-1 receipt is submitted through the current Coordinator acceptance path
-- **THEN** it remains readable and acceptable under the same trust and exactness rules without historical receipt rewriting
-
-#### Scenario: generated role guidance uses the bounded command
-
-- **WHEN** Apply role instructions are generated after the implementation completion operation is available
-- **THEN** the instructions invoke the bounded CLI operation, omit hand-written receipt schema and shell hashing recipes, and ask the role to return only the compact command result and human summary
-
-#### Scenario: instruction compaction is regression tested
-
-- **WHEN** representative generated Apply packets and handoffs are measured before and after adoption
-- **THEN** fixture-based byte or token estimates demonstrate reduced normal role context and output while every receipt, provenance, revision, test, and acceptance invariant remains enforced by the CLI
-
-Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/396#issuecomment-5152395123
 
 ### Requirement: planning relationships have one canonical owner
 

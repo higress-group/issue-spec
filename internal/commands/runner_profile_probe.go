@@ -14,7 +14,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
-var runnerProfileScopes = []string{"read:user", "issues:read", "issues:write", "evidence:write"}
+var runnerProfileScopes = []string{"read:user", "issues:read", "issues:write"}
 
 // runnerProfileCapabilityProbe revalidates the stable profile PAT at the job
 // boundary. Native context proves the PAT kind, required scopes and access to

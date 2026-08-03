@@ -43,20 +43,20 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/12#issue
 
 ### Requirement: catch malformed typed comments before archive
 
-Typed-comment generation, upsert, workflow validation, and phase status MUST reject or report malformed selected active planning artifacts before their owning planning command consumes them; merge-check and conditional merge MUST NOT parse, reconstruct, or be blocked by malformed historical REVIEW, VERIFY, receipt, rationale, finalization, or Archive data, while explicit audit reads MAY diagnose that inert history.
+Typed-comment generation, upsert, workflow validation, and phase status MUST reject or report malformed selected active planning artifacts before their owning planning command consumes them, while historical REVIEW, VERIFY, receipt, rationale, finalization, Archive, and merge-authority data remains inert explicit audit input that cannot block human handoff.
 
 #### Scenario: selected planning authoring remains canonical
 
 - **WHEN** a caller creates or updates a selected SPEC, TASK, or PROCESS planning artifact
 - **THEN** the owning authoring or phase-status command rejects malformed canonical structure with actionable diagnostics
 
-#### Scenario: legacy typed evidence is inert at merge
+#### Scenario: legacy authority artifacts cannot block handoff
 
-- **WHEN** a malformed historical REVIEW or VERIFY comment remains on the change
-- **THEN** merge-check ignores it and uses only provider-native authority
+- **WHEN** malformed historical REVIEW, VERIFY, or merge-authority data remains on the change
+- **THEN** active implementation and human handoff guidance ignores it
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
 ### Requirement: provide an explicit noncanonical migration escape hatch
 
@@ -76,12 +76,12 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/12#issue
 
 ### Requirement: generated skills direct agents to typed comment generators and validators
 
-Generated guidance MUST use canonical generators and validators for selected SPEC, TASK, PROCESS, and QUESTION planning artifacts, MUST direct final readiness to merge-check, and MUST NOT instruct agents to generate REVIEW, VERIFY, rationale evidence/carrier, receipt, or finalization comments. It MAY require one ordinary provider-native `### Implementation Rationale` discussion for human review only when the guidance explicitly keeps that discussion outside typed authoring and merge authority.
+Generated guidance MUST use canonical generators and validators for selected SPEC, TASK, PROCESS, and QUESTION planning artifacts, MUST direct completed implementation to exact-head PR or MR creation, ordinary rationale, validation summary, and human handoff, and MUST NOT instruct agents to generate REVIEW, VERIFY, evidence, receipt, finalization, merge-check, conditional merge, or post-merge reconciliation state.
 
-#### Scenario: typed planning remains canonical without final verification artifacts
+#### Scenario: generated guidance stops before human merge
 
-- **WHEN** generated guidance authors optional planning state or prepares merge readiness
-- **THEN** it validates selected planning comments and invokes merge-check instead of generating review or verification Markdown
+- **WHEN** an agent completes the selected implementation and pushes the exact head
+- **THEN** the guidance prepares review context and yields to the human without creating a merge decision
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908

@@ -88,7 +88,7 @@ describe("personal access token repository boundaries", () => {
 
     await waitFor(() => expect(created).toEqual({
       name: "multi runner",
-      scopes: ["read:user", "issues:read", "issues:write", "evidence:write"],
+      scopes: ["read:user", "issues:read", "issues:write"],
       repositories: [
         { organization_id: orgId, repository_id: repoId },
         { organization_id: orgId, repository_id: secondRepoId },

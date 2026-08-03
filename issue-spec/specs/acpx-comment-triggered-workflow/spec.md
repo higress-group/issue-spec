@@ -281,3 +281,15 @@ When the runner accepts and queues a valid /cancel command, it MUST provide prom
 - **THEN** the runner MUST post or update a status comment describing whether the cancellation was confirmed, failed, unsupported, or rejected
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/145#issuecomment-4904527613
+
+### Requirement: Runner baseline credentials exclude optional evidence authority
+
+A normal Runner dispatch MUST require only the issue identity, read, and write scopes it actively uses and MUST NOT require `evidence:write`, an Evidence Writer designation, or any other legacy final-evidence authority. Optional explicit audit publication MAY require `evidence:write` at that separate append operation without changing baseline Runner readiness.
+
+#### Scenario: Runner starts without evidence publication authority
+
+- **WHEN** the configured Runner PAT has `read:user`, `issues:read`, and `issues:write`, exact repository access, and live write permission but no `evidence:write` scope or writer designation
+- **THEN** preflight and normal implementation dispatch succeed while a separately requested evidence append remains independently authorized
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908

@@ -12,7 +12,7 @@ export const TOKEN_SCOPES = [
   "runner:delegate",
 ] as const;
 
-export const RUNNER_TOKEN_SCOPES = ["read:user", "issues:read", "issues:write", "evidence:write"] as const;
+export const RUNNER_TOKEN_SCOPES = ["read:user", "issues:read", "issues:write"] as const;
 
 export type TokenRepositoryOption = { id: string; label: string };
 

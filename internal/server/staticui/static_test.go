@@ -9,7 +9,7 @@ import (
 )
 
 func TestProductionAssetsContainRunnerScopePreset(t *testing.T) {
-	requiredScopes := []string{"read:user", "issues:read", "issues:write", "evidence:write"}
+	requiredScopes := []string{"read:user", "issues:read", "issues:write"}
 	foundScopes := make(map[string]bool, len(requiredScopes))
 	foundPreset := false
 	if err := fs.WalkDir(production, "dist/assets", func(name string, entry fs.DirEntry, err error) error {

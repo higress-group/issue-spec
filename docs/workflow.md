@@ -1,133 +1,111 @@
-# Minimal provider-bound workflow
+# Human-handoff workflow
 
-Issue-spec has one delivery model: select a bounded Issue contract, satisfy current provider checks and provider review at one exact code subject, inspect readiness without writes, merge through a provider-issued complete authority token, then reconcile Issue closure after the provider reports the change merged.
+Issue-spec has one delivery boundary: implement and validate one exact code
+head, create or select its provider-native PR/MR, explain the change for human
+review, report the handoff, and stop. The human and code provider own current
+CI, review, approval, and merge.
 
-Planning artifacts are optional. They help people make decisions and isolate implementation, but their status, links, receipts, rationale, and history never change merge readiness.
+Planning artifacts are optional. Use them when they improve a real decision or
+managed execution; their status is never delivery acceptance.
 
-## Select the contract by risk
+## Choose the smallest planning path
 
-- Use a simple Issue for a bounded change whose product and design risk does not require a Proposal. File count is not the criterion.
-- Use a Proposal when requirements need explicit confirmation. Add a Design only for design risk and an Implement/TASK/PROCESS plan only for coordination, delegation, or workspace-isolation risk.
-- Exactly one simple Issue or Proposal is the root. Design and Implement may appear only with a Proposal.
+Use a simple Issue for a bounded single-writer change. Add Proposal, Design,
+Implement, SPEC, TASK, or PROCESS only when product decisions, durable contract
+changes, or concrete coordination risk justify them.
 
-SPEC, QUESTION, TASK, and PROCESS comments remain canonical issue-native planning artifacts. Repository durable projection materializes confirmed behavior in `issue-spec/specs/**` on the implementation branch. Durable-spec, DCO, CLA, security, and business policy are ordinary configured checks.
+A child/subagent is an execution choice, not a PROCESS trigger. One bounded
+code-writing child can work without PROCESS while the Coordinator does not
+write concurrently. Select managed PROCESS only for:
 
-## Configure stable merge inputs
+- concurrent code writers;
+- isolation that protects pre-existing work;
+- enforced path ownership;
+- restartable cross-session handoff;
+- dependency-ordered integration.
 
-Repository configuration selects an operator-registered provider and stable provider-native check identities:
+Read-only investigation and review children never require PROCESS.
 
-```yaml
-external_code:
-  provider_key: code.example
-  merge:
-    required_checks:
-      - source: provider
-        provider: code.example
-        key: app:42/context:unit
-        owner: app:42
-        display_name: unit
-```
+## Plan and implement
 
-A bare display name is not an identity. The old `external_code.evidence` keys are rejected; they are not mapped into the new model.
+When planning is selected:
 
-## Preflight one immutable release set
+1. Persist the phase Issue body.
+2. Record genuine unresolved decisions as typed QUESTION artifacts.
+3. Upsert the statusless human review projection when enabled.
+4. Create only selected SPEC/TASK/PROCESS artifacts.
+5. Materialize confirmed durable-spec changes on the implementation branch.
 
-As an operator-controlled deployment procedure before enabling Runner dispatch or merge, quiesce mutations and validate the same pinned CLI, Server, Runner, generated assets, and provider bridge:
+Managed PROCESS preserves exact base, ownership, worktree isolation, DCO,
+generators, tests, dependency order, and bounded handoff. These are execution
+safety controls, not review or merge gates.
 
-```sh
-issue-spec workflow preflight \
-  --repo owner/repo \
-  --release-set 2.0.0 \
-  --server-release 2.0.0 \
-  --runner-release 2.0.0 \
-  --generated-manifest .agents/skills/issue-spec-workflow/release.json \
-  --generated-digest sha256:... \
-  --provider-generation minimal-merge-authority/v1 \
-  --provider-build code-example@sha256:... \
-  --json
-```
+## Validate the exact head
 
-Preflight is read-only and reports `purpose=operator-controlled-deployment-readiness`. The operator supplies freshly observed Server/Runner identities; the command compares them with the local CLI, generated manifest, provider generation/build/capabilities, configured key/owner pairs, canonical-principal mapping source, fixed `post-merge-idempotent` reconciliation, and fixed `provider-authority-token` enforcement. It is a trusted cutover check, not a persisted receipt or merge authority, and merge commands do not consume its output. Authority-bearing commands independently revalidate provider generation, build, capabilities, principal mapping, exact subject, and a fresh authority token before collection or mutation.
+Run tests and repository checks selected for the implementation. Push one exact
+reviewable head. Create or select the provider-native PR/MR using an advertised
+`change.create` operation, GitHub tooling, or an explicit manual fallback.
 
-An unavailable merge-authority provider does not block `init`, Proposal, Design, or direct manual development. Init reports `workflow_readiness.mode=planning-only` and `merge_capable=false` and generates no provider-authority Skill. The operator must keep Runner dispatch quiesced; `merge-check` and conditional merge independently fail closed. Even a capability-complete provider is reported as `operator-preflight-required`, `provider_authority_capable=true`, and `merge_capable=false` at init time because init does not establish principal mapping, configured check identity, or deployment readiness.
+Optional `evidence.snapshot` data remains audit/navigation context. Issue-spec
+does not normalize current provider policy or reproduce its merge decision.
 
-## Review and checks stay provider-owned
+## Explain non-obvious code
 
-The actual code writer owns line-rationale drafts for non-obvious design
-decisions in its changed code. On the direct path that means the actual single
-writer, whether coordinator or delegated child; with managed PROCESS it means
-each worker for its own change. A useful draft names a repository-relative path,
-a stable symbol plus changed-line anchor, and concise why/tradeoff/risk text,
-with no secret, raw payload, or credential. The writer needs no provider access
-and does not guess a final diff position.
-Obvious code produces no draft: there is no quota, coverage target, or filler.
+Each actual code writer owns zero or more line-rationale drafts for non-obvious
+decisions in changed code. A useful draft contains repository-relative path,
+stable symbol plus changed-line anchor, and concise why/tradeoff/risk, with no
+secret, raw payload, credential, guessed diff position, filler, or quota.
 
-After integrating and pushing the reviewable exact head, the coordinator
-validates each supplied anchor, confirms the rationale still applies and has no
-sensitive information, maps it to a changed line, and publishes the unchanged
-worker-authored text as provider-native non-blocking inline discussion. Return
-an invalid, stale, or sensitive draft to the writer for correction, or drop it
-with an explanation; never rewrite it while claiming worker authorship. Before
-requesting human review, publish or refresh one ordinary
-top-level discussion headed `### Implementation Rationale` as the change
-summary and inline-rationale index. It also covers intent, boundaries, risks,
-validation and current results, exact review subject/head, and selected
-Issue/Proposal/Design links. No Implement, TASK, PROCESS, or SPEC is required.
+After exact-head integration and push, the Coordinator validates anchors,
+continued applicability, and sensitive-data absence. Publish valid unchanged
+writer text as non-blocking provider-native line discussion. Invalid, stale, or
+sensitive drafts return to the writer or are dropped with an explanation; the
+Coordinator never rewrites them while claiming writer authorship.
 
-If the provider does not support non-blocking inline discussion, or inline
-discussion would itself become an unresolved merge blocker, preserve
-`path:symbol/line` and the worker rationale in the top-level discussion instead.
-The coordinator publishes but does not replace the writer's rationale.
+Maintain an ordinary top-level `### Implementation Rationale` discussion with:
 
-Use the provider-native discussion surface, not the deprecated `code-change
-rationale` evidence command. Add no machine marker, rationale ID, typed
-carrier, PROCESS/SPEC binding, evidence field, or gate. If a required top-level
-or inline write fails and cannot use the safe fallback, report the provider
-error, retain the rendered body for retry or manual posting, and do not claim
-the human-review handoff is complete. The comments and their publication status
-remain mutable review UX only; `merge-check` and conditional merge never
-consume them.
+- intent;
+- decisions and tradeoffs;
+- boundaries and known risks;
+- tests and results;
+- exact head and planning links;
+- an index of line rationale.
 
-The provider returns one policy-complete exact-subject review snapshot. Reviewer independence compares trusted canonical principals against the complete opener, author, coauthor, and committer set. Current changes-requested decisions, unresolved required conversations, and open P0/P1 findings block. At least one qualifying approval must be independent.
+If safe line discussion is unsupported or would create an unresolved provider
+review blocker, preserve `path:symbol/line` plus writer text in that top-level
+discussion. A requested publication failure remains visible and retryable.
+Rationale comments are human context, not typed evidence or acceptance.
 
-For every configured check, the provider chooses exactly one current conclusion for the opaque key, owner, exact subject, and provider configuration generation. Historical attempts and same-name checks from another owner are audit data only. Only `success` passes.
+## Hand off and stop
 
-There is no issue-native review fallback or external authority generation. A provider that cannot return the complete review/check snapshot and atomically validate its authority token is not merge-capable and fails closed.
+Report:
 
-## Read-only readiness
+- exact pushed head;
+- PR/MR link;
+- tests and results;
+- rationale publication status;
+- known risks, boundaries, and unsupported provider operations;
+- planning artifacts when used.
 
-For a simple Issue:
+Then stop before approval or merge. Do not create a readiness receipt, provider
+policy model, merge command, or automatic post-merge reconciliation. The human
+uses the current provider UI to inspect CI, approvals, conversations, ownership,
+and branch policy and decides whether to merge.
 
-```sh
-issue-spec merge-check --repo owner/repo --issue 41 --pr 87 --json
-```
+## Provider capability model
 
-For an optional phase plan:
+`issue-spec.code-provider/v1` exposes only operation-scoped capabilities:
 
-```sh
-issue-spec merge-check --repo owner/repo \
-  --proposal 41 --design 42 --implement 43 \
-  --change-id change-87 --head <exact-head> --json
-```
+- `change.create`
+- `change.comment`
+- `evidence.snapshot`
 
-`merge-check` performs zero writes. It does not execute checks or read TASK/PROCESS lifecycle, REVIEW/VERIFY comments, role receipts, rationale, relationship coverage, finalization, Archive state, or pre-merge closing links. Its decision and snapshot digest are diagnostic output, not reusable proof.
+Any implemented subset is valid. Missing capabilities constrain only those
+actions and never switch the repository into a global planning-only mode.
 
-Candidate CLI dogfood must remain on this read-only command until the exact-head check set and provider-native review authority are proven.
+## Historical workflow data
 
-## Conditional merge and reconciliation
-
-```sh
-issue-spec code-change merge --repo owner/repo \
-  --proposal 41 --design 42 --implement 43 \
-  --change-id change-87 --expected-head <exact-head> --json
-```
-
-The merge command recollects a fresh snapshot, reevaluates the same pure predicate, and asks the provider to atomically validate the opaque authority token plus expected head. Expected-head CAS alone is insufficient because review, policy, findings, conversations, and checks can drift at the same head. Ordinary GitHub REST read-then-write is non-atomic and remains fail-closed unless an operator bridge proves complete provider-native enforcement.
-
-After freshly observing merged state, issue-spec reconciles exactly the selected Issue set idempotently. Reconciliation failure cannot undo or make the code merge ambiguous; retry bookkeeping separately.
-
-## Deprecated boundary
-
-Legacy review synchronization/completion, verification submission/final verification, rationale-as-evidence, evidence-only PROCESS completion, finalization, closure verification, and Archive gates return `deprecated_workflow` before local, Issue, relationship, evidence, or provider mutation. Historical artifacts remain available through explicit audit reads only. This retirement does not include the ordinary human-facing provider discussion above.
-
-Upgrade and rollback are both complete-set switches: quiesce dispatch and merge, install the pinned binaries, bridge, generated assets, and configuration, validate preflight, then resume. Never run mixed generated assets or translate new facts into old REVIEW/VERIFY authority.
+Historical REVIEW, VERIFY, rationale evidence, finalization, receipt, Archive,
+and provider evidence remain readable for audit where supported. Retired writer
+commands return `deprecated_workflow` before mutation. They are not part of
+current delivery.

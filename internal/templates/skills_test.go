@@ -75,7 +75,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	workflow := skillContent(t, skills, "issue-spec-workflow")
-	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "provider-native review", "### Implementation Rationale"} {
+	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "exact-head human review handoff", "### Implementation Rationale"} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("disabled workflow lost typed obligation %q:\n%s", want, workflow)
 		}
@@ -87,7 +87,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	apply := skillContent(t, skills, "issue-spec-apply")
-	for _, want := range []string{"finalize the selected implementation plan", "Author PROCESS only if managed coordination was selected", "real non-Coordinator worker", "Coordinator acceptance", "### Implementation Rationale"} {
+	for _, want := range []string{"finalize the selected implementation plan", "Author PROCESS only if managed coordination was selected", "real non-Coordinator worker", "exact result commit", "Do not create a role receipt", "### Implementation Rationale"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("disabled apply skill lost implementation obligation %q:\n%s", want, apply)
 		}
@@ -112,13 +112,11 @@ func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
 		"<TYPE>-<issue><three-digit sequence>", "QUESTION-1001", "QUESTION-44001",
 		"do not add another type digit or search the whole repository", "never renumber a legacy ID",
 		"one independently verifiable Design invariant", "bounded context and working set", "stable interface",
-		"stable check keys/owners", "canonical-principal mapping source", "minimal-merge-authority/v1",
-		"provider-native review", "outside the complete opener/author/coauthor/committer set",
-		"read-only `issue-spec merge-check", "never runs checks or writes comments", "code-change merge",
-		"provider-issued complete authority token", "Ordinary GitHub REST read-then-write is non-atomic",
-		"reconcile exactly the selected Issue set idempotently", "Deprecated review sync/submit completion",
+		"exact-head human review handoff", "provider-native PR/MR", "Stop before approval or merge",
+		"current provider-native CI", "human and code provider own approval and merge",
+		"exact head, PR/MR link, tests and results", "Deprecated review sync/submit completion",
 		"### Implementation Rationale", "both direct single-writer and managed PROCESS implementation",
-		"Before requesting human review", "do not claim human-review handoff complete", "never enter `merge-check` or merge authority",
+		"Before requesting human review", "Comments and status are human review context and never certify mergeability",
 		"actual code writer", "line-rationale drafts", "stable symbol plus changed-line anchor", "why/tradeoff/risk",
 		"Writers need no provider credentials", "MUST NOT guess final diff positions",
 		"needs no draft, quota, coverage target, or placeholder", "maps it to a changed line",
@@ -152,9 +150,9 @@ func TestApplyGuidanceDefaultsToDirectSingleWriterDelegation(t *testing.T) {
 		"## Direct Single-Writer Path",
 		"dispatch exactly one code-writing child or subagent",
 		"coordinator performs no concurrent code writes",
-		"do not manufacture PROCESS, workspace lifecycle, role receipt, handoff, a typed rationale carrier, or evidence state",
+		"do not manufacture PROCESS, workspace lifecycle, role receipt, a typed rationale carrier, or evidence state",
 		"### Implementation Rationale", "both direct single-writer and managed PROCESS implementation",
-		"No Implement, TASK, PROCESS, or SPEC is required", "do not claim human-review handoff complete",
+		"No Implement, TASK, PROCESS, or SPEC is required", "Comments and status remain human review context and never certify mergeability",
 		"On the direct path this is the actual single writer", "under managed PROCESS each worker owns its drafts",
 	} {
 		if !strings.Contains(apply, want) {
@@ -179,12 +177,11 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 			name: "issue-spec-apply",
 			required: []string{"sealed implementation assignment", "design_context.read_mode=complete-issue-body",
 				"issue-spec read issue --repo owner/repo", "Stop and report any conflict", "assigned worktree and owned paths",
-				"assigned generators", "exactly one DCO commit", `{"decisions":[],"risks":[],"rationale_draft":"..."}`,
+				"assigned generators", "exactly one DCO commit", "exact result commit", "changed paths", "command outcomes",
 				"Collect zero or more line-rationale drafts", "stable symbol plus changed-line anchor", "Do not guess a provider diff position",
-				"leaving it empty when none are valuable", "Provider access and final diff positions are not worker responsibilities",
-				"issue-spec role complete", "derives Git facts", "runs every sealed test", "publishes atomically",
-				"secret, raw payload, or credential", "An amendment invalidates the receipt", "line-rationale drafts", "anchor validation", "publishes worker-authored text"},
-			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
+				"Provider access and final diff positions are not worker responsibilities", "Do not create a role receipt",
+				"secret, raw payload, or credential", "An amendment invalidates the returned revision", "line-rationale drafts", "anchor validation", "publishes worker-authored text"},
+			forbidden: []string{"issue-spec role complete", "receipt.json", "decision-file", "workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
 	}
 	for _, tc := range cases {
@@ -214,7 +211,7 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 	}
 }
 
-func TestRoleCompleteGuidanceCompactsFormerManualEvidenceRecipe(t *testing.T) {
+func TestRoleGuidanceRemovesFormerReceiptRecipe(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
 	former := map[string]string{
 		"issue-spec-apply": `## Implementation Role Packet
@@ -227,10 +224,7 @@ func TestRoleCompleteGuidanceCompactsFormerManualEvidenceRecipe(t *testing.T) {
 	}
 	for name, old := range former {
 		content := rolePacketOnly(skillContent(t, skills, name))
-		if !strings.Contains(content, "issue-spec role complete") {
-			t.Fatalf("%s does not invoke role complete", name)
-		}
-		for _, forbidden := range []string{"receipt_digest", "sha256sum", "jq -S", "hash canonical JSON", "newline framing"} {
+		for _, forbidden := range []string{"issue-spec role complete", "receipt_digest", "sha256sum", "jq -S", "hash canonical JSON", "newline framing"} {
 			if strings.Contains(content, forbidden) {
 				t.Fatalf("%s retains manual receipt recipe %q", name, forbidden)
 			}
@@ -518,7 +512,16 @@ func TestCheckedInCodexClaudeGuidanceMatchesTemplates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_ = got // PROCESS-008 refreshes managed generated assets from these templates.
+		separator := []byte("\n---\n\n")
+		index := bytes.Index(got, separator)
+		if index < 0 {
+			t.Fatalf("checked-in Claude command has no frontmatter boundary: %s", path)
+		}
+		body := got[index+len(separator):]
+		wantPrefix := []byte(strings.TrimRight(command.Body, "\n") + "\n\n## Project Workflow\n")
+		if !bytes.HasPrefix(body, wantPrefix) {
+			t.Fatalf("checked-in Claude command differs from the authoritative template before its generated Project Workflow notice: %s", path)
+		}
 	}
 	for _, base := range []string{filepath.Join(".agents", "skills"), filepath.Join(".claude", "skills")} {
 		path := filepath.Join(root, base, "issue-spec-workflow", "references", "human-review-projections.md")
@@ -557,7 +560,7 @@ func TestReferenceOwnershipExamplesUseRecursiveDirectoryDeclarations(t *testing.
 func TestIssueSpecSkillsIncludeBoundedGitHubSupport(t *testing.T) {
 	github := skillContent(t, IssueSpecSkills("owner/repo"), "issue-spec-github")
 	for _, want := range []string{"Requires GitHub CLI (gh).", "gh auth login", "gh pr checks", "issue-spec comment create", "Never use GitHub CLI",
-		"### Implementation Rationale", "gh pr comment <pr> --body-file <file>", "without treating any rationale comment as evidence or merge authority",
+		"### Implementation Rationale", "gh pr comment <pr> --body-file <file>", "without treating any rationale comment as evidence or delivery acceptance",
 		"line-rationale drafts", "stable path/symbol/changed-line anchor", "commit_id", "side=RIGHT", "summary/index", "path:symbol/line",
 		"secret, raw payload, or credential", "invalid, stale, or sensitive drafts", "never rewrite them while claiming worker authorship"} {
 		if !strings.Contains(github, want) {

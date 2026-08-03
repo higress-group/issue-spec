@@ -45,15 +45,15 @@ verify-requirements-acceptance:
 verify-enterprise-provider:
 	python3 -m unittest discover -s .agents/skills/configure-enterprise-provider/scripts -p '*_test.py'
 
-# verify-workflow-cutover checks the single generated authority model, strict
-# release preflight, and bilingual operator contract.
+# verify-workflow-cutover checks generated human-handoff guidance, the minimal
+# provider operation contract, and the bilingual operator documentation.
 verify-workflow-cutover: verify-enterprise-provider
 	$(GO) test ./internal/workflow ./internal/templates ./internal/commands
 	./hack/requirements-acceptance/verify.sh
 
-# Candidate builds dogfood only read-only readiness and release preflight.
+# Candidate builds dogfood provider-aware generation and self-hosted handoff.
 candidate-cli-dogfood:
-	$(GO) test ./internal/commands -run '^(TestMergeCheckSuccessAndFailurePerformZeroWrites|TestWorkflowPreflight)$$'
+	$(GO) test ./internal/commands -run '^(TestWriteWorkflowArtifactsWithProviderFollowsCapabilityMatrix|TestSelfHostedInitSupportsOperationOnlyProvidersThroughHumanHandoff)$$'
 
 docs-self-hosted-screenshots:
 	./hack/update-self-hosted-doc-screenshots.sh
