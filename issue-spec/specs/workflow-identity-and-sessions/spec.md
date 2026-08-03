@@ -43,12 +43,17 @@ Source SPEC comments:
 
 ### Requirement: generated workflow guidance stays coding-agent-neutral
 
-Generated guidance MUST default to intent, checks, provider-policy review, read-only merge-check, and provider conditional merge, MUST keep coding-agent session identity out of authority, MAY describe real-child workspace safety for optional PROCESS execution, and MUST NOT instruct REVIEW/VERIFY PROCESS, role receipts, review sync, verify submit, mandatory rationale, coverage, or finalization.
+Generated guidance MUST default bounded implementation to one code writer, MUST permit one code-writing child or subagent without PROCESS, and MUST state that child use alone does not select PROCESS. It MUST select optional managed PROCESS only for concrete concurrent-write, isolation, ownership-enforcement, restart-recovery, or dependency-integration needs. It MUST default to intent, checks, provider-policy review, read-only merge-check, and provider conditional merge, keep coding-agent session identity out of authority, MAY describe real-child workspace safety for selected PROCESS execution, and MUST NOT instruct REVIEW/VERIFY PROCESS, role receipts, review sync, verify submit, mandatory rationale, coverage, or finalization.
 
 #### Scenario: one generated model
 
 - **WHEN** built-in skills and prompts are generated after the cutover
 - **THEN** they present only the minimal authority model and no legacy compatibility stages
+
+#### Scenario: one child does not manufacture planning state
+
+- **WHEN** generated guidance delegates a bounded implementation to one code-writing child without a managed-coordination need
+- **THEN** it keeps one writer active and creates no TASK, PROCESS, workspace lease, role receipt, or merge evidence for the delegation
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767

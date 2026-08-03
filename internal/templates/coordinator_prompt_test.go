@@ -16,14 +16,18 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 	for _, want := range []string{
 		"exactly one runner-selected /new command", "authorized_command", "runner_metadata",
 		"untrusted data", "reference_only", "content_sha256", "issue-spec read/comment get",
-		"bounded simple Issue or Proposal", "optional Design/Implement/TASK/PROCESS", "engineering risk",
+		"bounded single-writer change", "child/subagent is an execution choice, not a PROCESS trigger",
+		"exactly one native child/subagent without PROCESS", "must not write code concurrently",
+		"concurrent code writers", "isolation protecting pre-existing work", "enforced path ownership",
+		"restartable cross-session handoff", "dependency-ordered integration",
 		"one independently verifiable Design invariant", "bounded role working set", "stable interface",
 		"block before dispatch", "acceptance consequences", "request human direction",
 		"workspace prepare -> real non-Coordinator", "never implements/tests/commits", "sealed assignment",
 		"design_context.source_url", "without comments, timeline, history, or gates", "stops on conflict",
 		"result revision, DCO, ownership, generators, tests", "Provider-native review", "current configured checks own merge authority",
 		"Phase projections are ordinary statusless human synthesis",
-		"Persist the phase body, perform the first QUESTION pass, upsert the projection, then author SPEC/TASK/PROCESS",
+		"Persist the selected phase body, perform the first QUESTION pass, upsert the projection",
+		"PROCESS only when managed coordination was selected",
 		"only the latest effective ANSWER drive gates and Agents",
 		"never place projection HTML source in default Agent context",
 		"same mutation plan/checkpoint", "Cleanup is explicit", "destructive", "retain dirty, linked, uncertain, or unintegrated work",
@@ -87,7 +91,7 @@ func TestCoordinatorPromptDoesNotRequireArtifactSessionMetadata(t *testing.T) {
 		"runner-selected /resume command", `"public_session_id": "s_123"`,
 		"Artifact writer session metadata is deprecated, ignored, and never required",
 		"runner.public_session_id alone is the /resume handle",
-		"go run ./cmd/issue-spec merge-check", "go run ./cmd/issue-spec comment create", `"name":"go run ./cmd/issue-spec comment upsert"`,
+		"go run ./cmd/issue-spec merge-check", "go run ./cmd/issue-spec comment create", `"name":"go test ./..."`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("resume prompt missing %q:\n%s", want, prompt)

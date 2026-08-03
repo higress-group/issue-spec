@@ -36,22 +36,22 @@ func TestIssueTemplatesScaffoldProjectionTimingAndAuthority(t *testing.T) {
 	_, design, _ := DesignIssue("demo-change", "21")
 	_, implement, _ := ImplementIssue("demo-change", "22")
 	tests := []struct {
-		name      string
-		body      string
-		nextChild string
-		content   []string
+		name    string
+		body    string
+		timing  string
+		content []string
 	}{
 		{
-			name: "proposal", body: proposal, nextChild: "SPEC",
+			name: "proposal", body: proposal, timing: "before complete SPEC",
 			content: []string{"latest effective ANSWER remain authoritative", "affected person or operator", "concrete before/after case", "build a coverage ledger", "complete current problem", "do not emit only a delta or executive summary", "projection HTML source is excluded from default Agent context"},
 		},
 		{
-			name: "design", body: design, nextChild: "TASK",
+			name: "design", body: design, timing: "before complete TASK",
 			content: []string{"latest effective ANSWER remain authoritative", "concrete request or operator case", "observable outcome", "meaningful failure path", "build a coverage ledger", "complete current architecture", "state, alternatives, compatibility", "do not assume the reviewer already knows omitted design information"},
 		},
 		{
-			name: "implement", body: implement, nextChild: "PROCESS",
-			content: []string{"latest effective ANSWER remain authoritative", "concrete acceptance case", "PROCESS sequence", "human-visible, verified outcome", "build a coverage ledger", "complete current invariant DAG", "SPEC/scenario coverage", "provider-review/configured-check obligations", "do not emit only the increment since Design", "estimates and complexity do not define workflow semantics"},
+			name: "implement", body: implement, timing: "before the selected implementation plan is finalized",
+			content: []string{"latest effective ANSWER remain authoritative", "concrete acceptance case", "selected direct or managed execution path", "human-visible, verified outcome", "build a coverage ledger", "complete current implementation plan", "selected writer model", "DAG state", "only when PROCESS coordination was selected", "SPEC/scenario coverage", "provider-review/configured-check obligations", "do not emit only the increment since Design", "estimates and complexity do not define workflow semantics"},
 		},
 	}
 	for _, tc := range tests {
@@ -59,7 +59,7 @@ func TestIssueTemplatesScaffoldProjectionTimingAndAuthority(t *testing.T) {
 			section := sectionOf(t, tc.body, "## Human Review Projection")
 			for _, want := range []string{
 				"after the first QUESTION discovery/create pass",
-				"before complete " + tc.nextChild,
+				tc.timing,
 				"ordinary and statusless",
 			} {
 				if !strings.Contains(section, want) {
@@ -87,7 +87,7 @@ func TestIssueTemplatesOmitHTMLReviewSectionsWhenDisabled(t *testing.T) {
 	}{
 		{name: "proposal", body: proposal, required: []string{"## Open Questions", "## Capabilities"}},
 		{name: "design", body: design, required: []string{"## Question Convergence Check", "## Current Implementation Locations", "## Confirmation Checklist"}},
-		{name: "implement", body: implement, required: []string{"## PR Mode Decision", "## DAG Nodes and Dependencies", "## Global Review / Verify Status"}},
+		{name: "implement", body: implement, required: []string{"## Delivery Path Decision", "## Work Packages and Dependencies", "## Provider Checks / Review Status"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if strings.Contains(test.body, "## Human Review Projection") {
@@ -212,6 +212,14 @@ func TestIssueTitleDerivesSubjectFromFinalBody(t *testing.T) {
 
 func TestIssueTitleStripsImplementDAGPrefix(t *testing.T) {
 	body := "# Implement DAG: standardize issue-spec issue titles\n"
+	got := IssueTitle("implement", "issue-title-style", body, "")
+	if want := "Implement: standardize issue-spec issue titles"; got != want {
+		t.Fatalf("title = %q, want %q", got, want)
+	}
+}
+
+func TestIssueTitleStripsImplementationPlanPrefix(t *testing.T) {
+	body := "# Implementation Plan: standardize issue-spec issue titles\n"
 	got := IssueTitle("implement", "issue-title-style", body, "")
 	if want := "Implement: standardize issue-spec issue titles"; got != want {
 		t.Fatalf("title = %q, want %q", got, want)

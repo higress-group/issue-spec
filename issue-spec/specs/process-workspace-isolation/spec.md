@@ -4,7 +4,7 @@
 
 Define the long-lived behavior contract for safely executing a PROCESS DAG from
 isolated Git workspaces. The coordinator retains one integration checkout;
-delegated change-bearing native children receive leased writable worktrees,
+selected managed PROCESS children receive leased writable worktrees,
 inline independent nodes execute in that integration checkout, and review and
 verification use exact snapshots. The contract covers explicit revision
 binding, ownership-aware integration, crash-safe lifecycle reconciliation, and
@@ -21,6 +21,13 @@ Proposal Issues:
 
 When optional delegated change-bearing PROCESS execution is selected, the coordinator MUST isolate writable workers by worktree, preserve external or human self-managed workspaces, and avoid allocating writable workspaces to read-only orchestration; review decisions and merge-check MUST consume the provider exact subject without REVIEW or VERIFY PROCESS workspaces.
 
+A bounded single-writer implementation MAY dispatch exactly one native child in the selected implementation checkout without PROCESS or managed workspace when the coordinator does not write concurrently, the checkout needs no protection from pre-existing work, and no path enforcement, restart recovery, or dependency-ordered integration is required. Read-only children require no workspace allocation.
+
+#### Scenario: direct child needs no managed workspace
+
+- **WHEN** exactly one code-writing child owns a bounded implementation and the direct-path preconditions hold
+- **THEN** the child uses the selected implementation checkout without a PROCESS lease and the coordinator waits for its result before writing code
+
 #### Scenario: optional workers remain isolated
 
 - **WHEN** two delegated implementation PROCESS nodes may execute concurrently
@@ -31,11 +38,11 @@ Source SPEC comments:
 
 ### Requirement: Coordinator integration is revision-bound and dependency-ordered
 
-For optional delegated implementation, the coordinator MUST integrate owned commits from explicit base revisions in dependency order and MUST require configured integration checks before accepting the code result, but MUST NOT require a review PROCESS, final rationale, role receipt, or final-verification lifecycle to complete workspace integration.
+For optional delegated PROCESS implementation, the coordinator MUST integrate owned commits from explicit base revisions in dependency order and MUST require configured integration checks before accepting the code result, but MUST NOT require a review PROCESS, final rationale, role receipt, or final-verification lifecycle to complete workspace integration. Direct single-writer delegation uses ordinary Git and provider checks without this managed integration lifecycle.
 
 #### Scenario: safe integration does not create merge authority
 
-- **WHEN** a delegated worker returns an owned DCO commit and configured integration checks pass
+- **WHEN** a managed PROCESS worker returns an owned DCO commit and configured integration checks pass
 - **THEN** the coordinator may complete integration while provider checks and review independently determine merge readiness
 
 Source SPEC comments:

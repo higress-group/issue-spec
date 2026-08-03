@@ -87,7 +87,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	apply := skillContent(t, skills, "issue-spec-apply")
-	for _, want := range []string{"complete PROCESS planning", "real non-Coordinator worker", "Coordinator acceptance"} {
+	for _, want := range []string{"finalize the selected implementation plan", "Author PROCESS only if managed coordination was selected", "real non-Coordinator worker", "Coordinator acceptance"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("disabled apply skill lost implementation obligation %q:\n%s", want, apply)
 		}
@@ -105,7 +105,10 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
 	workflow := skillContent(t, IssueSpecSkills("owner/repo"), "issue-spec-workflow")
 	wants := []string{
-		"auth status --json", "workflow validate --repo owner/repo", "bounded simple Issue", "engineering risk",
+		"auth status --json", "workflow validate --repo owner/repo", "bounded simple Issue", "one code writer",
+		"single child or subagent is an execution choice", "concurrent code writers", "protection of pre-existing work",
+		"enforced path ownership", "restartable cross-session handoff", "dependency-ordered integration",
+		"exactly one code-writing child or subagent without PROCESS", "Do not create PROCESS solely because a child is used",
 		"<TYPE>-<issue><three-digit sequence>", "QUESTION-1001", "QUESTION-44001",
 		"do not add another type digit or search the whole repository", "never renumber a legacy ID",
 		"one independently verifiable Design invariant", "bounded context and working set", "stable interface",
@@ -128,6 +131,22 @@ func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
 	} {
 		if strings.Contains(workflow, stale) {
 			t.Fatalf("coordinator guidance contains stale rule %q", stale)
+		}
+	}
+}
+
+func TestApplyGuidanceDefaultsToDirectSingleWriterDelegation(t *testing.T) {
+	apply := skillContent(t, IssueSpecSkills("owner/repo"), "issue-spec-apply")
+	for _, want := range []string{
+		"default to a direct single-writer implementation",
+		"single child or subagent may own that implementation without PROCESS",
+		"## Direct Single-Writer Path",
+		"dispatch exactly one code-writing child or subagent",
+		"coordinator performs no concurrent code writes",
+		"do not manufacture PROCESS, workspace lifecycle, role receipt, handoff, rationale, or evidence state",
+	} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("apply guidance missing direct delegation rule %q:\n%s", want, apply)
 		}
 	}
 }
@@ -254,7 +273,7 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 	workflow := skillContent(t, skills, "issue-spec-workflow")
 	for _, want := range []string{
 		"persist the phase issue body, perform the first QUESTION discovery/create pass, upsert the human review projection",
-		"SPEC for Proposal, TASK for Design, PROCESS for Implement",
+		"SPEC for Proposal, TASK for Design, and PROCESS for Implement only when managed coordination was selected",
 		"one source-digest-bound logical comment",
 		"issue-spec projection upsert --repo owner/repo --issue <phase-issue>",
 		"--phase <proposal-choice-brief|design-explainer|implement-execution-brief> --source-digest <sha256>",
@@ -335,10 +354,11 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 
 	apply := skillContent(t, skills, "issue-spec-apply")
 	assertTextOrder(t, apply,
-		"Persist the Implement issue",
+		"When Implement is selected, persist it",
 		"perform its first QUESTION pass",
 		"upsert the ordinary statusless `implement-execution-brief`",
-		"before completing PROCESS planning")
+		"before finalizing the selected implementation plan",
+		"Author PROCESS only if managed coordination was selected")
 	for _, want := range []string{
 		"Issue bodies and typed planning artifacts remain authoritative planning state",
 		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",

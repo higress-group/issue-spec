@@ -41,11 +41,23 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issue
 
 ### Requirement: implement phase plans a PROCESS DAG before dispatch
 
-When a change explicitly selects TASK/PROCESS coordination, the implement coordinator MUST plan the PROCESS DAG before dispatch, while a bounded change MAY use the shallow direct path and PROCESS planning state MUST NOT become merge evidence or a final blocker.
+The workflow MUST default a bounded implementation to one code writer and MUST permit exactly one code-writing child or subagent without TASK or PROCESS when the coordinator performs no concurrent code writes and no managed-coordination need exists. Read-only investigation or review children MUST NOT require PROCESS. Child use, file count, independent review, and merge evidence MUST NOT select PROCESS.
+
+When a change explicitly selects TASK/PROCESS coordination, the implement coordinator MUST plan the PROCESS DAG before dispatch. Selection requires at least one concrete managed-coordination need: concurrent code writers, isolation protecting pre-existing work, enforced path ownership, restartable cross-session handoff, or dependency-ordered integration. PROCESS planning state MUST NOT become merge evidence or a final blocker.
+
+#### Scenario: one delegated writer stays on the direct path
+
+- **WHEN** a bounded change is delegated to exactly one code-writing child, the coordinator does not write concurrently, and no managed-coordination need exists
+- **THEN** the child MAY implement without TASK, PROCESS, workspace lifecycle, or role receipt while ordinary Git and provider checks validate the result
+
+#### Scenario: child use alone does not select PROCESS
+
+- **WHEN** a child performs implementation, investigation, or review without concurrent write ownership, isolation, recovery, or integration needs
+- **THEN** the workflow MUST NOT create PROCESS solely to record that delegation
 
 #### Scenario: planning is selected by coordination risk
 
-- **WHEN** parallel ownership, isolation, or bounded handoff requires PROCESS coordination
+- **WHEN** parallel ownership, protection of pre-existing work, enforced path ownership, restartable handoff, or dependency-ordered integration requires PROCESS coordination
 - **THEN** the coordinator plans the DAG before workers while merge-check remains independent of its lifecycle
 
 Source SPEC comments:

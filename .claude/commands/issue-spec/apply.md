@@ -1,13 +1,17 @@
 ---
 name: "Issue Spec: Apply"
-description: "Implement an optional PROCESS while preserving bounded workspace and handoff safety."
+description: "Implement directly or use an optional PROCESS when managed coordination is required."
 category: "Workflow"
 tags: ["workflow", "issue-spec"]
 ---
 
 # Issue Spec Apply
 
-Coordinator: use Implement, TASK, and PROCESS only when coordination, isolation, or delegation risk selects them. Persist the Implement issue, perform its first QUESTION pass, then complete PROCESS planning. Issue bodies and typed planning artifacts remain authoritative planning state.
+Coordinator: default to a direct single-writer implementation. A single child or subagent may own that implementation without PROCESS while the coordinator performs no concurrent code writes. Use optional Implement and TASK planning when engineering risk makes them useful. Select PROCESS only for concurrent code writers, protection of pre-existing work through isolation, enforced path ownership, restartable cross-session handoff, or dependency-ordered integration. Using a child, changing several files, requesting independent review, or needing merge evidence is not sufficient. When Implement is selected, persist it, perform its first QUESTION pass, then finalize the selected implementation plan. Author PROCESS only if managed coordination was selected. Issue bodies and typed planning artifacts remain authoritative planning state.
+
+## Direct Single-Writer Path
+
+For a bounded change without those managed-coordination needs, the coordinator MAY implement directly or dispatch exactly one code-writing child or subagent in the selected implementation checkout. Keep one writer active, give a delegated child a bounded goal and focused verification, and wait for it before making coordinator code changes. Use ordinary Git and provider checks; do not manufacture PROCESS, workspace lifecycle, role receipt, handoff, rationale, or evidence state. Read-only investigation and review children remain available without PROCESS.
 
 For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator worker with the packet below. Preserve exact base, ownership, DCO, tests, generators, dependency order, managed worktree isolation, and bounded handoff. These controls are implementation safety only: they do not create review, verification, rationale, receipt, coverage, or finalization authority, and merge-check never reads their lifecycle.
 
