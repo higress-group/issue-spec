@@ -64,7 +64,7 @@ Source SPEC comments:
 
 ### Requirement: active workflow artifacts remain issue-native
 
-Selected Proposal, Design, SPEC, QUESTION, TASK, PROCESS, and handoff artifacts MUST remain issue-native optional planning state, repository durable materialization MAY update only declared durable paths on the implementation branch, and provider checks, review decisions, findings, conversations, and merge readiness MUST remain provider authority rather than being projected into REVIEW, VERIFY, rationale, receipt, or finalization artifacts.
+Selected Proposal, Design, SPEC, QUESTION, TASK, PROCESS, and handoff artifacts MUST remain issue-native optional planning state, repository durable materialization MAY update only declared durable paths on the implementation branch, and provider checks, review decisions, findings, conversations, and merge readiness MUST remain provider authority rather than being projected into REVIEW, VERIFY, rationale evidence, receipt, or finalization artifacts. An ordinary provider-native `### Implementation Rationale` discussion MAY explain the implementation to human reviewers but MUST NOT be treated as one of those artifacts or authority inputs.
 
 #### Scenario: issue-native planning does not become merge evidence
 
@@ -184,7 +184,7 @@ Source SPEC comments:
 
 ### Requirement: deprecated evidence writers fail with zero mutation
 
-Legacy review sync, verify submit, evidence-only PROCESS completion, rationale-gate publication, and evidence-carrier finalization commands MUST return deprecated_workflow with focused replacement guidance and MUST perform zero local, issue, code-provider, or relationship writes.
+Legacy review sync, verify submit, evidence-only PROCESS completion, rationale-gate publication, and evidence-carrier finalization commands MUST return deprecated_workflow with focused replacement guidance and MUST perform zero local, issue, code-provider, or relationship writes. This deprecation MUST NOT prohibit an ordinary provider-native `### Implementation Rationale` discussion that contains no legacy carrier, identity, relationship, evidence, or gate semantics.
 
 #### Scenario: deprecated command cannot preserve old authority
 

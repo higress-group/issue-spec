@@ -243,6 +243,14 @@ delete only the unwanted active reference, and retry—never guess or silently
 overwrite. GitHub keeps its existing PR workflow; self-hosted review, merge,
 and closure stay with the selected code provider.
 
+When the exact change is reviewable, publish or refresh one ordinary top-level
+provider discussion headed `### Implementation Rationale` before requesting
+human review. Direct single-writer and managed PROCESS changes use the same
+comment. It is mutable review UX with no typed carrier, rationale ID,
+PROCESS/SPEC binding, evidence field, gate, or merge effect. Report provider
+write failures and retain the rendered body; do not claim review handoff is
+complete until the discussion exists, but never feed it to `merge-check`.
+
 After provider-native review and configured checks converge at the exact head,
 run read-only `merge-check`; do not synchronize authority into REVIEW/VERIFY,
 rationale, or PROCESS state. Merge only through `code-change merge

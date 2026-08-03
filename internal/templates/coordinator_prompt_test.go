@@ -24,7 +24,9 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 		"block before dispatch", "acceptance consequences", "request human direction",
 		"workspace prepare -> real non-Coordinator", "never implements/tests/commits", "sealed assignment",
 		"design_context.source_url", "without comments, timeline, history, or gates", "stops on conflict",
-		"result revision, DCO, ownership, generators, tests", "Provider-native review", "current configured checks own merge authority",
+		"result revision, DCO, ownership, generators, tests", "Provider-native review", "current configured checks alone own authority",
+		"### Implementation Rationale", "Before requesting human review", "direct single-writer and managed PROCESS paths",
+		"do not claim review handoff complete", "never enter merge-check or merge authority",
 		"Phase projections are ordinary statusless human synthesis",
 		"Persist the selected phase body, perform the first QUESTION pass, upsert the projection",
 		"PROCESS only when managed coordination was selected",
@@ -42,6 +44,7 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 	for _, forbidden := range []string{
 		"CODEX_THREAD_ID may still override", "session source of truth", "runner-managed writeback action envelope",
 		"one PROCESS per command entry point", "one repair PROCESS per finding", "coordinator-inline execution",
+		"issue-spec code-change rationale", "issue-spec:code-change-rationale", "Rationale ID:",
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("prompt contains stale rule %q", forbidden)

@@ -36,6 +36,8 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 		"- `merge-check` is read-only. `code-change merge --expected-head` recollects fresh authority and passes the provider-issued complete authority token to conditional merge.",
 		"- Ordinary GitHub REST read-then-write cannot atomically protect same-head policy, review, conversation, finding, and check drift; it remains fail-closed unless an operator bridge proves complete provider-native enforcement.",
 		"- Historical REVIEW, VERIFY, PROCESS evidence, rationale, receipts, coverage, finalization, and Archive data are audit-only and never become merge input.",
+		"- Before requesting human review, publish or refresh one ordinary top-level provider discussion headed `### Implementation Rationale`. It is mutable review UX only: no typed carrier, marker, rationale ID, PROCESS/SPEC binding, evidence field, gate, or merge input.",
+		"- A failed rationale discussion write must be reported and the rendered body retained for retry or manual posting; human-review handoff remains incomplete, but merge-check and merge authority remain unchanged.",
 		"- After freshly observed provider merge, exact selected-Issue reconciliation is idempotent bookkeeping and may be retried independently.",
 		"- Provider executables, arguments, environment, and credentials are operator-owned and must never be read from repository files.",
 		"- Project/work-item tracker authority is independent and is not enabled by this code-provider selection.")
@@ -61,10 +63,11 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 		steps = append(steps, "3. Select a pre-existing provider change; `change.create` is unavailable.")
 	}
 	steps = append(steps, "4. Resolve or attach the exact provider change only for navigation and subject selection. Optional PROCESS links remain planning metadata and never enter merge-check.")
-	steps = append(steps, "5. Obtain provider-native policy-complete review and provider-selected current required-check conclusions for the exact head. Do not synchronize them into typed workflow comments.")
-	steps = append(steps, "6. Run `issue-spec merge-check --repo "+repo+" (--issue <n> | --proposal <n> [--design <n>] [--implement <n>]) --change-id <id> --head <exact-head> --json`. Treat output as a read-only current decision, never saved proof.")
-	steps = append(steps, "7. Merge only with `issue-spec code-change merge` using the same selected scope and caller-observed `--expected-head`. The command recollects and reevaluates fresh authority and the provider atomically validates its complete token.")
-	steps = append(steps, "8. Freshly observe merged state and retry idempotent selected-Issue reconciliation independently if bookkeeping fails.")
-	steps = append(steps, "9. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
+	steps = append(steps, "5. Once the exact change is reviewable, publish or refresh one ordinary top-level provider discussion headed `### Implementation Rationale` before requesting human review, whether implementation used a direct single writer or managed PROCESS. Use an approved provider-native discussion surface, not the deprecated `code-change rationale` evidence command. If the write fails, report it, retain the rendered body, and do not claim review handoff complete; never convert the comment or failure into authority.")
+	steps = append(steps, "6. Obtain provider-native policy-complete review and provider-selected current required-check conclusions for the exact head. Do not synchronize them into typed workflow comments.")
+	steps = append(steps, "7. Run `issue-spec merge-check --repo "+repo+" (--issue <n> | --proposal <n> [--design <n>] [--implement <n>]) --change-id <id> --head <exact-head> --json`. Treat output as a read-only current decision, never saved proof; it never reads the Implementation Rationale discussion.")
+	steps = append(steps, "8. Merge only with `issue-spec code-change merge` using the same selected scope and caller-observed `--expected-head`. The command recollects and reevaluates fresh authority and the provider atomically validates its complete token.")
+	steps = append(steps, "9. Freshly observe merged state and retry idempotent selected-Issue reconciliation independently if bookkeeping fails.")
+	steps = append(steps, "10. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
 	return strings.Join(steps, "\n") + "\n"
 }

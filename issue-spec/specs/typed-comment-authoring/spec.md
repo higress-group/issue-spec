@@ -76,7 +76,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/12#issue
 
 ### Requirement: generated skills direct agents to typed comment generators and validators
 
-Generated guidance MUST use canonical generators and validators for selected SPEC, TASK, PROCESS, and QUESTION planning artifacts, MUST direct final readiness to merge-check, and MUST NOT instruct agents to generate REVIEW, VERIFY, rationale, receipt, or finalization comments.
+Generated guidance MUST use canonical generators and validators for selected SPEC, TASK, PROCESS, and QUESTION planning artifacts, MUST direct final readiness to merge-check, and MUST NOT instruct agents to generate REVIEW, VERIFY, rationale evidence/carrier, receipt, or finalization comments. It MAY require one ordinary provider-native `### Implementation Rationale` discussion for human review only when the guidance explicitly keeps that discussion outside typed authoring and merge authority.
 
 #### Scenario: typed planning remains canonical without final verification artifacts
 

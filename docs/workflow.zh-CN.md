@@ -53,6 +53,18 @@ issue-spec workflow preflight \
 
 ## 评审与检查归提供方所有
 
+在请求人类评审一个已经可评审的精确代码变更前，先发布或刷新一条标题为
+`### Implementation Rationale` 的普通顶层提供方讨论。直接单写者与 managed
+PROCESS 实现都遵循同一规则，且不要求 Implement、TASK、PROCESS 或 SPEC。内容应
+简明说明改动意图、关键决策与权衡、边界与非目标、已知风险、执行的验证及当前结果、
+精确评审 subject/head，以及所选 Issue、Proposal 或 Design 链接。
+
+使用提供方原生讨论界面，不要调用已弃用的 `code-change rationale` 证据命令，
+也不要添加机器 marker、rationale ID、类型化 carrier、PROCESS/SPEC 绑定、
+证据字段或门禁。发布或刷新失败时，必须报告提供方错误，保留已渲染正文以供重试或
+手工发布，并且不能宣告人类评审交接完成。该评论及其发布状态只是可变的评审体验；
+`merge-check` 与条件合并永远不会消费它们。
+
 提供方返回一个策略完整、绑定精确版本的评审快照。独立性通过受信规范主体，与完整的发起人、作者、共同作者和提交者集合比较。当前 changes-requested、未解决的必需会话以及开放的 P0/P1 发现都会阻塞；至少一个有效批准者必须独立。
 
 对于每个已配置检查，提供方只选择一个绑定不透明 key、owner、精确版本及提供方配置代际的当前结论。历史尝试和来自其他 owner 的同名检查仅供审计。只有 `success` 通过。
@@ -93,6 +105,6 @@ issue-spec code-change merge --repo owner/repo \
 
 ## 弃用边界
 
-旧的评审同步/完成、验证提交/最终验证、作为证据的理由、仅证据 PROCESS 完成、finalization、关闭验证与 Archive 门禁都会在本地、Issue、关系、证据或提供方发生任何写入前返回 `deprecated_workflow`。历史制品只能通过显式审计读取。
+旧的评审同步/完成、验证提交/最终验证、作为证据的理由、仅证据 PROCESS 完成、finalization、关闭验证与 Archive 门禁都会在本地、Issue、关系、证据或提供方发生任何写入前返回 `deprecated_workflow`。历史制品只能通过显式审计读取。上述面向人类的普通提供方讨论不属于退役范围。
 
 升级和回滚都是完整集合切换：停止分派与合并，安装固定的二进制、桥接器、生成制品与配置，通过预检后再恢复。不要运行混合生成制品，也不要把新事实翻译成旧 REVIEW/VERIFY 权威。

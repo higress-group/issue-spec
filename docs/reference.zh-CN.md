@@ -373,6 +373,8 @@ issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process P
 
 旧的理由、评审发布/同步、验证提交/finalization 与 Archive 命令会在任何写入前返回 `deprecated_workflow`。历史制品仅供显式审计读取，绝不会成为合并权威。
 
+用于解释实现的替代方案不是另一条 issue-spec 证据命令。精确代码变更可供评审后，Coordinator 在请求人类评审前发布或刷新一条标题为 `### Implementation Rationale` 的普通顶层提供方讨论。直接单写者与 managed PROCESS 路径使用同一条轻量评论；它没有 marker、rationale ID、类型化 carrier、PROCESS/SPEC 绑定、证据字段、门禁或合并效力。提供方写入失败时，应连同已渲染正文一起报告，并保持人类评审交接未完成；`merge-check` 与条件合并仍与此完全独立。
+
 `change-bearing` 使用可写的独占分支；历史 `review` 与 `verification` execution class 仅保留审计解析，生成与 workspace mutation 会拒绝它们；`orchestration` 只记录生命周期账本，不创建 checkout；`external` 使用 mode `none`。这些完成状态只是实现记账，绝不会成为合并门禁。
 
 runner 命令不携带 PROCESS selector。runner 只启动一个 ACPX coordinator，并让它的 cwd 与主 sandbox workspace 始终保持在 public session clone。coordinator 从 typed DAG 选择 ready PROCESS，再调用 workspace CLI。runner 模式通过 `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` 和 `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT` 提供可信的 session-local 默认值；standalone coordinator 则显式传入 roots。

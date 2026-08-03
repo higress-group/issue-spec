@@ -38,7 +38,7 @@ Source SPEC comments:
 
 ### Requirement: Coordinator integration is revision-bound and dependency-ordered
 
-For optional delegated PROCESS implementation, the coordinator MUST integrate owned commits from explicit base revisions in dependency order and MUST require configured integration checks before accepting the code result, but MUST NOT require a review PROCESS, final rationale, role receipt, or final-verification lifecycle to complete workspace integration. Direct single-writer delegation uses ordinary Git and provider checks without this managed integration lifecycle.
+For optional delegated PROCESS implementation, the coordinator MUST integrate owned commits from explicit base revisions in dependency order and MUST require configured integration checks before accepting the code result, but MUST NOT require a review PROCESS, final rationale evidence, role receipt, or final-verification lifecycle to complete workspace integration. Direct single-writer delegation uses ordinary Git and provider checks without this managed integration lifecycle. The later ordinary provider-native `### Implementation Rationale` human-review discussion is a review handoff, not an integration prerequisite.
 
 #### Scenario: safe integration does not create merge authority
 
@@ -107,7 +107,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/175#issu
 
 ### Requirement: Runner preserves the coordinator boundary for delegated and inline PROCESS execution
 
-For optional PROCESS execution, a Runner coordinator MUST remain at its session integration checkout, MUST use managed workspaces and native children for delegated nodes, MAY execute genuinely inline independent nodes at the integration checkout, MUST preserve ownership and bounded handoff, and MUST NOT create REVIEW or VERIFY PROCESS workspaces, mandatory rationale, or evidence lifecycle state.
+For optional PROCESS execution, a Runner coordinator MUST remain at its session integration checkout, MUST use managed workspaces and native children for delegated nodes, MAY execute genuinely inline independent nodes at the integration checkout, MUST preserve ownership and bounded handoff, and MUST NOT create REVIEW or VERIFY PROCESS workspaces, mandatory rationale evidence, or evidence lifecycle state.
 
 #### Scenario: runner integration boundary survives workflow simplification
 

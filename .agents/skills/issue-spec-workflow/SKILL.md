@@ -11,7 +11,7 @@ metadata:
 
 # Issue Spec Workflow
 
-Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by provider checks, provider review, read-only merge-check, conditional merge, and post-merge reconciliation. Planning and historical evidence are never merge authority.
+Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by a human-facing implementation rationale, provider checks, provider review, read-only merge-check, conditional merge, and post-merge reconciliation. Planning, discussion, and historical evidence are never merge authority.
 
 ## Read and Route
 
@@ -29,6 +29,8 @@ Use this coordinator protocol for a bounded simple Issue or optional Proposal, D
 - Each PROCESS owns one independently verifiable Design invariant and its major entry points. Balance end-to-end invariant cohesion against the role agent's bounded context and working set. Split only at a stable interface when each side has independent acceptance criteria and can be reviewed in isolation. Paths, file overlap, parallelism, commands, findings, token counts, and runtime session IDs are not semantic boundaries.
 - When managed PROCESS implementation is selected, it preserves exact base, owned paths, DCO, tests, managed worktree isolation, dependency order, and bounded handoff. Direct single-writer delegation does not acquire that lifecycle. These facts protect execution only and never enter merge-check.
 
+Before requesting human review of a reviewable exact change, the Coordinator MUST publish or refresh one ordinary top-level provider discussion headed `### Implementation Rationale` for both direct single-writer and managed PROCESS implementation; no Implement, TASK, PROCESS, or SPEC is required. Summarize intent, decisions/tradeoffs, boundaries/risks, validation/results, exact subject/head, and selected planning links. Use the provider-native discussion surface, never the retired rationale-evidence command, marker, ID, typed carrier, PROCESS/SPEC binding, evidence, or gate. On write failure report the provider error, retain the rendered body, and do not claim human-review handoff complete. The comment and its status never enter `merge-check` or merge authority.
+
 ## Provider Authority and Merge
 
 1. Materialize repository durable specs on the implementation branch and make durable-spec, DCO, CLA, security, and business policy ordinary configured provider-enforced checks.
@@ -40,7 +42,7 @@ Use this coordinator protocol for a bounded simple Issue or optional Proposal, D
 
 ## Cutover Boundary
 
-- Deprecated review sync/submit completion, verify submit/final verify, rationale evidence, evidence-only PROCESS completion, finalization, closure verification, and Archive gates return `deprecated_workflow` before any local, Issue, relationship, evidence, or provider mutation.
+- Deprecated review sync/submit completion, verify submit/final verify, rationale evidence, evidence-only PROCESS completion, finalization, closure verification, and Archive gates return `deprecated_workflow` before any local, Issue, relationship, evidence, or provider mutation. The ordinary provider discussion above is deliberately outside those retired evidence writers.
 - Historical artifacts remain available only through explicit audit reads. Status may show optional planning progress, but cannot add it to merge readiness.
 - Upgrade and rollback both quiesce dispatch and merge, switch the complete pinned set and configuration, run the operator-controlled read-only deployment preflight, and resume only when every identity and capability agrees. Planning-only init and direct manual development may continue without a merge-capable provider. The operator keeps Runner dispatch quiesced; merge-check and merge independently fail closed. Init never declares merge readiness from capabilities alone. New facts are never translated into legacy REVIEW or VERIFY authority.
 

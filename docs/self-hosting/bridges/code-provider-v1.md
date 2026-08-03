@@ -353,6 +353,16 @@ trusted workflow evidence. The removed code-author rationale workflow cannot
 invoke this surface: `metadata.kind=rationale` is deprecated and rejected
 before provider mutation.
 
+A human-facing implementation explanation is a different surface. Before
+requesting review, an operator tool may publish or refresh one ordinary
+top-level provider discussion headed `### Implementation Rationale`, using a
+provider-native UI/CLI or the general non-authoritative comment capability when
+available. It carries no `metadata.kind=rationale`, machine marker, rationale
+ID, typed carrier, PROCESS/SPEC binding, evidence field, or gate. Providers and
+Core MUST NOT return it in the merge-authority snapshot or make its publication
+status part of conditional merge. Failure remains a visible review-handoff
+problem with a retryable/manual body, not an authority result.
+
 ## Versioning and compatibility
 
 Unknown protocol versions, semantic generations, capabilities, fields,

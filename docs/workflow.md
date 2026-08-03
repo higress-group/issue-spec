@@ -53,6 +53,22 @@ An unavailable merge-authority provider does not block `init`, Proposal, Design,
 
 ## Review and checks stay provider-owned
 
+Before requesting human review of a reviewable exact change, publish or refresh
+one ordinary top-level provider discussion headed `### Implementation
+Rationale`. Do this for both direct single-writer and managed PROCESS
+implementation; no Implement, TASK, PROCESS, or SPEC is required. Summarize the
+intent, key decisions and tradeoffs, boundaries and non-goals, known risks,
+validation and current results, exact review subject/head, and selected
+Issue/Proposal/Design links.
+
+Use the provider-native discussion surface, not the deprecated `code-change
+rationale` evidence command. Add no machine marker, rationale ID, typed
+carrier, PROCESS/SPEC binding, evidence field, or gate. If the write fails,
+report the provider error, retain the rendered body for retry or manual posting,
+and do not claim the human-review handoff is complete. The comment and its
+publication status remain mutable review UX only; `merge-check` and conditional
+merge never consume them.
+
 The provider returns one policy-complete exact-subject review snapshot. Reviewer independence compares trusted canonical principals against the complete opener, author, coauthor, and committer set. Current changes-requested decisions, unresolved required conversations, and open P0/P1 findings block. At least one qualifying approval must be independent.
 
 For every configured check, the provider chooses exactly one current conclusion for the opaque key, owner, exact subject, and provider configuration generation. Historical attempts and same-name checks from another owner are audit data only. Only `success` passes.
@@ -93,6 +109,6 @@ After freshly observing merged state, issue-spec reconciles exactly the selected
 
 ## Deprecated boundary
 
-Legacy review synchronization/completion, verification submission/final verification, rationale-as-evidence, evidence-only PROCESS completion, finalization, closure verification, and Archive gates return `deprecated_workflow` before local, Issue, relationship, evidence, or provider mutation. Historical artifacts remain available through explicit audit reads only.
+Legacy review synchronization/completion, verification submission/final verification, rationale-as-evidence, evidence-only PROCESS completion, finalization, closure verification, and Archive gates return `deprecated_workflow` before local, Issue, relationship, evidence, or provider mutation. Historical artifacts remain available through explicit audit reads only. This retirement does not include the ordinary human-facing provider discussion above.
 
 Upgrade and rollback are both complete-set switches: quiesce dispatch and merge, install the pinned binaries, bridge, generated assets, and configuration, validate preflight, then resume. Never run mixed generated assets or translate new facts into old REVIEW/VERIFY authority.

@@ -129,6 +129,16 @@ $root/.agents/skills/issue-spec-apply/SKILL.md
 $root/.agents/skills/issue-spec-propose/SKILL.md
 $root/.claude/commands/issue-spec/apply.md
 $root/.claude/commands/issue-spec/propose.md"
+rationale_assets="$root/.agents/skills/issue-spec-workflow/SKILL.md
+$root/.agents/skills/issue-spec-apply/SKILL.md
+$root/.agents/skills/issue-spec-github/SKILL.md
+$root/.claude/commands/issue-spec/apply.md"
+for asset in $rationale_assets; do
+  grep -Fq -- '### Implementation Rationale' "$asset" || {
+    echo "active generated workflow omits the human review rationale: $asset" >&2
+    exit 1
+  }
+done
 if grep -En 'issue-spec (review sync|verify submit|code-change rationale)' $generated_assets; then
   echo "active generated workflow retains a retired authority command" >&2
   exit 1

@@ -56,6 +56,24 @@ The workflow MUST compute merge readiness with zero writes from only the selecte
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764772
 
+### Requirement: implementation rationale remains an ordinary provider discussion for human review
+
+Once an exact code change is reviewable, the workflow MUST publish or refresh one ordinary top-level provider discussion headed `### Implementation Rationale` before requesting human review, for both direct single-writer and managed PROCESS implementation. The discussion MUST summarize intent, important decisions and tradeoffs, boundaries and non-goals, known risks, validation and current results, exact review subject/head, and selected Issue, Proposal, or Design links without requiring an Implement, TASK, PROCESS, SPEC, typed carrier, machine marker, rationale ID, PROCESS/SPEC binding, evidence field, or gate. It MUST remain mutable human-review UX that merge-check and conditional merge ignore completely.
+
+#### Scenario: direct and managed implementation have the same review handoff
+
+- **WHEN** either a direct single writer or selected managed PROCESS work produces a reviewable exact change
+- **THEN** the coordinator publishes or refreshes the same ordinary provider-native `### Implementation Rationale` discussion before requesting human review without manufacturing planning or evidence state
+
+#### Scenario: discussion publication failure is visible but non-authoritative
+
+- **WHEN** the provider-native discussion cannot be published or refreshed
+- **THEN** the coordinator reports the provider error, retains the rendered body for retry or manual posting, and does not claim the human-review handoff is complete
+- **THEN** merge-check and conditional merge neither consume the failure nor reinterpret it as a legacy delivery gate or authority result
+
+Source Design amendment:
+- https://github.com/higress-group/issue-spec/issues/407
+
 ### Requirement: checks consume one current authoritative conclusion across attempts
 
 The workflow MUST allow CI retries and reruns, MUST consume only the provider-normalized current authoritative conclusion for each configured provider-native opaque check key, owner/integration identity, exact current subject, and configuration generation, and MUST keep display names and historical attempts non-conflicting and non-authoritative. A check that cannot be represented by the selected provider makes that provider ineligible; Core MUST NOT substitute an external attestation.

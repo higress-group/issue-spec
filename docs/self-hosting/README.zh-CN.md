@@ -230,6 +230,13 @@ Provider 与外部仓库身份来自 Source Binding。`code-change attach` 不�
 的 Active Reference，再重试；禁止猜测或静默覆盖。GitHub 继续使用原有 PR 流程；
 self-hosted 的 Review、Merge 与关闭仍由所选 Code Provider 负责。
 
+精确代码变更可供评审后，应在请求人类评审前发布或刷新一条标题为
+`### Implementation Rationale` 的普通顶层提供方讨论。直接单写者和 managed
+PROCESS 变更使用同一条评论。它只是可变的评审体验，不包含类型化 carrier、
+rationale ID、PROCESS/SPEC 绑定、证据字段、门禁或合并效力。提供方写入失败时必须
+报告并保留已渲染正文；讨论存在前不能宣告评审交接完成，但绝不能把它送入
+`merge-check`。
+
 Provider 原生评审与已配置检查在精确 head 上收敛后，只运行只读 `merge-check`；不要
 把权威同步到 REVIEW/VERIFY、理由或 PROCESS 状态。只能使用 `code-change merge
 --expected-head` 合并；该命令重新采集新鲜权威，并把完整提供方令牌交给条件合并。

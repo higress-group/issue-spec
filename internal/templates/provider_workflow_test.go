@@ -46,6 +46,8 @@ func TestProviderWorkflowOrdersReadOnlyDecisionBeforeConditionalMerge(t *testing
 	content := IssueSpecProviderSkill("acme/widgets", minimalProviderPlan()).Content
 	for _, want := range []string{
 		"active Source Binding", "Run release preflight", "provider-native policy-complete review",
+		"### Implementation Rationale", "before requesting human review", "direct single writer or managed PROCESS",
+		"retain the rendered body", "do not claim review handoff complete",
 		"issue-spec merge-check --repo acme/widgets", "read-only current decision",
 		"issue-spec code-change merge", "caller-observed `--expected-head`",
 		"Freshly observe merged state", "idempotent selected-Issue reconciliation",
@@ -54,7 +56,7 @@ func TestProviderWorkflowOrdersReadOnlyDecisionBeforeConditionalMerge(t *testing
 			t.Fatalf("provider workflow missing %q:\n%s", want, content)
 		}
 	}
-	assertTextOrder(t, content, "Run release preflight", "provider-native policy-complete review", "issue-spec merge-check", "issue-spec code-change merge", "Freshly observe merged state")
+	assertTextOrder(t, content, "Run release preflight", "Once the exact change is reviewable", "provider-native policy-complete review", "issue-spec merge-check", "issue-spec code-change merge", "Freshly observe merged state")
 }
 
 func TestProviderWorkflowKeepsPlanningAndHistoryOutOfAuthority(t *testing.T) {
@@ -64,9 +66,16 @@ func TestProviderWorkflowKeepsPlanningAndHistoryOutOfAuthority(t *testing.T) {
 		"Do not synchronize them into typed workflow comments",
 		"Historical REVIEW, VERIFY, PROCESS evidence, rationale, receipts, coverage, finalization, and Archive data are audit-only",
 		"never become merge input",
+		"ordinary top-level provider discussion", "no typed carrier, marker, rationale ID, PROCESS/SPEC binding, evidence field, gate, or merge input",
+		"merge-check and merge authority remain unchanged",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("provider workflow missing boundary %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{"issue-spec code-change rationale", "issue-spec:code-change-rationale", "Rationale ID:"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("provider guidance restores legacy rationale mechanism %q:\n%s", forbidden, content)
 		}
 	}
 }

@@ -17,6 +17,7 @@ Use the gh CLI only for GitHub operations outside issue-spec's workflow and disc
 
 - Inspect PR status, reviews, mergeability, CI, workflow runs, releases, labels, and repository metadata.
 - Use structured --json/--jq output. Use git directly for local repository operations.
+- Before human-review handoff, publish or refresh the ordinary GitHub PR discussion headed `### Implementation Rationale` through a GitHub-native PR discussion operation such as `gh pr comment <pr> --body-file <file>`; update the current comment when supported. Report write failure and retain the body without treating the comment as evidence or merge authority.
 - Ordinary issue discussion writes: write a body file and run issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json. The selected issue backend owns the write. Never use GitHub CLI or a raw issue-comment API write.
 - issue-spec owns optional planning, durable projection, read-only merge-check, conditional merge, and post-merge reconciliation. Provider-native review and checks remain code-host authority. Do not use GitHub endpoints for non-GitHub providers.
 

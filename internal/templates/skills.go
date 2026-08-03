@@ -107,7 +107,7 @@ func issueSpecWorkflows(repo string, options WorkflowAuthoringOptions) []Workflo
 Before generating or updating any phase projection, read [Human Review Projection Generation](references/human-review-projections.md) completely. Build a coverage ledger from authoritative inputs, then produce a coverage-complete review surface rather than a delta, changelog, or executive summary. Use the reference to build the Markdown fallback, the single ` + "`html-preview`" + ` review surface, source digest, coverage audit, and validation checks before running ` + "`projection upsert`" + `.`,
 			Body: `# Issue Spec Workflow
 
-Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by provider checks, provider review, read-only merge-check, conditional merge, and post-merge reconciliation. Planning and historical evidence are never merge authority.
+Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by a human-facing implementation rationale, provider checks, provider review, read-only merge-check, conditional merge, and post-merge reconciliation. Planning, discussion, and historical evidence are never merge authority.
 
 ## Read and Route
 
@@ -126,6 +126,8 @@ Use this coordinator protocol for a bounded simple Issue or optional Proposal, D
 - Each PROCESS owns one independently verifiable Design invariant and its major entry points. Balance end-to-end invariant cohesion against the role agent's bounded context and working set. Split only at a stable interface when each side has independent acceptance criteria and can be reviewed in isolation. Paths, file overlap, parallelism, commands, findings, token counts, and runtime session IDs are not semantic boundaries.
 - When managed PROCESS implementation is selected, it preserves exact base, owned paths, DCO, tests, managed worktree isolation, dependency order, and bounded handoff. Direct single-writer delegation does not acquire that lifecycle. These facts protect execution only and never enter merge-check.
 
+Before requesting human review of a reviewable exact change, the Coordinator MUST publish or refresh one ordinary top-level provider discussion headed ` + "`### Implementation Rationale`" + ` for both direct single-writer and managed PROCESS implementation; no Implement, TASK, PROCESS, or SPEC is required. Summarize intent, decisions/tradeoffs, boundaries/risks, validation/results, exact subject/head, and selected planning links. Use the provider-native discussion surface, never the retired rationale-evidence command, marker, ID, typed carrier, PROCESS/SPEC binding, evidence, or gate. On write failure report the provider error, retain the rendered body, and do not claim human-review handoff complete. The comment and its status never enter ` + "`merge-check`" + ` or merge authority.
+
 ## Provider Authority and Merge
 
 1. Materialize repository durable specs on the implementation branch and make durable-spec, DCO, CLA, security, and business policy ordinary configured provider-enforced checks.
@@ -137,7 +139,7 @@ Use this coordinator protocol for a bounded simple Issue or optional Proposal, D
 
 ## Cutover Boundary
 
-- Deprecated review sync/submit completion, verify submit/final verify, rationale evidence, evidence-only PROCESS completion, finalization, closure verification, and Archive gates return ` + "`deprecated_workflow`" + ` before any local, Issue, relationship, evidence, or provider mutation.
+- Deprecated review sync/submit completion, verify submit/final verify, rationale evidence, evidence-only PROCESS completion, finalization, closure verification, and Archive gates return ` + "`deprecated_workflow`" + ` before any local, Issue, relationship, evidence, or provider mutation. The ordinary provider discussion above is deliberately outside those retired evidence writers.
 - Historical artifacts remain available only through explicit audit reads. Status may show optional planning progress, but cannot add it to merge readiness.
 - Upgrade and rollback both quiesce dispatch and merge, switch the complete pinned set and configuration, run the operator-controlled read-only deployment preflight, and resume only when every identity and capability agrees. Planning-only init and direct manual development may continue without a merge-capable provider. The operator keeps Runner dispatch quiesced; merge-check and merge independently fail closed. Init never declares merge readiness from capabilities alone. New facts are never translated into legacy REVIEW or VERIFY authority.
 `,
@@ -180,9 +182,11 @@ Coordinator: default to a direct single-writer implementation. A single child or
 
 ## Direct Single-Writer Path
 
-For a bounded change without those managed-coordination needs, the coordinator MAY implement directly or dispatch exactly one code-writing child or subagent in the selected implementation checkout. Keep one writer active, give a delegated child a bounded goal and focused verification, and wait for it before making coordinator code changes. Use ordinary Git and provider checks; do not manufacture PROCESS, workspace lifecycle, role receipt, handoff, rationale, or evidence state. Read-only investigation and review children remain available without PROCESS.
+For a bounded change without those managed-coordination needs, the coordinator MAY implement directly or dispatch exactly one code-writing child or subagent in the selected implementation checkout. Keep one writer active, give a delegated child a bounded goal and focused verification, and wait for it before making coordinator code changes. Use ordinary Git and provider checks; do not manufacture PROCESS, workspace lifecycle, role receipt, handoff, a typed rationale carrier, or evidence state. Read-only investigation and review children remain available without PROCESS.
 
-For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator worker with the packet below. Preserve exact base, ownership, DCO, tests, generators, dependency order, managed worktree isolation, and bounded handoff. These controls are implementation safety only: they do not create review, verification, rationale, receipt, coverage, or finalization authority, and merge-check never reads their lifecycle.
+After either the direct path or selected managed PROCESS work produces a reviewable exact change, the Coordinator MUST publish or refresh one ordinary top-level provider discussion headed ` + "`### Implementation Rationale`" + ` before human review; no Implement, TASK, PROCESS, or SPEC is required. Summarize intent, decisions/tradeoffs, boundaries/risks, validation/results, exact subject/head, and selected planning links. Use the provider-native discussion surface, never a rationale-evidence command, marker, ID, typed carrier, PROCESS/SPEC binding, evidence, or gate. On failure report the provider error, retain the body, and do not claim human-review handoff complete. The comment and its status never enter ` + "`merge-check`" + ` or merge authority.
+
+For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator worker with the packet below. Preserve exact base, ownership, DCO, tests, generators, dependency order, managed worktree isolation, and bounded handoff. These controls are implementation safety only: they do not create review, verification, rationale evidence, receipt, coverage, or finalization authority, and merge-check never reads their lifecycle.
 
 ## Implementation Role Packet
 
@@ -193,7 +197,7 @@ This packet is addressed to the dispatched worker subagent. Relay it verbatim wi
 3. Work only in the assigned worktree and owned paths. Preserve the named invariant, decisions, must_preserve, must_not, and minimum_verification exactly. Do not collect or pass runtime-specific session IDs.
 4. Implement the invariant, run assigned generators, finish exactly one DCO commit when required, and leave the tree clean. If the work cannot remain one bounded end-to-end invariant, stop with stable-interface split options and acceptance consequences.
 5. Outside the worktree, write only ` + "`{\"decisions\":[],\"risks\":[],\"rationale_draft\":\"...\"}`" + `, then run ` + "`issue-spec role complete --assignment-file <sealed-packet.json> --decision-file <decision.json> --output <receipt.json> --agent <worker-name> --json`" + ` from the assigned worktree. The command derives Git facts, runs every sealed test, seals v1, publishes atomically, and self-validates; never supply or hand-author those facts.
-6. An amendment invalidates the receipt and all revision-sensitive evidence; rerun completion. Return only its bounded result plus decisions, risks, generator outputs, and handoff. Leave Coordinator acceptance, integration, cleanup, independent review, publishing, and rationale to their owners.
+6. An amendment invalidates the receipt and all revision-sensitive evidence; rerun completion. Return only its bounded result plus decisions, risks, generator outputs, and handoff. Leave Coordinator acceptance, integration, cleanup, independent review, publishing, and the human-facing rationale discussion to their owners.
 `,
 		},
 	}
@@ -294,6 +298,7 @@ Use the gh CLI only for GitHub operations outside issue-spec's workflow and disc
 
 - Inspect PR status, reviews, mergeability, CI, workflow runs, releases, labels, and repository metadata.
 - Use structured --json/--jq output. Use git directly for local repository operations.
+- Before human-review handoff, publish or refresh the ordinary GitHub PR discussion headed ` + "`### Implementation Rationale`" + ` through a GitHub-native PR discussion operation such as ` + "`gh pr comment <pr> --body-file <file>`" + `; update the current comment when supported. Report write failure and retain the body without treating the comment as evidence or merge authority.
 - Ordinary issue discussion writes: write a body file and run issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json. The selected issue backend owns the write. Never use GitHub CLI or a raw issue-comment API write.
 - issue-spec owns optional planning, durable projection, read-only merge-check, conditional merge, and post-merge reconciliation. Provider-native review and checks remain code-host authority. Do not use GitHub endpoints for non-GitHub providers.
 

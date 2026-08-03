@@ -146,7 +146,7 @@ Source SPEC comments:
 
 ### Requirement: Coordinator retains only orchestration state during agent-executed implementation
 
-During agent-executed implementation the coordinator MUST retain only planning, scheduling, workspace management, gate evaluation, integration, synchronization, blocker handling, and bounded handoff state. It MUST consume bounded worker outputs and issue-spec read results rather than implementing, testing, committing, writing rationale, or inlining full issue or pull request bodies or full diffs into its own context.
+During agent-executed implementation the coordinator MUST retain only planning, scheduling, workspace management, gate evaluation, integration, synchronization, blocker handling, and bounded handoff state. It MUST consume bounded worker outputs and issue-spec read results rather than implementing, testing, committing, writing legacy rationale evidence, or inlining full issue or pull request bodies or full diffs into its own context. After the exact integrated change becomes reviewable, the coordinator MAY compose the ordinary provider-native `### Implementation Rationale` human-review discussion from those bounded outputs without creating PROCESS/SPEC-bound rationale state.
 
 #### Scenario: Coordinator integrates via bounded outputs
 

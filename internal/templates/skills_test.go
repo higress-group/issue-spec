@@ -75,7 +75,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	workflow := skillContent(t, skills, "issue-spec-workflow")
-	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "provider-native review"} {
+	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "provider-native review", "### Implementation Rationale"} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("disabled workflow lost typed obligation %q:\n%s", want, workflow)
 		}
@@ -87,7 +87,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	apply := skillContent(t, skills, "issue-spec-apply")
-	for _, want := range []string{"finalize the selected implementation plan", "Author PROCESS only if managed coordination was selected", "real non-Coordinator worker", "Coordinator acceptance"} {
+	for _, want := range []string{"finalize the selected implementation plan", "Author PROCESS only if managed coordination was selected", "real non-Coordinator worker", "Coordinator acceptance", "### Implementation Rationale"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("disabled apply skill lost implementation obligation %q:\n%s", want, apply)
 		}
@@ -117,6 +117,8 @@ func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
 		"read-only `issue-spec merge-check", "never runs checks or writes comments", "code-change merge",
 		"provider-issued complete authority token", "Ordinary GitHub REST read-then-write is non-atomic",
 		"reconcile exactly the selected Issue set idempotently", "Deprecated review sync/submit completion",
+		"### Implementation Rationale", "both direct single-writer and managed PROCESS implementation",
+		"Before requesting human review", "do not claim human-review handoff complete", "never enter `merge-check` or merge authority",
 	}
 	for _, want := range wants {
 		if !strings.Contains(workflow, want) {
@@ -143,10 +145,17 @@ func TestApplyGuidanceDefaultsToDirectSingleWriterDelegation(t *testing.T) {
 		"## Direct Single-Writer Path",
 		"dispatch exactly one code-writing child or subagent",
 		"coordinator performs no concurrent code writes",
-		"do not manufacture PROCESS, workspace lifecycle, role receipt, handoff, rationale, or evidence state",
+		"do not manufacture PROCESS, workspace lifecycle, role receipt, handoff, a typed rationale carrier, or evidence state",
+		"### Implementation Rationale", "After either the direct path or selected managed PROCESS work",
+		"no Implement, TASK, PROCESS, or SPEC is required", "do not claim human-review handoff complete",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply guidance missing direct delegation rule %q:\n%s", want, apply)
+		}
+	}
+	for _, forbidden := range []string{"issue-spec code-change rationale", "issue-spec:code-change-rationale", "Rationale ID:"} {
+		if strings.Contains(apply, forbidden) {
+			t.Fatalf("apply guidance restores legacy rationale mechanism %q:\n%s", forbidden, apply)
 		}
 	}
 }
@@ -247,9 +256,9 @@ func TestGeneratedGuidanceDeterministicSizeBudgets(t *testing.T) {
 		maxItems    int
 	}
 	budgets := map[string]budget{
-		"issue-spec-workflow": {maxBytes: 10000, maxHeadings: 8, maxItems: 40},
+		"issue-spec-workflow": {maxBytes: 10600, maxHeadings: 8, maxItems: 40},
 		"issue-spec-propose":  {maxBytes: 5000, maxHeadings: 4, maxItems: 16},
-		"issue-spec-apply":    {maxBytes: 5500, maxHeadings: 5, maxItems: 12},
+		"issue-spec-apply":    {maxBytes: 5900, maxHeadings: 5, maxItems: 12},
 	}
 	for _, skill := range IssueSpecSkills("owner/repo") {
 		limit, ok := budgets[skill.Name]
@@ -537,7 +546,8 @@ func TestReferenceOwnershipExamplesUseRecursiveDirectoryDeclarations(t *testing.
 
 func TestIssueSpecSkillsIncludeBoundedGitHubSupport(t *testing.T) {
 	github := skillContent(t, IssueSpecSkills("owner/repo"), "issue-spec-github")
-	for _, want := range []string{"Requires GitHub CLI (gh).", "gh auth login", "gh pr checks", "issue-spec comment create", "Never use GitHub CLI"} {
+	for _, want := range []string{"Requires GitHub CLI (gh).", "gh auth login", "gh pr checks", "issue-spec comment create", "Never use GitHub CLI",
+		"### Implementation Rationale", "gh pr comment <pr> --body-file <file>", "without treating the comment as evidence or merge authority"} {
 		if !strings.Contains(github, want) {
 			t.Fatalf("github skill missing %q", want)
 		}
