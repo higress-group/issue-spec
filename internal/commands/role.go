@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 type roleFailure struct {
 	OK    bool   `json:"ok"`
+	Code  string `json:"code,omitempty"`
 	Error string `json:"error"`
 }
 
@@ -53,7 +55,11 @@ func (a *app) runRoleComplete(ctx context.Context, args []string) int {
 		AssignmentFile: *assignmentFile, DecisionFile: *decisionFile, Output: *output, Agent: *agent,
 	})
 	if err != nil {
-		_ = a.outputJSON(roleFailure{OK: false, Error: err.Error()})
+		failure := roleFailure{OK: false, Error: err.Error()}
+		if errors.Is(err, rolecompletion.ErrDeprecatedWorkflow) {
+			failure.Code = deprecatedWorkflowCode
+		}
+		_ = a.outputJSON(failure)
 		return 1
 	}
 	return a.outputJSON(result)

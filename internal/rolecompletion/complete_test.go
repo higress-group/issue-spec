@@ -3,6 +3,7 @@ package rolecompletion
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,7 +142,7 @@ func TestPerTestGitObservationStopsBeforeLaterSelectorCanRestore(t *testing.T) {
 	}
 }
 
-func TestPassingSealedTestThatChangesDetachedSubjectCannotPublish(t *testing.T) {
+func TestReviewCompletionStopsBeforeSealedTestOrPublication(t *testing.T) {
 	fixture := newGitFixture(t)
 	runGit(t, fixture.repo, "checkout", "--detach", fixture.head)
 	value := fixture.reviewAssignment([]assignment.TestSelector{{ID: "switch-pass", Command: "git checkout --detach " + fixture.base}})
@@ -151,11 +152,11 @@ func TestPassingSealedTestThatChangesDetachedSubjectCannotPublish(t *testing.T) 
 		AssignmentFile: fixture.writeJSON(t, "switched-packet.json", packet),
 		DecisionFile:   fixture.writeRaw(t, "switched-decision.json", []byte(`{"verdict":"approve"}`)),
 		Output:         output, Agent: "Reviewer", WorkingDirectory: fixture.repo,
-	}); err == nil || !strings.Contains(err.Error(), "post-test Git observation") {
-		t.Fatalf("passing subject switch was accepted: %v", err)
+	}); !errors.Is(err, ErrDeprecatedWorkflow) {
+		t.Fatalf("retired review completion error = %v", err)
 	}
-	if head := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); head != fixture.base {
-		t.Fatalf("completion repaired switched subject to %s", head)
+	if head := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); head != fixture.head {
+		t.Fatalf("retired review completion ran its sealed test and switched subject to %s", head)
 	}
 	if _, err := os.Lstat(output); !os.IsNotExist(err) {
 		t.Fatalf("switched post-test subject published output: %v", err)
@@ -183,7 +184,7 @@ func TestInvalidRoleDecisionsFailBeforeTestRunnerInvocation(t *testing.T) {
 			runGit(t, fixture.repo, "checkout", "--detach", fixture.head)
 			return fixture.verificationAssignment([]assignment.TestSelector{{ID: "must-not-run", Command: "ignored"}})
 		}, decision: func() []byte {
-			data, _ := json.Marshal(verificationDecision{Summary: longText})
+			data, _ := json.Marshal(map[string]string{"summary": longText})
 			return data
 		}},
 	}
@@ -196,12 +197,16 @@ func TestInvalidRoleDecisionsFailBeforeTestRunnerInvocation(t *testing.T) {
 			service := New()
 			service.Tests = runner
 			output := filepath.Join(fixture.root, "invalid-decision-receipt.json")
-			if _, err := service.Complete(context.Background(), Request{
+			_, err := service.Complete(context.Background(), Request{
 				AssignmentFile: fixture.writeJSON(t, "invalid-packet.json", packet),
 				DecisionFile:   fixture.writeRaw(t, "invalid-decision.json", test.decision()),
 				Output:         output, Agent: "Role", WorkingDirectory: fixture.repo,
-			}); err == nil || !strings.Contains(err.Error(), "decision semantics") {
+			})
+			if test.name == "implementation" && (err == nil || !strings.Contains(err.Error(), "decision semantics")) {
 				t.Fatalf("invalid decision error=%v", err)
+			}
+			if test.name != "implementation" && !errors.Is(err, ErrDeprecatedWorkflow) {
+				t.Fatalf("retired %s completion error=%v", test.name, err)
 			}
 			if runner.calls != 0 {
 				t.Fatalf("invalid decision invoked test runner %d times", runner.calls)
@@ -213,7 +218,7 @@ func TestInvalidRoleDecisionsFailBeforeTestRunnerInvocation(t *testing.T) {
 	}
 }
 
-func TestReviewAndVerificationPreserveDecisionsAtDetachedSubject(t *testing.T) {
+func TestReviewAndVerificationCompletionAreReadOnlyDeprecated(t *testing.T) {
 	fixture := newGitFixture(t)
 	runGit(t, fixture.repo, "checkout", "--detach", fixture.head)
 	design := fixture.designContext()
@@ -224,17 +229,6 @@ func TestReviewAndVerificationPreserveDecisionsAtDetachedSubject(t *testing.T) {
 		Review: &assignment.ReviewPayload{SnapshotRevision: fixture.head, DiffBaseRevision: fixture.base, Authors: []string{"Worker"}, Scope: []string{"marker.txt"},
 			RequiredTests: []assignment.TestSelector{{ID: "review-test", Command: "git diff --quiet HEAD HEAD"}}}}
 	reviewPacket := fixture.packet(t, review, 2)
-	reviewOutput := filepath.Join(fixture.root, "review-receipt.json")
-	if _, err := Complete(context.Background(), Request{AssignmentFile: fixture.writeJSON(t, "review-packet.json", reviewPacket),
-		DecisionFile: fixture.writeRaw(t, "review-decision.json", []byte(`{"verdict":"approve","findings":[]}`)), Output: reviewOutput,
-		Agent: "Independent Reviewer", WorkingDirectory: fixture.repo}); err != nil {
-		t.Fatal(err)
-	}
-	reviewReceipt := parseReceipt(t, reviewOutput)
-	if reviewReceipt.Review.Verdict != assignment.ReviewApprove || reviewReceipt.SubjectRevision != fixture.head || len(reviewReceipt.Tests) != 1 {
-		t.Fatalf("review receipt=%+v", reviewReceipt)
-	}
-
 	verification := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "verification-assignment", Role: assignment.RoleVerification,
 		Repository: "acme/repo", Issue: 1, ProcessID: "PROCESS-1002", SubjectRevision: fixture.head,
 		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-1001", Scenario: "verify"}},
@@ -242,16 +236,27 @@ func TestReviewAndVerificationPreserveDecisionsAtDetachedSubject(t *testing.T) {
 		Verification: &assignment.VerificationPayload{SubjectRevision: fixture.head,
 			RequiredChecks: []assignment.CheckSelector{{Provider: "github", Name: "tests"}}}}
 	verifyPacket := fixture.packet(t, verification, 3)
-	verifyOutput := filepath.Join(fixture.root, "verify-receipt.json")
-	if _, err := Complete(context.Background(), Request{AssignmentFile: fixture.writeJSON(t, "verify-packet.json", verifyPacket),
-		DecisionFile: fixture.writeRaw(t, "verify-decision.json", []byte(`{"summary":"exact current"}`)), Output: verifyOutput,
-		Agent: "Verifier", WorkingDirectory: fixture.repo}); err != nil {
-		t.Fatal(err)
-	}
-	verifyReceipt := parseReceipt(t, verifyOutput)
-	if verifyReceipt.Verification.Summary != "exact current" || len(verifyReceipt.Verification.CheckSelectors) != 1 ||
-		verifyReceipt.Verification.CheckSelectors[0].Name != "tests" || len(verifyReceipt.Tests) != 0 {
-		t.Fatalf("verification receipt=%+v", verifyReceipt)
+	for _, test := range []struct {
+		name     string
+		packet   assignment.Packet
+		decision string
+		agent    string
+	}{
+		{name: "review", packet: reviewPacket, decision: "{}", agent: "Independent Reviewer"},
+		{name: "verification", packet: verifyPacket, decision: "{}", agent: "Verifier"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output := filepath.Join(fixture.root, test.name+"-receipt.json")
+			_, err := Complete(context.Background(), Request{AssignmentFile: fixture.writeJSON(t, test.name+"-packet.json", test.packet),
+				DecisionFile: fixture.writeRaw(t, test.name+"-decision.json", []byte(test.decision)), Output: output,
+				Agent: test.agent, WorkingDirectory: fixture.repo})
+			if !errors.Is(err, ErrDeprecatedWorkflow) {
+				t.Fatalf("retired completion error = %v", err)
+			}
+			if _, err := os.Lstat(output); !os.IsNotExist(err) {
+				t.Fatalf("retired completion wrote receipt: %v", err)
+			}
+		})
 	}
 }
 

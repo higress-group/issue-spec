@@ -1,12 +1,18 @@
 package commands
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/buildinfo"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
@@ -40,6 +46,22 @@ type workflowGenerationResult struct {
 	GlobalPromptsDryRun bool     `json:"globalPromptsDryRun,omitempty"`
 	WorkflowSource      string   `json:"workflowSource,omitempty"`
 	WorkflowSchema      string   `json:"workflowSchema,omitempty"`
+}
+
+const workflowReleaseManifestSchema = "issue-spec.generated-workflow/v1"
+
+type workflowReleaseFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+type workflowReleaseManifest struct {
+	Schema                     string                `json:"schema"`
+	Release                    string                `json:"release"`
+	SourceRevision             string                `json:"source_revision"`
+	RequirementsSkillContentID string                `json:"requirements_skill_content_id"`
+	ContentDigest              string                `json:"content_digest"`
+	Files                      []workflowReleaseFile `json:"files"`
 }
 
 type globalPromptInstallOptions struct {
@@ -108,12 +130,17 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 	if len(tools) == 0 {
 		return result, nil
 	}
+	if provider != nil {
+		if err := validateMinimalProviderPlan(*provider); err != nil {
+			return result, err
+		}
+	}
 	if delivery != workflowDeliveryCommands && workflowToolSelected(tools, "claude") {
 		if err := validateClaudeSkillsLinkMigration(root); err != nil {
 			return result, err
 		}
 	}
-	pruned, err := pruneManagedArchiveWorkflowAssets(root, delivery, tools)
+	pruned, err := pruneManagedWorkflowAssets(root, delivery, tools, provider != nil)
 	if err != nil {
 		return result, err
 	}
@@ -176,8 +203,122 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 			}
 		}
 	}
+	if delivery != workflowDeliveryCommands {
+		manifestPath := filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "release.json")
+		manifest, err := buildWorkflowReleaseManifest(root, result)
+		if err != nil {
+			return result, err
+		}
+		data, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return result, err
+		}
+		if err := writeTextFile(manifestPath, string(append(data, '\n'))); err != nil {
+			return result, err
+		}
+		result.SkillResourceFiles = append(result.SkillResourceFiles, cleanGeneratedPath(manifestPath))
+	}
 
 	return result, nil
+}
+
+func buildWorkflowReleaseManifest(root string, result workflowGenerationResult) (workflowReleaseManifest, error) {
+	paths := append([]string(nil), result.SkillFiles...)
+	paths = append(paths, result.SkillResourceFiles...)
+	paths = append(paths, result.CommandFiles...)
+	sort.Strings(paths)
+	files := make([]workflowReleaseFile, 0, len(paths))
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return workflowReleaseManifest{}, fmt.Errorf("resolve workflow root: %w", err)
+	}
+	for _, generatedPath := range paths {
+		path := filepath.FromSlash(generatedPath)
+		if !filepath.IsAbs(path) {
+			path, err = filepath.Abs(path)
+			if err != nil {
+				return workflowReleaseManifest{}, fmt.Errorf("resolve generated workflow asset %s: %w", generatedPath, err)
+			}
+		}
+		relative, err := filepath.Rel(absoluteRoot, path)
+		if err != nil || !filepath.IsLocal(relative) {
+			return workflowReleaseManifest{}, fmt.Errorf("generated workflow asset %s is outside workflow root", generatedPath)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return workflowReleaseManifest{}, fmt.Errorf("read generated workflow asset %s: %w", relative, err)
+		}
+		digest := sha256.Sum256(body)
+		files = append(files, workflowReleaseFile{Path: filepath.ToSlash(relative), SHA256: fmt.Sprintf("%x", digest[:])})
+	}
+	identity := buildinfo.Current()
+	manifest := workflowReleaseManifest{Schema: workflowReleaseManifestSchema, Release: identity.Version,
+		SourceRevision: identity.Revision, RequirementsSkillContentID: identity.RequirementsSkillContentID, Files: files}
+	manifest.ContentDigest = workflowReleaseContentDigest(files)
+	return manifest, nil
+}
+
+func workflowReleaseContentDigest(files []workflowReleaseFile) string {
+	hash := sha256.New()
+	for _, file := range files {
+		fmt.Fprintf(hash, "%s\x00%s\n", file.Path, file.SHA256)
+	}
+	return fmt.Sprintf("sha256:%x", hash.Sum(nil))
+}
+
+func readWorkflowReleaseManifest(root, path string) (workflowReleaseManifest, error) {
+	if strings.TrimSpace(path) == "" {
+		path = filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "release.json")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return workflowReleaseManifest{}, fmt.Errorf("read generated workflow release manifest: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var manifest workflowReleaseManifest
+	if err := decoder.Decode(&manifest); err != nil {
+		return workflowReleaseManifest{}, fmt.Errorf("decode generated workflow release manifest: %w", err)
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return workflowReleaseManifest{}, fmt.Errorf("decode generated workflow release manifest: trailing content")
+	}
+	if manifest.Schema != workflowReleaseManifestSchema || strings.TrimSpace(manifest.Release) == "" ||
+		strings.TrimSpace(manifest.SourceRevision) == "" || len(manifest.Files) == 0 {
+		return workflowReleaseManifest{}, fmt.Errorf("generated workflow release manifest identity is incomplete")
+	}
+	seen := map[string]bool{}
+	for _, file := range manifest.Files {
+		if file.Path == "" || filepath.IsAbs(file.Path) || !filepath.IsLocal(filepath.FromSlash(file.Path)) || seen[file.Path] {
+			return workflowReleaseManifest{}, fmt.Errorf("generated workflow release manifest contains an invalid path")
+		}
+		seen[file.Path] = true
+		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file.Path)))
+		if err != nil {
+			return workflowReleaseManifest{}, fmt.Errorf("read generated workflow asset %s: %w", file.Path, err)
+		}
+		digest := sha256.Sum256(body)
+		if file.SHA256 != fmt.Sprintf("%x", digest[:]) {
+			return workflowReleaseManifest{}, fmt.Errorf("generated workflow asset %s digest mismatch", file.Path)
+		}
+	}
+	if manifest.ContentDigest != workflowReleaseContentDigest(manifest.Files) {
+		return workflowReleaseManifest{}, fmt.Errorf("generated workflow release manifest content digest mismatch")
+	}
+	return manifest, nil
+}
+
+func validateMinimalProviderPlan(provider workflow.ProviderPlan) error {
+	if provider.SemanticGeneration != codereview.MergeAuthorityGeneration ||
+		strings.TrimSpace(provider.ProviderBuildIdentity) == "" || !provider.ReviewDecision ||
+		!provider.AuthoritativeCheckConclusion || !provider.MergeConditional {
+		return fmt.Errorf("provider %q is incompatible with minimal merge authority: require generation %s, immutable build identity, review-decision, authoritative-check-conclusion, and merge-conditional",
+			provider.ProviderKey, codereview.MergeAuthorityGeneration)
+	}
+	return nil
 }
 
 func skillResourcePath(skillDir, relative string) (string, error) {
@@ -370,41 +511,54 @@ func directoryTreeCoveredByTarget(source, target string) (bool, error) {
 	return covered, err
 }
 
-func pruneManagedArchiveWorkflowAssets(root, delivery string, tools []workflowTool) ([]string, error) {
-	var candidates []string
+func pruneManagedWorkflowAssets(root, delivery string, tools []workflowTool, keepProvider bool) ([]string, error) {
+	type candidate struct {
+		path string
+		name string
+	}
+	retired := []string{"archive", "review", "verify"}
+	if !keepProvider {
+		retired = append(retired, "code-provider")
+	}
+	var candidates []candidate
 	if delivery != workflowDeliveryCommands {
-		candidates = append(candidates, filepath.Join(root, ".agents", "skills", "issue-spec-archive", "SKILL.md"))
-		if workflowToolSelected(tools, "claude") {
-			candidates = append(candidates, filepath.Join(root, ".claude", "skills", "issue-spec-archive", "SKILL.md"))
+		for _, name := range retired {
+			candidates = append(candidates, candidate{path: filepath.Join(root, ".agents", "skills", "issue-spec-"+name, "SKILL.md"), name: name})
+			if workflowToolSelected(tools, "claude") {
+				candidates = append(candidates, candidate{path: filepath.Join(root, ".claude", "skills", "issue-spec-"+name, "SKILL.md"), name: name})
+			}
 		}
 	}
 	if delivery != workflowDeliverySkills {
 		for _, tool := range tools {
 			if tool.ID == "claude" {
-				candidates = append(candidates, filepath.Join(root, ".claude", "commands", "issue-spec", "archive.md"))
+				for _, name := range retired {
+					candidates = append(candidates, candidate{path: filepath.Join(root, ".claude", "commands", "issue-spec", name+".md"), name: name})
+				}
 			}
 		}
 	}
 	var pruned []string
-	for _, path := range candidates {
-		body, err := os.ReadFile(path)
+	for _, candidate := range candidates {
+		body, err := os.ReadFile(candidate.path)
 		if os.IsNotExist(err) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("inspect managed archive workflow asset %s: %w", path, err)
+			return nil, fmt.Errorf("inspect managed retired workflow asset %s: %w", candidate.path, err)
 		}
 		content := string(body)
-		managedSkill := strings.Contains(content, `generatedBy: "issue-spec"`) && strings.Contains(content, "name: issue-spec-archive\n")
-		managedCommand := strings.Contains(content, `name: "Issue Spec: Archive"`) &&
-			strings.Contains(content, `category: "Workflow"`) && strings.Contains(content, "# Issue Spec Archive\n")
+		title := strings.ToUpper(candidate.name[:1]) + candidate.name[1:]
+		managedSkill := strings.Contains(content, `generatedBy: "issue-spec"`) && strings.Contains(content, "name: issue-spec-"+candidate.name+"\n")
+		managedCommand := strings.Contains(content, `name: "Issue Spec: `+title+`"`) &&
+			strings.Contains(content, `category: "Workflow"`) && strings.Contains(content, "# Issue Spec "+title+"\n")
 		if !managedSkill && !managedCommand {
 			continue
 		}
-		if err := os.Remove(path); err != nil {
-			return nil, fmt.Errorf("prune managed archive workflow asset %s: %w", path, err)
+		if err := os.Remove(candidate.path); err != nil {
+			return nil, fmt.Errorf("prune managed retired workflow asset %s: %w", candidate.path, err)
 		}
-		pruned = append(pruned, cleanGeneratedPath(path))
+		pruned = append(pruned, cleanGeneratedPath(candidate.path))
 	}
 	return pruned, nil
 }

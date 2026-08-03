@@ -48,29 +48,20 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issu
 
 ### Requirement: One workflow board card per issue-spec change
 
-The server MUST project proposal, design and implement artifact issues sharing a repository and change key into one permission-filtered change card, MUST derive current stage and lifecycle deterministically, and MUST report marker, label and link anomalies instead of displaying the same change as three independent stage cards.
+The server MUST continue to project caller-visible artifacts sharing a repository and change key into one permission-filtered card with deterministic stage and anomaly reporting. `closed` is the only produced terminal board lifecycle; the historical `completed` enum remains decodeable but inert and MUST NOT be derived from VERIFY, Archive, closure evidence, or a reconstructed provider observation.
 
-#### Scenario: three artifact issues become one card
+#### Scenario: reconciled issues remain closed
 
-- **WHEN** proposal, design and implement issues exist for the same repository and change marker
-- **THEN** the board MUST return exactly one card with three artifact slots and current_stage implement
+- **WHEN** the provider reports the selected code change merged and exact post-merge issue reconciliation succeeds
+- **THEN** the selected issues and their card report closed independently of optional planning artifacts or historical REVIEW and VERIFY state
 
-#### Scenario: blocked and completed are lifecycle states rather than duplicate columns
+#### Scenario: legacy final evidence cannot produce a terminal variant
 
-- **WHEN** a change has an unresolved blocking QUESTION or later has successful final VERIFY plus accepted archive/closure evidence
-- **THEN** the card MUST report blocked or completed lifecycle independently from its highest artifact stage
+- **WHEN** historical VERIFY, Archive, receipt, or closure-evidence artifacts exist without observed provider merge
+- **THEN** the card does not derive completed lifecycle from those artifacts and reports only lifecycle observable from current Issue state
 
-#### Scenario: invalid artifact structure is visible
-
-- **WHEN** a change has duplicate artifact types, a marker/label mismatch, missing links or an implement artifact without its expected predecessor
-- **THEN** the server MUST keep a single card where possible, attach stable anomaly codes and MUST NOT silently duplicate or drop the change
-
-#### Scenario: organization boards do not leak hidden repositories
-
-- **WHEN** a user requests an organization-level board
-- **THEN** the server MUST filter repositories and restricted external data by caller permission before aggregating cards, counts or progress
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4926528729
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
 
 ### Requirement: Provider-neutral external code-change relationships in the web UI
 

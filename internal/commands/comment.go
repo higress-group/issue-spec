@@ -472,20 +472,8 @@ func generateTypedBody(commentType, id, agent, status, scope, raw string) (strin
 			return "", err
 		}
 		return templates.ProcessComment(templates.ProcessCommentOptions{Common: common, Input: input})
-	case "REVIEW":
-		var input templates.ReviewInput
-		if err := decodeGeneratorInput(raw, &input); err != nil {
-			return "", err
-		}
-		return templates.ReviewComment(templates.ReviewCommentOptions{Common: common, Input: input})
-	case "VERIFY":
-		var input templates.VerifyInput
-		if err := decodeGeneratorInput(raw, &input); err != nil {
-			return "", err
-		}
-		return templates.VerifyComment(templates.VerifyCommentOptions{Common: common, Input: input})
 	default:
-		return "", fmt.Errorf("unsupported --type %q for comment generate; supported types: SPEC, TASK, PROCESS, REVIEW, VERIFY", commentType)
+		return "", fmt.Errorf("unsupported --type %q for comment generate; supported types: SPEC, TASK, PROCESS", commentType)
 	}
 }
 
@@ -569,7 +557,7 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 			for _, d := range diags {
 				a.errorf("  - %s (%s)\n", d.Message, d.Element)
 			}
-			a.errorf("regenerate with `issue-spec comment generate --type %s`, or pass --allow-noncanonical for a write-time migration bypass. --allow-noncanonical does not create durable approval; status, verify, and archive keep reporting the noncanonical state.\n", strings.ToUpper(*commentType))
+			a.errorf("regenerate with `issue-spec comment generate --type %s`, or pass --allow-noncanonical for a write-time migration bypass. --allow-noncanonical does not create durable approval; comment reads and planning status keep reporting the noncanonical state.\n", strings.ToUpper(*commentType))
 			return 2
 		}
 		noncanonical = true

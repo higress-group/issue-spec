@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/buildinfo"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
@@ -17,7 +20,7 @@ type workflowCommandResult struct {
 
 func (a *app) runWorkflow(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec workflow validate|which|reconcile|workspace ...\n")
+		a.errorf("usage: issue-spec workflow validate|which|preflight|workspace ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -27,12 +30,138 @@ func (a *app) runWorkflow(ctx context.Context, args []string) int {
 		return a.runWorkflowInspect(ctx, args[1:], false)
 	case "which":
 		return a.runWorkflowInspect(ctx, args[1:], true)
-	case "reconcile":
-		return a.runWorkflowReconcile(ctx, args[1:])
+	case "preflight":
+		return a.runWorkflowPreflight(ctx, args[1:])
 	default:
 		a.errorf("unknown workflow command %q\n", args[0])
 		return 2
 	}
+}
+
+type workflowPreflightProvider struct {
+	Key                string                     `json:"key"`
+	SemanticGeneration string                     `json:"semantic_generation"`
+	ImmutableBuild     string                     `json:"immutable_build"`
+	Capabilities       []codereview.Capability    `json:"capabilities"`
+	RequiredChecks     []codereview.CheckIdentity `json:"required_checks"`
+}
+
+type workflowPreflightResult struct {
+	OK                          bool                      `json:"ok"`
+	Purpose                     string                    `json:"purpose"`
+	Repository                  string                    `json:"repository"`
+	ReleaseSet                  string                    `json:"release_set"`
+	CLI                         buildinfo.Info            `json:"cli"`
+	ServerRelease               string                    `json:"server_release"`
+	RunnerRelease               string                    `json:"runner_release"`
+	GeneratedAssets             workflowReleaseManifest   `json:"generated_assets"`
+	PinnedGeneratedDigest       string                    `json:"pinned_generated_digest"`
+	Provider                    workflowPreflightProvider `json:"provider"`
+	PinnedProviderGeneration    string                    `json:"pinned_provider_generation"`
+	PinnedProviderBuild         string                    `json:"pinned_provider_build"`
+	CanonicalPrincipalSource    string                    `json:"canonical_principal_source"`
+	ReconciliationMode          string                    `json:"reconciliation_mode"`
+	ConditionalMergeEnforcement string                    `json:"conditional_merge_enforcement"`
+	Errors                      []string                  `json:"errors,omitempty"`
+}
+
+func (a *app) runWorkflowPreflight(ctx context.Context, args []string) int {
+	fs := newFlagSet("workflow preflight", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "issue backend hostname")
+	releaseSet := fs.String("release-set", "", "pinned immutable CLI/Server/Runner/generated release")
+	serverRelease := fs.String("server-release", "", "freshly observed Server release identity")
+	runnerRelease := fs.String("runner-release", "", "freshly observed Runner release identity")
+	manifestPath := fs.String("generated-manifest", "", "generated workflow release manifest path")
+	generatedDigest := fs.String("generated-digest", "", "pinned generated workflow content digest")
+	providerGeneration := fs.String("provider-generation", codereview.MergeAuthorityGeneration, "pinned provider semantic generation")
+	providerBuild := fs.String("provider-build", "", "pinned immutable provider bridge build identity")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	result := workflowPreflightResult{Repository: repo, Purpose: "operator-controlled-deployment-readiness",
+		ReleaseSet:    strings.TrimSpace(*releaseSet),
+		ServerRelease: strings.TrimSpace(*serverRelease), RunnerRelease: strings.TrimSpace(*runnerRelease),
+		CLI: buildinfo.Current(), ReconciliationMode: "post-merge-idempotent",
+		PinnedGeneratedDigest:    strings.TrimSpace(*generatedDigest),
+		PinnedProviderGeneration: strings.TrimSpace(*providerGeneration), PinnedProviderBuild: strings.TrimSpace(*providerBuild),
+		ConditionalMergeEnforcement: "provider-authority-token"}
+	manifest, err := readWorkflowReleaseManifest(".", *manifestPath)
+	if err != nil {
+		result.Errors = append(result.Errors, err.Error())
+	} else {
+		result.GeneratedAssets = manifest
+	}
+	if result.PinnedGeneratedDigest == "" || manifest.ContentDigest != result.PinnedGeneratedDigest {
+		result.Errors = append(result.Errors, "generated workflow content digest does not match the pinned release set")
+	}
+	plan, err := workflow.Resolve(".")
+	if err != nil {
+		result.Errors = append(result.Errors, "resolve workflow: "+err.Error())
+	}
+	providerKey, checks, configErr := plan.MergeAuthorityConfiguration()
+	if configErr != nil {
+		result.Errors = append(result.Errors, configErr.Error())
+	}
+	result.Provider.Key, result.Provider.RequiredChecks = providerKey, checks
+	if result.ReleaseSet == "" || result.ServerRelease == "" || result.RunnerRelease == "" {
+		result.Errors = append(result.Errors, "release-set, server-release, and runner-release are required")
+	} else if result.ServerRelease != result.ReleaseSet || result.RunnerRelease != result.ReleaseSet ||
+		manifest.Release != result.ReleaseSet || result.CLI.Version != result.ReleaseSet || manifest.SourceRevision != result.CLI.Revision ||
+		manifest.RequirementsSkillContentID != result.CLI.RequirementsSkillContentID {
+		result.Errors = append(result.Errors, "CLI, Server, Runner, and generated assets do not identify one pinned release set")
+	}
+	if result.PinnedProviderGeneration != codereview.MergeAuthorityGeneration || result.PinnedProviderBuild == "" {
+		result.Errors = append(result.Errors, "pinned provider semantic generation and immutable bridge build are required")
+	}
+	if providerKey != "" {
+		profile, _, profileErr := auth.ResolveProfile(a.profileName, *host)
+		if profileErr != nil {
+			result.Errors = append(result.Errors, "resolve profile: "+profileErr.Error())
+		} else {
+			provider, providerErr := a.resolveOperatorProvider(ctx, profile, providerKey)
+			if providerErr != nil {
+				result.Errors = append(result.Errors, "resolve operator provider: "+providerErr.Error())
+			} else if authority, compatible := provider.(codereview.MergeAuthorityProvider); !compatible {
+				result.Errors = append(result.Errors, "selected provider does not implement merge authority")
+			} else if capabilities, capabilityErr := codereview.RequireMergeAuthorityCapabilities(ctx, authority); capabilityErr != nil {
+				result.Errors = append(result.Errors, capabilityErr.Error())
+			} else {
+				result.Provider.SemanticGeneration = capabilities.SemanticGeneration
+				result.Provider.ImmutableBuild = capabilities.ProviderBuildIdentity
+				result.Provider.Capabilities = append([]codereview.Capability(nil), capabilities.Values...)
+				if source, mappingErr := codereview.RequireCanonicalPrincipalMapping(authority); mappingErr != nil {
+					result.Errors = append(result.Errors, mappingErr.Error())
+				} else {
+					result.CanonicalPrincipalSource = source
+				}
+			}
+		}
+	}
+	if result.Provider.SemanticGeneration != "" && (result.Provider.SemanticGeneration != result.PinnedProviderGeneration ||
+		result.Provider.ImmutableBuild != result.PinnedProviderBuild) {
+		result.Errors = append(result.Errors, "provider semantic generation or immutable bridge build does not match the pinned release set")
+	}
+	result.OK = len(result.Errors) == 0
+	if *jsonOut {
+		_ = a.outputJSON(result)
+	} else {
+		fmt.Fprintf(a.out, "operator workflow release preflight: ok=%t release=%s generated=%s provider=%s generation=%s build=%s\n",
+			result.OK, result.ReleaseSet, result.GeneratedAssets.ContentDigest, result.Provider.Key,
+			result.Provider.SemanticGeneration, result.Provider.ImmutableBuild)
+		for _, message := range result.Errors {
+			fmt.Fprintf(a.out, "- %s\n", message)
+		}
+	}
+	if !result.OK {
+		return 1
+	}
+	return 0
 }
 
 func (a *app) runWorkflowInspect(_ context.Context, args []string, which bool) int {

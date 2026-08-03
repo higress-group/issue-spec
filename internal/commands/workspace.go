@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -21,7 +20,6 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
-	"github.com/higress-group/issue-spec/internal/workflow"
 	runnerworkspace "github.com/higress-group/issue-spec/internal/workspace"
 )
 
@@ -310,12 +308,16 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "process_observation_failed", err, *flags.jsonOut)
 	}
-	if err := validateWorkspaceWriteBoundary(target, flags); err != nil {
-		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "remote_precondition_failed", err, *flags.jsonOut)
-	}
 	class := model.ParseProcessExecutionClass(processID, target.artifact.URL, target.body)
 	if class.Blocking() {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "execution_class_invalid", errors.New(model.CanonicalDiagnosticStrings(class.Diagnostics)[0]), *flags.jsonOut)
+	}
+	if class.Class == model.ProcessExecutionReview || class.Class == model.ProcessExecutionVerification {
+		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, deprecatedWorkflowCode,
+			fmt.Errorf("%s PROCESS workspaces belong to the retired final-evidence workflow and perform no mutation", class.Class), *flags.jsonOut)
+	}
+	if err := validateWorkspaceWriteBoundary(target, flags); err != nil {
+		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "remote_precondition_failed", err, *flags.jsonOut)
 	}
 	if code, managementErr := managedWorkspaceLifecycleProblem(target, processID); managementErr != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, code, managementErr, *flags.jsonOut)
@@ -502,20 +504,7 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 		if err := bindCanonicalDesignContext(ctx, backend, repo, issue, value.Role, value.DesignContext); err != nil {
 			return assignment.Assignment{}, err
 		}
-		if value.Role == assignment.RoleReview {
-			authors, scope, err := deriveReviewAssignment(ctx, lease.IntegrationRoot, value.Review.DiffBaseRevision, lease.Portable.DetachedRevision)
-			if err != nil {
-				return assignment.Assignment{}, err
-			}
-			if !reflect.DeepEqual(value.Review.Authors, authors) || !reflect.DeepEqual(value.Review.Scope, scope) {
-				return assignment.Assignment{}, errors.New("review assignment file authors and scope must exactly match the compiler-derived Git revision range")
-			}
-		}
 		if err := validateAssignmentScenarios(value.Scenarios, scenarioCatalog); err != nil {
-			return assignment.Assignment{}, err
-		}
-		value, err = withWorkspaceVerificationPolicy(ctx, backend, repo, issue, lease, value, diffBase)
-		if err != nil {
 			return assignment.Assignment{}, err
 		}
 		if err := value.Validate(); err != nil {
@@ -565,24 +554,8 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 		value.Implementation = &assignment.ImplementationPayload{Objective: objective, Branch: lease.Portable.Branch,
 			WriteOwnership: append([]string(nil), lease.Portable.WriteOwnership...), SharedTouchpoints: append([]string(nil), lease.Portable.SharedTouchpoints...),
 			Commit: commit, Generators: append([]assignment.GeneratorPolicy(nil), input.Generators...), FocusedTests: append([]assignment.TestSelector(nil), input.RequiredTests...)}
-	case model.ProcessExecutionReview:
-		authors, scope, err := deriveReviewAssignment(ctx, lease.IntegrationRoot, diffBase, lease.Portable.DetachedRevision)
-		if err != nil {
-			return assignment.Assignment{}, err
-		}
-		value.Role, value.SubjectRevision = assignment.RoleReview, lease.Portable.DetachedRevision
-		value.Review = &assignment.ReviewPayload{SnapshotRevision: lease.Portable.DetachedRevision, DiffBaseRevision: strings.TrimSpace(diffBase),
-			Authors: authors, Scope: scope, RequiredTests: append([]assignment.TestSelector(nil), input.RequiredTests...)}
-	case model.ProcessExecutionVerification:
-		value.Role, value.SubjectRevision = assignment.RoleVerification, lease.Portable.DetachedRevision
-		value.Verification = &assignment.VerificationPayload{SubjectRevision: lease.Portable.DetachedRevision,
-			RequiredTests: append([]assignment.TestSelector(nil), input.RequiredTests...), RequiredChecks: append([]assignment.CheckSelector(nil), input.RequiredChecks...)}
 	default:
-		return assignment.Assignment{}, fmt.Errorf("execution class %s does not issue a role assignment", class)
-	}
-	value, err = withWorkspaceVerificationPolicy(ctx, backend, repo, issue, lease, value, diffBase)
-	if err != nil {
-		return assignment.Assignment{}, err
+		return assignment.Assignment{}, fmt.Errorf("execution class %s does not issue an implementation assignment", class)
 	}
 	if err := bindCanonicalDesignContext(ctx, backend, repo, issue, value.Role, value.DesignContext); err != nil {
 		return assignment.Assignment{}, err
@@ -593,63 +566,12 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 	return value, nil
 }
 
-func withWorkspaceVerificationPolicy(ctx context.Context, backend changegraph.Backend, repo string, implement int,
-	lease processworkspace.LocalLease, value assignment.Assignment, diffBase string) (assignment.Assignment, error) {
-	if value.Role != assignment.RoleVerification || value.Verification == nil {
-		return value, nil
-	}
-	plan, err := workflow.Resolve(lease.IntegrationRoot)
-	if err != nil {
-		return assignment.Assignment{}, fmt.Errorf("resolve verification workflow: %w", err)
-	}
-	packet, err := verifierPacketFromWorkflow(plan, value.Verification.RequiredSelectors())
-	if err != nil {
-		return assignment.Assignment{}, fmt.Errorf("resolve project verifier packet: %w", err)
-	}
-	payload, err := value.Verification.WithVerifierPacket(packet)
-	if err != nil {
-		return assignment.Assignment{}, fmt.Errorf("seal project verifier packet: %w", err)
-	}
-	value.Verification = &payload
-
-	mode := plan.DurableSpecsMode()
-	if mode == "none" {
-		return value, nil
-	}
-	baseline, err := validateAssignmentDiffBase(ctx, lease.IntegrationRoot, diffBase, lease.Portable.DetachedRevision, "repository-mode verification")
-	if err != nil {
-		return assignment.Assignment{}, err
-	}
-	if baseline == lease.Portable.DetachedRevision {
-		return assignment.Assignment{}, errors.New("repository-mode verification assignment diff base must differ from the exact subject revision")
-	}
-	if backend == nil {
-		return assignment.Assignment{}, errors.New("derive durable check proposal: issue backend is required")
-	}
-	located, err := changegraph.LocateFromImplement(ctx, backend, repo, implement)
-	if err != nil {
-		return assignment.Assignment{}, fmt.Errorf("derive durable check proposal from Implement issue: %w", err)
-	}
-	payload, err = value.Verification.WithDurableCheck(mode, assignment.DurableCheckBinding{
-		Repository: repo, Proposal: located.Proposal.Number, BaselineRevision: baseline,
-		SubjectRevision: lease.Portable.DetachedRevision, RepositoryRoot: ".",
-	})
-	if err != nil {
-		return assignment.Assignment{}, fmt.Errorf("seal verification durable check: %w", err)
-	}
-	value.Verification = &payload
-	return value, nil
-}
-
 func bindCanonicalDesignContext(ctx context.Context, backend changegraph.Backend, repo string, issue int, role assignment.Role, design *assignment.DesignContext) error {
-	if role == assignment.RoleVerification {
-		if design != nil {
-			return errors.New("verification assignment must not carry design_context")
-		}
-		return nil
+	if role != assignment.RoleImplementation {
+		return errors.New("only implementation assignments are supported")
 	}
 	if design == nil {
-		return errors.New("implementation and review assignments require design_context")
+		return errors.New("implementation assignments require design_context")
 	}
 	if backend == nil {
 		return errors.New("derive canonical Design source: issue backend is required")
@@ -777,77 +699,10 @@ func validateAssignmentScenarios(selected, catalog []assignment.ScenarioRef) err
 	return nil
 }
 
-func deriveReviewAssignment(ctx context.Context, integrationRoot, diffBase, subject string) ([]string, []string, error) {
-	diffBase, err := validateAssignmentDiffBase(ctx, integrationRoot, diffBase, subject, "review")
-	if err != nil {
-		return nil, nil, err
-	}
-	rangeSpec := diffBase + ".." + subject
-	authorOutput, err := exec.CommandContext(ctx, "git", "-C", integrationRoot, "log", "--format=%an <%ae>", rangeSpec).Output()
-	if err != nil {
-		return nil, nil, fmt.Errorf("derive review authors from exact revision range: %w", err)
-	}
-	scopeOutput, err := exec.CommandContext(ctx, "git", "-C", integrationRoot, "diff", "--name-only", "--diff-filter=ACDMRT", diffBase, subject).Output()
-	if err != nil {
-		return nil, nil, fmt.Errorf("derive review scope from exact revision range: %w", err)
-	}
-	authors := uniqueNonEmptyLines(string(authorOutput))
-	scope := uniqueNonEmptyLines(string(scopeOutput))
-	if len(authors) == 0 || len(scope) == 0 {
-		return nil, nil, errors.New("review revision range must contain at least one commit author and changed path")
-	}
-	return authors, scope, nil
-}
-
-func validateAssignmentDiffBase(ctx context.Context, integrationRoot, diffBase, subject, purpose string) (string, error) {
-	diffBase = strings.TrimSpace(diffBase)
-	if !fullRevision(diffBase) {
-		return "", fmt.Errorf("%s assignment requires --assignment-diff-base with a full Git object id", purpose)
-	}
-	if err := exec.CommandContext(ctx, "git", "-C", integrationRoot, "merge-base", "--is-ancestor", diffBase, subject).Run(); err != nil {
-		return "", fmt.Errorf("%s assignment diff base must be an ancestor of the exact subject revision", purpose)
-	}
-	return diffBase, nil
-}
-
-func uniqueNonEmptyLines(value string) []string {
-	seen := map[string]struct{}{}
-	for _, line := range strings.Split(value, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			seen[line] = struct{}{}
-		}
-	}
-	result := make([]string, 0, len(seen))
-	for line := range seen {
-		result = append(result, line)
-	}
-	sort.Strings(result)
-	return result
-}
-
-func fullRevision(value string) bool {
-	if len(value) != 40 && len(value) != 64 {
-		return false
-	}
-	for _, char := range value {
-		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
-			return false
-		}
-	}
-	return true
-}
-
 func validateAssignmentForLease(value assignment.Assignment, repo string, issue int, processID string, class model.ProcessExecutionClass, lease processworkspace.LocalLease, redispatch bool) error {
 	wantRole := assignment.RoleImplementation
 	wantBase, wantSubject := lease.Portable.BaseSHA, ""
-	switch class {
-	case model.ProcessExecutionReview:
-		wantRole, wantBase, wantSubject = assignment.RoleReview, "", lease.Portable.DetachedRevision
-	case model.ProcessExecutionVerification:
-		wantRole, wantBase, wantSubject = assignment.RoleVerification, "", lease.Portable.DetachedRevision
-	case model.ProcessExecutionChangeBearing:
-	default:
+	if class != model.ProcessExecutionChangeBearing {
 		return fmt.Errorf("execution class %s does not issue a role assignment", class)
 	}
 	if value.Repository != repo || value.Issue != int64(issue) || value.ProcessID != processID || value.Role != wantRole ||
@@ -994,8 +849,6 @@ func preparePortableLease(repo, processID string, class model.ProcessExecutionCl
 			branch = "issue-spec/" + strings.ToLower(processID)
 		}
 		lease.BaseSHA, lease.Branch = strings.TrimSpace(base), branch
-	case processworkspace.ModeSnapshot:
-		lease.BaseSHA, lease.DetachedRevision = strings.TrimSpace(base), strings.TrimSpace(base)
 	case processworkspace.ModeNone:
 		lease.RuntimeNamespace = ""
 	}
@@ -1009,8 +862,6 @@ func modeForExecutionClass(class model.ProcessExecutionClass) processworkspace.W
 	switch class {
 	case model.ProcessExecutionChangeBearing:
 		return processworkspace.ModeWritable
-	case model.ProcessExecutionReview, model.ProcessExecutionVerification:
-		return processworkspace.ModeSnapshot
 	default:
 		return processworkspace.ModeNone
 	}

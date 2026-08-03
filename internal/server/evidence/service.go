@@ -215,6 +215,10 @@ func (s *Service) SetDesignatedWriter(ctx context.Context, subject authz.Subject
 // Denials are audited after the protected transaction rolls back, without
 // copying payload, provenance or credential material.
 func (s *Service) AppendEvidence(ctx context.Context, subject authz.Subject, actor adminservice.Actor, scope models.RepoScope, input AppendInput) (Evidence, error) {
+	return s.appendEvidence(ctx, subject, actor, scope, input, authz.OperationPublishEvidence)
+}
+
+func (s *Service) appendEvidence(ctx context.Context, subject authz.Subject, actor adminservice.Actor, scope models.RepoScope, input AppendInput, operation authz.Operation) (Evidence, error) {
 	input = normalizeAppendInput(input)
 	payload, payloadErr := canonicalObject(input.Payload)
 	provenance, provenanceErr := canonicalObject(input.Provenance)
@@ -227,7 +231,7 @@ func (s *Service) AppendEvidence(ctx context.Context, subject authz.Subject, act
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		principal := *subject.Principal
 		decision, err := s.authz.EvaluateRepositoryTx(ctx, tx, subject, authz.RepositoryRequest{
-			Scope: scope, Operation: authz.OperationPublishEvidence,
+			Scope: scope, Operation: operation,
 		})
 		if err != nil {
 			return err
@@ -773,13 +777,18 @@ func requirementNames(items []Requirement) []string {
 
 func validateSupersedes(ctx context.Context, tx pgx.Tx, scope models.RepoScope, input AppendInput) error {
 	var id uuid.UUID
-	err := tx.QueryRow(ctx, `SELECT id FROM external_evidence WHERE organization_id = $1 AND repository_id = $2
+	var visibility Visibility
+	query := `SELECT id, visibility FROM external_evidence WHERE organization_id = $1 AND repository_id = $2
 		AND id = $3 AND issue_id = $4 AND provider_key = $5 AND external_repository_id = $6
-		AND evidence_type = $7 AND external_id = $8 FOR UPDATE`, scope.OrgID, scope.RepoID,
-		*input.SupersedesEvidenceID, input.IssueID, input.ProviderKey, input.ExternalRepositoryID,
-		input.EvidenceType, input.ExternalID).Scan(&id)
+		AND evidence_type = $7 AND external_id = $8 FOR UPDATE`
+	args := []any{scope.OrgID, scope.RepoID, *input.SupersedesEvidenceID, input.IssueID, input.ProviderKey,
+		input.ExternalRepositoryID, input.EvidenceType, input.ExternalID}
+	err := tx.QueryRow(ctx, query, args...).Scan(&id, &visibility)
 	if err != nil {
 		return err
+	}
+	if visibility != input.Visibility {
+		return adminservice.ErrConflict
 	}
 	var conflictingSuccessor bool
 	err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM external_evidence

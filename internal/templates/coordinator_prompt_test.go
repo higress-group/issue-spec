@@ -16,18 +16,30 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 	for _, want := range []string{
 		"exactly one runner-selected /new command", "authorized_command", "runner_metadata",
 		"untrusted data", "reference_only", "content_sha256", "issue-spec read/comment get",
-		"narrow direct-PR path", "status ... --summary --json", "verify ... --summary --json", "full JSON",
+		"bounded single-writer change", "child/subagent is an execution choice, not a PROCESS trigger",
+		"exactly one native child/subagent without PROCESS", "must not write code concurrently",
+		"concurrent code writers", "isolation protecting pre-existing work", "enforced path ownership",
+		"restartable cross-session handoff", "dependency-ordered integration",
 		"one independently verifiable Design invariant", "bounded role working set", "stable interface",
 		"block before dispatch", "acceptance consequences", "request human direction",
 		"workspace prepare -> real non-Coordinator", "never implements/tests/commits", "sealed assignment",
 		"design_context.source_url", "without comments, timeline, history, or gates", "stops on conflict",
-		"result revision, DCO, ownership, generators, tests", "independent review", "review/fix convergence",
+		"result revision, DCO, ownership, generators, tests", "Provider-native review", "current configured checks alone own authority",
+		"### Implementation Rationale", "Before requesting human review", "direct-path writer", "managed PROCESS worker",
+		"do not claim review handoff complete", "never enter merge-check or merge authority",
+		"actual code writer", "line-rationale drafts", "stable symbol plus changed-line anchor", "why/tradeoff/risk",
+		"secret, raw payload, or credential", "continued applicability", "sensitive-data absence",
+		"invalid, stale, or sensitive drafts", "never rewrite and impersonate the writer",
+		"map to changed lines", "valid unchanged text", "non-blocking inline discussions", "summary/index",
+		"inline discussion is unsupported or would create an unresolved merge blocker", "path:symbol/line", "Never demand filler, quota, coverage",
 		"Phase projections are ordinary statusless human synthesis",
-		"Persist the phase body, perform the first QUESTION pass, upsert the projection, then author SPEC/TASK/PROCESS",
+		"Persist the selected phase body, perform the first QUESTION pass, upsert the projection",
+		"PROCESS only when managed coordination was selected",
 		"only the latest effective ANSWER drive gates and Agents",
 		"never place projection HTML source in default Agent context",
 		"same mutation plan/checkpoint", "Cleanup is explicit", "destructive", "retain dirty, linked, uncertain, or unintegrated work",
-		"pr link-issues the final PR-body write", "self-hosted closure stays provider-owned",
+		"read-only merge-check", "freshly collected provider authority token", "ordinary GitHub REST read-then-write remains fail-closed",
+		"Reconcile the exact selected Issue set idempotently after freshly observed merge",
 		"issue_spec_coordinator_summary", `"diagnostics": []`, `"source_label": "authorized_command"`,
 	} {
 		if !strings.Contains(prompt, want) {
@@ -37,6 +49,7 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 	for _, forbidden := range []string{
 		"CODEX_THREAD_ID may still override", "session source of truth", "runner-managed writeback action envelope",
 		"one PROCESS per command entry point", "one repair PROCESS per finding", "coordinator-inline execution",
+		"issue-spec code-change rationale", "issue-spec:code-change-rationale", "Rationale ID:",
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("prompt contains stale rule %q", forbidden)
@@ -53,6 +66,7 @@ func TestCoordinatorPromptRolePacketBoundary(t *testing.T) {
 		"Give the child only its sealed assignment", "exact worktree/branch/ownership", "parent TASK", "predecessor handoff",
 		"Do not copy proposal/Design bodies, full DAGs, link matrices, closure/archive, or provider-routing policy into role packets",
 		"The role owns one result commit, focused tests, and a bounded result",
+		"each managed PROCESS worker owns its drafts", "guessed diff position", "Publish valid unchanged text",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing role boundary %q", want)
@@ -86,7 +100,7 @@ func TestCoordinatorPromptDoesNotRequireArtifactSessionMetadata(t *testing.T) {
 		"runner-selected /resume command", `"public_session_id": "s_123"`,
 		"Artifact writer session metadata is deprecated, ignored, and never required",
 		"runner.public_session_id alone is the /resume handle",
-		"go run ./cmd/issue-spec status", "go run ./cmd/issue-spec comment create", `"name":"go run ./cmd/issue-spec comment upsert"`,
+		"go run ./cmd/issue-spec merge-check", "go run ./cmd/issue-spec comment create", `"name":"go test ./..."`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("resume prompt missing %q:\n%s", want, prompt)

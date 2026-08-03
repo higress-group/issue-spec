@@ -92,39 +92,39 @@ func ImplementIssueWithOptions(change, designRef string, options WorkflowAuthori
 		projection = `
 ## Human Review Projection
 
-- Timing: after the first QUESTION discovery/create pass and before complete PROCESS planning.
+- Timing: after the first QUESTION discovery/create pass and before the selected implementation plan is finalized.
 - Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.
-- Presentation: lead with a concrete acceptance case and show how the PROCESS sequence carries it from trigger to a human-visible, verified outcome.
-- Coverage: build a coverage ledger and present the complete current invariant DAG, state counts, critical path, safe parallelism, roles, blockers, shared touchpoints, SPEC/scenario coverage, tests, generators, estimates, and independent review/verify obligations; do not emit only the increment since Design.
+- Presentation: lead with a concrete acceptance case and show how the selected direct or managed execution path carries it from trigger to a human-visible, verified outcome.
+- Coverage: build a coverage ledger and present the complete current implementation plan, selected writer model, blockers, shared touchpoints, SPEC/scenario coverage, tests, generators, estimates, and provider-review/configured-check obligations. Include DAG state, critical path, safe parallelism, roles, and handoffs only when PROCESS coordination was selected; do not emit only the increment since Design.
 - Semantics: estimates and complexity do not define workflow semantics.
 - Context: projection HTML source is excluded from default Agent context.
 `
 	}
 	body := fmt.Sprintf(`<!-- issue-spec:issue=implement change=%s version=1 -->
-# Implement DAG: %s
+# Implementation Plan: %s
 
-## PR Mode Decision
+## Delivery Path Decision
 
 TBD
 %s
 
-## DAG Nodes and Dependencies
+## Work Packages and Dependencies
 
 TBD
 
-## Worktree / Branch Plan
+## Workspace / Branch Plan
 
 TBD
 
-## PR-owner and Review-agent Assignment
+## Writer and Provider-review Plan
 
 TBD
 
-## Conflict Risk and Serialization Plan
+## Conflict and Serialization Risk
 
 TBD
 
-## Global Review / Verify Status
+## Provider Checks / Review Status
 
 - Design Issue: %s
 - Status: draft
@@ -189,6 +189,7 @@ func stripIssueTitlePrefix(subject string) string {
 		"Design:",
 		"Implement:",
 		"Implementation:",
+		"Implementation Plan:",
 		"Implement DAG:",
 	} {
 		if strings.HasPrefix(strings.ToLower(subject), strings.ToLower(prefix)) {

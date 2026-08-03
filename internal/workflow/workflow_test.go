@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/durable"
 	"gopkg.in/yaml.v3"
 )
@@ -54,9 +55,6 @@ artifacts:
     generates: tasks.md
     apply:
       tracks: tasks.md
-  review:
-    type: review
-    generates: review.md
 `)
 	writeFile(t, filepath.Join(root, "openspec", "schemas", "istio-agent-workflow", "templates", "spec.md"), "## Requirement: {{.Input.requirement.title}}\n")
 
@@ -80,10 +78,6 @@ artifacts:
 	task := artifactByID(plan.Artifacts, "tasks")
 	if !contains(task.Storage, "PROCESS-typed-comment") || !contains(task.Storage, "issue-spec-links") {
 		t.Fatalf("apply.tracks should map to TASK/PROCESS/link state: %+v", task.Storage)
-	}
-	review := artifactByID(plan.Artifacts, "review")
-	if !contains(review.Storage, "REVIEW-typed-comment") || !contains(review.Storage, "pr-review-comment") {
-		t.Fatalf("review.md should map to typed review and PR review storage: %+v", review.Storage)
 	}
 }
 
@@ -218,66 +212,6 @@ func TestResolveAcceptsLegacyScalarContext(t *testing.T) {
 	}
 }
 
-func TestOpenSpecStyleProjectProducesDeclarativeVerifierPacket(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "openspec", "config.yaml"), `
-schema: business-workflow
-context: |
-  Project: edge proxy
-  Business invariant: public routes require an owner
-rules:
-  verify:
-    - Review only the affected route scenarios.
-    - command: ./scripts/verify-route-owners.sh
-  proposal:
-    - Unrelated proposal-only guidance.
-external_code:
-  provider_key: code.example
-  evidence:
-    required_checks: [route-owner-policy]
-`)
-	writeFile(t, filepath.Join(root, "openspec", "schemas", "business-workflow", "schema.yaml"), `
-artifacts:
-  proposal:
-    type: proposal
-    template: proposal.md
-    instructions: Do not copy this into verifier guidance.
-  verify:
-    type: verify
-    template: verify.md
-    instructions: |
-      Explain the affected route decision.
-      Run only the exact sealed commands and checks.
-`)
-	writeFile(t, filepath.Join(root, "openspec", "schemas", "business-workflow", "templates", "proposal.md"), "# Proposal\n")
-	writeFile(t, filepath.Join(root, "openspec", "schemas", "business-workflow", "templates", "verify.md"), "{{.DefaultLogicalBody}}\n")
-
-	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
-	if err != nil {
-		t.Fatalf("resolve OpenSpec-style fixture: %v diagnostics=%+v", err, plan.Diagnostics)
-	}
-	packet, err := plan.ProjectVerifierPacket()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if packet.Guidance == nil || !strings.Contains(string(packet.Guidance.Context), "public routes require an owner") {
-		t.Fatalf("workflow context missing from verifier packet: %+v", packet.Guidance)
-	}
-	if !strings.Contains(string(packet.Guidance.RulesVerify), "verify-route-owners.sh") || strings.Contains(string(packet.Guidance.RulesVerify), "proposal-only") {
-		t.Fatalf("rules.verify projection is not bounded: %s", packet.Guidance.RulesVerify)
-	}
-	if len(packet.Guidance.Instructions) != 1 || packet.Guidance.Instructions[0].ArtifactID != "verify" ||
-		!strings.Contains(packet.Guidance.Instructions[0].Text, "exact sealed commands and checks") {
-		t.Fatalf("VERIFY instructions = %+v", packet.Guidance.Instructions)
-	}
-	if len(packet.RequiredTests) != 0 {
-		t.Fatalf("rules.verify prose became executable tests: %+v", packet.RequiredTests)
-	}
-	if len(packet.RequiredChecks) != 1 || packet.RequiredChecks[0].Provider != "code.example" || packet.RequiredChecks[0].Name != "route-owner-policy" {
-		t.Fatalf("provider check selectors = %+v", packet.RequiredChecks)
-	}
-}
-
 func TestWorkflowContextRejectsNonStringScalarsAndAcceptsNull(t *testing.T) {
 	for _, raw := range []string{"context: 42\n", "context: true\n"} {
 		var cfg Config
@@ -327,7 +261,7 @@ artifacts:
 	}
 }
 
-func TestResolveRecognizesLegacyArchiveArtifactWithoutStorageRoute(t *testing.T) {
+func TestResolveRejectsLegacyArchiveArtifact(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), "schema: custom\n")
 	writeFile(t, filepath.Join(root, "issue-spec", "schemas", "custom", "schema.yaml"), `
@@ -337,16 +271,12 @@ artifacts:
     generates: issue-spec/specs/example/spec.md
 `)
 	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
-	if err != nil {
-		t.Fatalf("legacy archive artifact must remain readable for the compatibility window: %v", err)
-	}
-	archive := artifactByID(plan.Artifacts, "archive")
-	if !hasDiagnostic(plan.Diagnostics, "legacy_archive_artifact_deprecated") || len(archive.Storage) != 0 {
-		t.Fatalf("legacy archive compatibility is not bounded: artifact=%+v diagnostics=%+v", archive, plan.Diagnostics)
+	if err == nil || !hasDiagnostic(plan.Diagnostics, "unsupported_artifact_type") {
+		t.Fatalf("legacy archive artifact was not rejected: err=%v diagnostics=%+v", err, plan.Diagnostics)
 	}
 }
 
-func TestExternalCodeConfigAllowsOnlyProviderSelectionAndEvidencePolicy(t *testing.T) {
+func TestExternalCodeConfigRejectsLegacyEvidencePolicy(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), `
 external_code:
@@ -360,14 +290,77 @@ external_code:
       check: 1h
 `)
 	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
-	if err != nil {
-		t.Fatalf("Resolve returned error: %v diagnostics=%+v", err, plan.Diagnostics)
+	if err == nil || !hasDiagnostic(plan.Diagnostics, "invalid_config") || !strings.Contains(err.Error(), "deprecated and non-authoritative") {
+		t.Fatalf("legacy evidence must fail closed: plan=%+v err=%v", plan, err)
 	}
-	if plan.Config.ExternalCode == nil || plan.Config.ExternalCode.ProviderKey != "code.example" ||
-		len(plan.Config.ExternalCode.Evidence.RequiredChecks) != 2 ||
-		!plan.Config.ExternalCode.Evidence.SynchronizesBefore("verify") ||
-		!plan.Config.ExternalCode.Evidence.SynchronizesBefore("RUNNER") {
-		t.Fatalf("external code config = %+v", plan.Config.ExternalCode)
+}
+
+func TestExternalCodeMergeUsesStableProviderIdentities(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), `
+external_code:
+  provider_key: code.example
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:unit
+        owner: app:7
+        display_name: unit
+`)
+	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("Resolve() = %+v, %v", plan, err)
+	}
+	provider, checks, err := plan.MergeAuthorityConfiguration()
+	if err != nil || provider != "code.example" || len(checks) != 1 ||
+		checks[0] != (codereview.CheckIdentity{Provider: "code.example", Key: "app:7/context:unit", Owner: "app:7", DisplayName: "unit"}) {
+		t.Fatalf("merge configuration = %q %+v, %v", provider, checks, err)
+	}
+}
+
+func TestExternalCodeMergeRejectsBareNamesAndMixedLegacyPolicy(t *testing.T) {
+	configs := map[string]string{
+		"bare-name": `external_code:
+  provider_key: code.example
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: unit
+`,
+		"mixed-legacy": `external_code:
+  provider_key: code.example
+  evidence:
+    required_checks: [unit]
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:unit
+        owner: app:7
+`,
+		"removed-fallback": `external_code:
+  provider_key: code.example
+  merge:
+    required_checks:
+      - source: provider
+        provider: code.example
+        key: app:7/context:unit
+        owner: app:7
+    review_fallback:
+      enabled: false
+`,
+	}
+	for name, raw := range configs {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), raw)
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err == nil || !hasDiagnostic(plan.Diagnostics, "invalid_config") {
+				t.Fatalf("Resolve() = %+v, %v", plan, err)
+			}
+		})
 	}
 }
 

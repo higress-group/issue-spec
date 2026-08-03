@@ -221,22 +221,27 @@ Source SPEC comments:
 
 ### Requirement: dual-audience Implement execution briefs
 
-When repository HTML review authoring is enabled and the selected repository profile advertises Implementation Execution Brief support, issue-spec Implement authoring guidance MUST maintain one ordinary human-facing Execution Brief after the persisted Implement issue has completed its first QUESTION discovery pass. The brief MAY precede complete PROCESS planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST derive execution data from Design invariants, TASK, PROCESS, and evidence records, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+When repository HTML review authoring is enabled and the selected repository profile advertises Implementation Execution Brief support, issue-spec Implement authoring guidance MUST maintain one ordinary human-facing Execution Brief after the persisted Implement issue has completed its first QUESTION discovery pass. The brief MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST derive execution data from Design invariants, TASK, and selected PROCESS records when managed coordination exists, and MUST remain non-authoritative and outside workflow gates and default Agent context. A direct single-writer path MUST NOT invent candidate PROCESS records.
 
 #### Scenario: disabled Implement review skips projection loading
 
 - **WHEN** repository configuration sets html_review.enabled to false
-- **THEN** generated Implement authoring guidance and the built-in Implement issue body omit the projection checkpoint and reference loading while QUESTION discovery proceeds directly to PROCESS planning and independent code review remains mandatory
+- **THEN** generated Implement authoring guidance and the built-in Implement issue body omit the projection checkpoint and reference loading while QUESTION discovery proceeds directly to the selected direct or managed implementation plan
 
 #### Scenario: enabled Implement review keeps the current checkpoint
 
 - **WHEN** html_review is absent or explicitly enabled and the selected profile supports the Implementation Execution Brief
-- **THEN** Implement authoring keeps the projection checkpoint after its first QUESTION discovery pass and before complete PROCESS planning
+- **THEN** Implement authoring keeps the projection checkpoint after its first QUESTION discovery pass and before the selected implementation plan is finalized
 
-#### Scenario: Implement projection follows first QUESTION discovery and precedes complete PROCESS planning
+#### Scenario: Implement projection follows first QUESTION discovery and precedes final implementation planning
 
-- **WHEN** an Implement issue has been persisted, its first QUESTION discovery pass has created all currently identified QUESTION artifacts, and PROCESS planning is not complete
-- **THEN** the authoring flow may create the one logical Execution Brief with candidate PROCESS boundaries and Agent allocation labeled as synthesis
+- **WHEN** an Implement issue has been persisted, its first QUESTION discovery pass has created all currently identified QUESTION artifacts, and implementation planning is not complete
+- **THEN** the authoring flow may create the one logical Execution Brief with the selected direct writer plan or, only when managed coordination was selected, candidate PROCESS boundaries and Agent allocation labeled as synthesis
+
+#### Scenario: direct implementation brief does not manufacture PROCESS
+
+- **WHEN** the selected implementation path has one code writer and no managed-coordination need
+- **THEN** the Execution Brief presents that bounded direct path and focused verification without candidate PROCESS boundaries, PROCESS counts, worktree leases, or handoffs
 
 #### Scenario: Implement questions live on their typed comments, not in the brief
 

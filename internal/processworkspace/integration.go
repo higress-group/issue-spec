@@ -64,6 +64,16 @@ func runIntegrationRaceHook(ctx context.Context, phase string) error {
 // Complete validates a clean one-commit worker result and records
 // worker-complete evidence. It never reads changes from a dirty directory.
 func (m *Manager) Complete(ctx context.Context, request CompleteRequest) (result Inspection, resultErr error) {
+	if m == nil || m.Store == nil {
+		return Inspection{}, errors.New("process workspace manager is not open")
+	}
+	lease, found, err := m.Store.peek(request.WorkspaceID)
+	if err != nil {
+		return Inspection{}, err
+	}
+	if found && (lease.Portable.ExecutionClass == ExecutionReview || lease.Portable.ExecutionClass == ExecutionVerification) {
+		return Inspection{Lease: lease}, fmt.Errorf("%w: %s PROCESS completion is historical audit data only", ErrDeprecatedWorkflow, lease.Portable.ExecutionClass)
+	}
 	held, err := m.acquireIntegrationLock(ctx)
 	if err != nil {
 		return Inspection{}, err

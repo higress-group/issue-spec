@@ -3,7 +3,7 @@ NPM ?= npm
 DIST_DIR ?= dist
 IMAGE ?= issue-spec-server:dev
 
-.PHONY: generate-web verify-generated verify-docs verify-requirements-acceptance docs-self-hosted-screenshots build-server test-server release-server release-cli verify-release docker-server backup-smoke test-fast test-git-contract test-full test-baseline
+.PHONY: generate-web verify-generated verify-docs verify-requirements-acceptance verify-enterprise-provider verify-workflow-cutover candidate-cli-dogfood docs-self-hosted-screenshots build-server test-server release-server release-cli verify-release docker-server backup-smoke test-fast test-git-contract test-full test-baseline
 
 # test-fast runs the deterministic, Git-free command orchestration tier and
 # asserts its wall time against testdata/test-baseline.json.
@@ -16,8 +16,9 @@ test-fast:
 test-git-contract:
 	./scripts/test-tier.sh git-contract
 
-# test-full runs the whole-module test suite.
-test-full:
+# test-full runs the whole-module test suite and the public enterprise-provider
+# wire/action conformance fixtures used by CI.
+test-full: verify-enterprise-provider
 	./scripts/test-tier.sh full
 
 # test-baseline records a fresh same-host cold-cache baseline.
@@ -40,6 +41,19 @@ verify-requirements-acceptance:
 	$(GO) test ./internal/commands -run '^TestRequirementsAcceptance'
 	$(GO) test ./internal/server/api/github/issues -run '^TestPublicContributorIssueCompatibility$$'
 	./hack/requirements-acceptance/verify.sh
+
+verify-enterprise-provider:
+	python3 -m unittest discover -s .agents/skills/configure-enterprise-provider/scripts -p '*_test.py'
+
+# verify-workflow-cutover checks the single generated authority model, strict
+# release preflight, and bilingual operator contract.
+verify-workflow-cutover: verify-enterprise-provider
+	$(GO) test ./internal/workflow ./internal/templates ./internal/commands
+	./hack/requirements-acceptance/verify.sh
+
+# Candidate builds dogfood only read-only readiness and release preflight.
+candidate-cli-dogfood:
+	$(GO) test ./internal/commands -run '^(TestMergeCheckSuccessAndFailurePerformZeroWrites|TestWorkflowPreflight)$$'
 
 docs-self-hosted-screenshots:
 	./hack/update-self-hosted-doc-screenshots.sh

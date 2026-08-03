@@ -24,32 +24,23 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 		"",
 		fmt.Sprintf("- Provider: `%s` (%s)", provider.ProviderKey, provider.DisplayName),
 		fmt.Sprintf("- Code-change term: %s", provider.CodeChangeLabel),
-	}
-	if provider.ChangeCreate {
-		lines = append(lines, "- `change.create`: available; an operator-provided code-host skill or bridge may create an external change.")
-	} else {
-		lines = append(lines, "- `change.create`: unavailable; associate a pre-existing external change before implementation gates.")
-	}
-	if provider.ChangeComment {
-		lines = append(lines, "- `change.comment`: available; external finding/reply write-back and code-author rationale publication use the neutral comment operation. Rationale uses a stable identity and exact replay so pending Issue carriers recover without duplicate external comments.")
-	} else {
-		lines = append(lines, "- `change.comment`: unavailable; code-author rationale records an explicit issue-only fallback, while other external discussion stays on the provider and only supported evidence is synchronized.")
-	}
-	if provider.EvidenceSnapshot {
-		lines = append(lines, "- `evidence.snapshot`: available; synchronize exact-current-HEAD evidence before verification gates. The bridge reads HEAD before and after fact collection and returns `revision_mismatch` without a snapshot if either observation differs from the requested revision. Runner dispatch synchronization remains an explicit `external_code.evidence.sync_before` project-policy opt-in.")
-	} else {
-		lines = append(lines, "- `evidence.snapshot`: unavailable; no generated step may claim automatic pre-gate synchronization.")
+		fmt.Sprintf("- Semantic generation: `%s`", provider.SemanticGeneration),
+		fmt.Sprintf("- Immutable bridge build: `%s`", provider.ProviderBuildIdentity),
+		fmt.Sprintf("- Required merge capabilities: review-decision=%t authoritative-check-conclusion=%t merge-conditional=%t",
+			provider.ReviewDecision, provider.AuthoritativeCheckConclusion, provider.MergeConditional),
 	}
 	lines = append(lines,
-		"- Capabilities are policy and evidence contracts, not implied issue-spec CLI commands. Use only an approved operator-provided code-host skill or bridge for mutations.",
-		"- Project business verification remains declarative: the sealed verifier assignment carries workflow context, `rules.verify`, VERIFY instructions, affected scenarios, and exact required test/check selectors. Core never executes rule prose.",
-		"- Run and report the exact sealed selector identities at the exact subject revision. Local test evidence retains its accepted assurance, while provider-check outcome and authority come only from the provider observation.",
-		"- Natural-language VERIFY conclusions remain role-owned evidence and never become provider-owned authority.",
-		"- On a self-hosted profile, `code-change attach` validates and associates an existing provider change at an exact revision; it never creates that change or ingests evidence.",
-		"- After attach, `code-change link-process` links one PROCESS to the unique active code change with representation-version CAS.",
-		"- The independent reviewer runs `review sync --implement <issue> --revision <exact-head> --process <review-process-id>` under its own agent identity. Successful sync persists and reloads provider facts, then upserts one stable done REVIEW completion even with zero findings; never fabricate findings or hand-author its stamp.",
-		"- Final review sync resolves and publishes the complete review PROCESS, covered change-bearing PROCESS, and active SPEC set on the REVIEW owner comment. Prose IDs, automatic inference, and generic approval frameworks are not carriers; do not mutate peer artifacts after publication.",
-		"- After independent review converges, the real code author uses `code-change rationale`. The strict versioned Implement Issue carrier is the only rationale authority: capable providers publish its stable external projection, missing `change.comment` records an explicit issue-only fallback, and recoverable pending publication never passes final gates. Exact retries converge without duplicate external comments. Final gates accept the fresh exact-current REVIEW completion, with valid existing finding-backed consumed native-ledger evidence retained only for legacy compatibility; evidence-writer identity is never treated as the code author.",
+		"- The bridge must report `minimal-merge-authority/v1`, this immutable build, and the complete capability set before authority is read or anything mutates. Mixed releases and unknown fields fail closed.",
+		"- Provider review decisions identify stable authenticated reviewers and trusted canonical principals at the exact subject. Bridge writer, logical Agent, login spelling, email, and display text are not reviewer identity.",
+		"- Configured checks use opaque provider-native keys plus owner/integration identity. Core consumes exactly one provider-selected current conclusion and never chooses among attempts.",
+		"- `merge-check` is read-only. `code-change merge --expected-head` recollects fresh authority and passes the provider-issued complete authority token to conditional merge.",
+		"- Ordinary GitHub REST read-then-write cannot atomically protect same-head policy, review, conversation, finding, and check drift; it remains fail-closed unless an operator bridge proves complete provider-native enforcement.",
+		"- Historical REVIEW, VERIFY, PROCESS evidence, rationale, receipts, coverage, finalization, and Archive data are audit-only and never become merge input.",
+		"- The actual code writer owns line-rationale drafts for non-obvious decisions: repository-relative path, stable symbol plus changed-line anchor, why/tradeoff/risk, and no secret, raw payload, or credential. Writers need no provider access, never guess final diff positions, and produce no filler, quota, or coverage comments.",
+		"- After pushing the exact head, the Coordinator validates anchors, continued applicability, and sensitive-data absence, then publishes unchanged worker rationale as provider-native non-blocking inline discussions. Invalid, stale, or sensitive drafts return to the writer or are dropped with explanation, never Coordinator-rewritten under worker authorship. The ordinary top-level provider discussion `### Implementation Rationale` summarizes and indexes valid comments.",
+		"- If non-blocking inline discussion is unsupported or an inline discussion would become an unresolved merge blocker, keep `path:symbol/line` plus the worker rationale in the top-level discussion instead. These are mutable review UX only: no typed carrier, marker, rationale ID, PROCESS/SPEC binding, evidence field, gate, or merge input.",
+		"- A failed required rationale write must be reported and the rendered body retained for retry or manual posting; human-review handoff remains incomplete, but merge-check and merge authority remain unchanged.",
+		"- After freshly observed provider merge, exact selected-Issue reconciliation is idempotent bookkeeping and may be retried independently.",
 		"- Provider executables, arguments, environment, and credentials are operator-owned and must never be read from repository files.",
 		"- Project/work-item tracker authority is independent and is not enabled by this code-provider selection.")
 	return strings.Join(lines, "\n")
@@ -57,7 +48,7 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 
 func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 	steps := []string{
-		"# Provider-neutral Code Workflow",
+		"# Provider-bound Merge Workflow",
 		"",
 		fmt.Sprintf("This checkout uses `%s` for external code authority and `%s` for issue authority.", provider.ProviderKey, repo),
 		"",
@@ -65,31 +56,20 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 		"",
 		"## Flow",
 		"",
-		"Generate every new typed ID as `<TYPE>-<issue><three-digit sequence>` according to `issue-spec-workflow`; preserve legacy IDs and never renumber referenced artifacts.",
-		"",
-		"1. Read the active Source Binding and code-change references from issue-spec; the binding supplies provider and external repository identity. Do not infer provider authority from the issue server hostname.",
+		"1. Read the active Source Binding and selected change scope. The binding supplies provider and external repository identity; never infer provider authority from the issue-server hostname.",
+		"2. Run release preflight and require the exact CLI, Server, Runner, generated-asset, semantic-generation, immutable bridge-build, capability, configured-check, canonical-principal, review-mode, reconciliation, and conditional-merge identities. Stop on any mixed or missing value.",
 	}
 	if provider.ChangeCreate {
-		steps = append(steps, "2. When a new external change is required, create it with an operator-provided trusted code-host skill or bridge. `change.create` is a capability contract, not an implied issue-spec CLI command; stop and request operator setup when no approved skill or bridge is available.")
+		steps = append(steps, "3. Create a change only through an approved operator tool when needed; `change.create` is a capability contract, not an implied issue-spec command.")
 	} else {
-		steps = append(steps, "2. Create the external change outside issue-spec; `change.create` is not available.")
+		steps = append(steps, "3. Select a pre-existing provider change; `change.create` is unavailable.")
 	}
-	steps = append(steps, "3. Validate and attach that existing change at its exact provider revision with `issue-spec --profile <self-hosted-profile> code-change attach --repo "+repo+" --implement <issue> --change-id <id> --revision <revision>`. Attach does not create the change or ingest review/CI evidence. Refresh only the same active change and provide `--refresh --expected-version <version>` together.")
-	steps = append(steps, "4. Link each PROCESS with `issue-spec --profile <self-hosted-profile> code-change link-process --repo "+repo+" --implement <issue> --process <process-id> --expected-version <comment-version>`. The command requires exactly one active `code_change`; the same URL is a no-op and a different URL conflicts.")
-	steps = append(steps, "5. If active references are ambiguous, inspect the Implement Issue references, explicitly delete only the unwanted active reference through the self-hosted native references API or UI, then retry. Never guess or silently overwrite.")
-	if provider.ChangeComment {
-		steps = append(steps, "6. Use neutral `change.comment` for supported finding/reply write-back and stable code-author rationale projection, preserving canonical FINDING/PROCESS/SPEC linkage. A rationale bridge must return the original external comment for exact `rationale_id` replay and reject conflicting reuse.")
-	} else {
-		steps = append(steps, "6. Do not request external finding/reply write-back because `change.comment` is not available. `code-change rationale` records an explicit gate-eligible issue-only fallback instead of pretending external publication succeeded.")
-	}
-	if provider.EvidenceSnapshot {
-		steps = append(steps, "7. Before verification gates, always synchronize a provider snapshot for the exact active head revision, then evaluate only server-accepted evidence IDs. The bridge reads HEAD before and after fact collection and returns `revision_mismatch` without a snapshot when either observation differs from the requested revision. Add `runner` to `external_code.evidence.sync_before` only when every dispatch is expected to have an active external change.")
-	} else {
-		steps = append(steps, "7. Verify only against already-authoritative server evidence; automatic provider snapshot synchronization is unavailable.")
-	}
-	steps = append(steps, "8. The independent reviewer runs `issue-spec --profile <self-hosted-profile> review sync --repo "+repo+" --implement <issue> --revision <revision> --process <review-process-id> --id <review-id> --agent <review-agent> --json`. The single REVIEW owner write includes its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC; do not follow it with peer mutations.")
-	steps = append(steps, "9. After independent review/fix convergence, each change-bearing code author runs `issue-spec --profile <self-hosted-profile> code-change rationale --repo "+repo+" --implement <issue> --process <process-id> --spec <spec-id> --spec-url <url> --body <why> --agent <worker>`. The strict versioned Issue carrier is authoritative. With `change.comment`, the command durably records pending state before sending a stable external projection and exact replay recovers lost provider or Issue acknowledgements; pending never passes final gates. Without the capability it records an explicit gate-eligible issue-only fallback. Published external IDs/URLs are navigation metadata, not trusted evidence. Legacy version-1 carriers remain bounded gate-compatible and are never silently republished.")
-	steps = append(steps, "10. Keep review, merge, and closure on the selected code provider; do not substitute GitHub PR endpoints for a self-hosted workflow. Archive reads implementation REVIEW completion only for implementation code_change merge policy and never applies it to archive_change or mutates REVIEW.")
-	steps = append(steps, "11. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
+	steps = append(steps, "4. Resolve or attach the exact provider change only for navigation and subject selection. Optional PROCESS links remain planning metadata and never enter merge-check.")
+	steps = append(steps, "5. Once the exact change is reviewable and pushed, whether produced by a direct single writer or managed PROCESS, validate writer anchors against the exact head, continued applicability, and sensitive-data absence, then map them to changed lines. Return invalid, stale, or sensitive drafts to the writer or drop them with explanation; never rewrite under worker authorship. Publish valid text through an approved provider-native non-blocking inline discussion surface without requiring writers to know diff positions. Publish or refresh the ordinary top-level `### Implementation Rationale` summary/index before requesting human review. When safe inline discussion is unavailable or would create an unresolved merge blocker, put `path:symbol/line` plus worker rationale there. Publish no filler. Do not use the deprecated `code-change rationale` evidence command. If a required write fails, report it, retain the rendered body, and do not claim review handoff complete; never convert comments or failure into authority.")
+	steps = append(steps, "6. Obtain provider-native policy-complete review and provider-selected current required-check conclusions for the exact head. Do not synchronize them into typed workflow comments.")
+	steps = append(steps, "7. Run `issue-spec merge-check --repo "+repo+" (--issue <n> | --proposal <n> [--design <n>] [--implement <n>]) --change-id <id> --head <exact-head> --json`. Treat output as a read-only current decision, never saved proof; it never reads the Implementation Rationale discussion.")
+	steps = append(steps, "8. Merge only with `issue-spec code-change merge` using the same selected scope and caller-observed `--expected-head`. The command recollects and reevaluates fresh authority and the provider atomically validates its complete token.")
+	steps = append(steps, "9. Freshly observe merged state and retry idempotent selected-Issue reconciliation independently if bookkeeping fails.")
+	steps = append(steps, "10. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
 	return strings.Join(steps, "\n") + "\n"
 }

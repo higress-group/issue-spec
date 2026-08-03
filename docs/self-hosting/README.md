@@ -48,9 +48,10 @@ server ambient source credentials.
 ### Issues keep the full decision history
 
 Proposal, design, and implementation issues carry the current artifact in the
-issue body. SPEC, QUESTION, TASK, PROCESS, REVIEW, and VERIFY records are typed
-comments in the same timeline. Ordinary human comments remain available for
-discussion and notifications.
+issue body. SPEC, QUESTION, TASK, and PROCESS records are active typed comments
+in the same timeline. Historical REVIEW and VERIFY records remain visible for
+audit only. Ordinary human comments remain available for discussion and
+notifications.
 
 ![Issue detail with typed workflow comments](assets/self-hosted-issue-detail.png)
 
@@ -242,17 +243,34 @@ delete only the unwanted active reference, and retry—never guess or silently
 overwrite. GitHub keeps its existing PR workflow; self-hosted review, merge,
 and closure stay with the selected code provider.
 
-After independent review converges, the reviewer runs `review sync` with the
-Implement Issue, exact active revision, stable REVIEW id, and its own
-agent/session identity. A clean provider review still produces a stable done
-REVIEW completion with zero findings. Link the final REVIEW explicitly to its
-review PROCESS, every covered change-bearing PROCESS, and every covered active
-SPEC. Never fabricate findings, hand-edit the completion stamp, infer links
-from prose IDs, or substitute a generic approval framework. Status and final
-verify share the same exact-current completion validator and do not refresh
-REVIEW. Archive reads this completion only for required implementation
-`code_change` merge review; it never mutates REVIEW or applies the completion
-to `archive_change`.
+The actual direct-path writer or each managed PROCESS worker returns zero or
+more line-rationale drafts for non-obvious decisions: repository-relative path,
+stable symbol plus changed-line anchor, and why/tradeoff/risk, with no secret,
+raw payload, or credential. Writers need no provider permission and never guess
+final diff positions. After the exact head is integrated and pushed, the
+coordinator validates anchors, continued applicability, and sensitive-data
+absence, then publishes unchanged worker text as non-blocking provider-native
+inline discussion. Invalid, stale, or sensitive drafts return to the writer or
+are dropped with explanation, never rewritten under worker authorship. There is
+no quota; obvious code produces no inline comment.
+
+Before human review, publish or refresh the ordinary top-level `###
+Implementation Rationale` discussion as summary and inline-comment index. If
+non-blocking inline discussion is unsupported or would create an unresolved
+merge blocker, keep `path:symbol/line` plus the worker rationale in this
+top-level discussion and do not create the blocking thread. These discussions
+are mutable review UX with no typed carrier, rationale ID, PROCESS/SPEC binding,
+evidence field, gate, or merge effect. Report required provider write failures
+and retain the rendered body; do not claim review handoff is complete, but
+never feed the comments or failure to `merge-check`.
+
+After provider-native review and configured checks converge at the exact head,
+run read-only `merge-check`; do not synchronize authority into REVIEW/VERIFY,
+rationale, or PROCESS state. Merge only through `code-change merge
+--expected-head`, which recollects fresh authority and passes the complete
+provider token to conditional merge. Ordinary GitHub REST read-then-write
+remains fail-closed. Reconcile the selected Issue set idempotently only after
+freshly observing provider merge.
 
 For a provider-neutral integration plan, operator registry example, bridge
 scaffold, code-evidence mapping, and Jira-like work-item projection pattern,

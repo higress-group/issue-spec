@@ -79,20 +79,21 @@ func TestRepositoryProjectionLifecycleProgressAndAnomalies(t *testing.T) {
 	if got := requireCard(t, page.Cards, "alpha").Lifecycle; got != LifecycleClosed {
 		t.Fatalf("placeholder PR incorrectly completed lifecycle: %s", got)
 	}
-	// A completed projection accepts the semantic PR evidence field without
-	// imposing a GitHub-specific /pull/ URL shape on external code providers.
+	// Historical VERIFY closure evidence remains readable but is inert. Without
+	// a persisted provider merge observation, closing every phase can report
+	// only closed; it cannot reconstruct completed authority.
 	env.updateTyped(t, env.scope, "VERIFY-001", "done", []string{"https://code.example/acme/widgets/-/merge_requests/42"})
 	page, err = env.service.RepositoryBoard(t.Context(), authz.Authenticated(env.principal), env.scope, ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := requireCard(t, page.Cards, "alpha").Lifecycle; got != LifecycleCompleted {
-		t.Fatalf("verified closed lifecycle = %s", got)
+	if got := requireCard(t, page.Cards, "alpha").Lifecycle; got != LifecycleClosed {
+		t.Fatalf("legacy VERIFY/closure changed closed lifecycle = %s", got)
 	}
 
 	filtered, err := env.service.RepositoryBoard(t.Context(), authz.Authenticated(env.principal), env.scope,
 		ListOptions{Stage: StageImplement, Lifecycle: LifecycleCompleted, Anomaly: AnomalyMissingRequiredLinks, Page: 1, PerPage: 1})
-	if err != nil || filtered.Total != 1 || len(filtered.Cards) != 1 || filtered.Cards[0].ChangeKey != "alpha" {
+	if err != nil || filtered.Total != 0 || len(filtered.Cards) != 0 {
 		t.Fatalf("filtered = %+v, %v", filtered, err)
 	}
 	emptyFiltered, err := env.service.RepositoryBoard(t.Context(), authz.Authenticated(env.principal), env.scope,

@@ -43,25 +43,20 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/12#issue
 
 ### Requirement: catch malformed typed comments before archive
 
-Typed-comment generation, upsert, workflow validation, and phase status MUST reject or report malformed typed artifacts before their owning lifecycle command consumes them. Final verification MUST validate malformed identity and representation data only when that data is part of the minimal exact-current evidence snapshot, and MUST NOT reconstruct broad Archive-readiness linting. Legacy Archive compatibility MAY diagnose malformed historical input but MUST NOT restore Archive as a readiness gate.
+Typed-comment generation, upsert, workflow validation, and phase status MUST reject or report malformed selected active planning artifacts before their owning planning command consumes them; merge-check and conditional merge MUST NOT parse, reconstruct, or be blocked by malformed historical REVIEW, VERIFY, receipt, rationale, finalization, or Archive data, while explicit audit reads MAY diagnose that inert history.
 
-#### Scenario: authoring rejects malformed canonical artifacts
+#### Scenario: selected planning authoring remains canonical
 
-- **WHEN** a caller creates or updates a malformed SPEC, TASK, PROCESS, REVIEW, or VERIFY artifact
-- **THEN** the owning authoring or phase-status command MUST fail with actionable canonical diagnostics
+- **WHEN** a caller creates or updates a selected SPEC, TASK, or PROCESS planning artifact
+- **THEN** the owning authoring or phase-status command rejects malformed canonical structure with actionable diagnostics
 
-#### Scenario: final verification stays minimal
+#### Scenario: legacy typed evidence is inert at merge
 
-- **WHEN** a malformed historical or unrelated typed comment is outside the active exact-current evidence set
-- **THEN** final verification MUST NOT add a broad Archive-style history audit
-
-#### Scenario: legacy archive input remains diagnostic only
-
-- **WHEN** already-started legacy Archive work reads malformed historical input during the compatibility window
-- **THEN** the CLI SHALL report deprecation and focused validation without creating an Archive readiness target
+- **WHEN** a malformed historical REVIEW or VERIFY comment remains on the change
+- **THEN** merge-check ignores it and uses only provider-native authority
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452507
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
 
 ### Requirement: provide an explicit noncanonical migration escape hatch
 
@@ -75,22 +70,18 @@ The CLI MUST provide an explicit migration escape hatch, such as `--allow-noncan
 #### Scenario: escape hatch preserves migration visibility
 
 - **WHEN** a caller uses the migration escape hatch to create or update a noncanonical typed comment
-- **THEN** the CLI SHALL make the noncanonical state visible in command output and later validation/status/verify diagnostics.
+- **THEN** the CLI SHALL make the noncanonical state visible in command output and later validation/planning-status diagnostics.
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/12#issuecomment-4850690808
 
 ### Requirement: generated skills direct agents to typed comment generators and validators
 
-Generated issue-spec skills and command guidance MUST instruct agents to use CLI typed-comment generators and validators instead of hand-writing raw SPEC, TASK, PROCESS, REVIEW, or VERIFY Markdown.
+Generated guidance MUST use canonical generators and validators for selected SPEC, TASK, PROCESS, and QUESTION planning artifacts, MUST direct final readiness to merge-check, and MUST NOT instruct agents to generate REVIEW, VERIFY, rationale evidence/carrier, receipt, or finalization comments. It MAY require one ordinary provider-native `### Implementation Rationale` discussion for human review only when the guidance explicitly keeps that discussion outside typed authoring and merge authority.
 
-#### Scenario: proposal guidance creates SPEC comments through the CLI
+#### Scenario: typed planning remains canonical without final verification artifacts
 
-- **WHEN** issue-spec generates or updates coordinator guidance for proposal work
-- **THEN** the guidance SHALL direct agents to generate and validate SPEC comments through the CLI before calling `comment upsert --type SPEC`.
+- **WHEN** generated guidance authors optional planning state or prepares merge readiness
+- **THEN** it validates selected planning comments and invokes merge-check instead of generating review or verification Markdown
 
-#### Scenario: non-SPEC typed comment guidance avoids raw Markdown drift
-
-- **WHEN** issue-spec generates or updates guidance for design, implementation, review, or verification work
-- **THEN** the guidance MUST direct agents to use available CLI templates or validators for TASK, PROCESS, REVIEW, and VERIFY comments rather than inventing raw Markdown shapes.
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/12#issuecomment-4850691991
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767

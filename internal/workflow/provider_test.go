@@ -53,3 +53,18 @@ func TestNewProviderPlanCapabilityMatrix(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderPlanPreservesMergeAuthorityGenerationAndBuild(t *testing.T) {
+	values := codereview.RequiredMergeAuthorityCapabilities()
+	description := codereview.ProviderDescription{ProviderKey: "code.example", Capabilities: values,
+		SemanticGeneration: codereview.MergeAuthorityGeneration, ProviderBuildIdentity: "bridge@sha256:0123"}
+	plan, err := NewProviderPlan(description, codereview.Capabilities{ProtocolVersion: codereview.ProtocolVersion,
+		SemanticGeneration: codereview.MergeAuthorityGeneration, ProviderBuildIdentity: "bridge@sha256:0123", Values: values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SemanticGeneration != codereview.MergeAuthorityGeneration || plan.ProviderBuildIdentity != "bridge@sha256:0123" ||
+		!plan.ReviewDecision || !plan.AuthoritativeCheckConclusion || !plan.MergeConditional {
+		t.Fatalf("provider plan = %+v", plan)
+	}
+}

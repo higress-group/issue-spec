@@ -131,7 +131,11 @@ func commandTestProvider(t *testing.T, mode string, limit int64, timeout time.Du
 	provider, err := NewCommandProvider(CommandConfig{Path: os.Args[0],
 		Args:        []string{"-test.run=^TestCommandProviderHelper$"},
 		Environment: []string{"ISSUE_SPEC_PROVIDER_HELPER=1", "ISSUE_SPEC_PROVIDER_MODE=" + mode},
-		MaxOutput:   limit, Timeout: timeout})
+		MaxOutput:   limit, Timeout: timeout, PrincipalMappingIdentity: "operators:test:v1",
+		PrincipalMappings: []PrincipalMapping{
+			{Provider: "code.example", StableID: "user:7", Principal: PrincipalIdentity{Realm: "people.example", StableID: "person:7"}},
+			{Provider: "code.example", StableID: "user:9", Principal: PrincipalIdentity{Realm: "people.example", StableID: "person:9"}},
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,8 +186,11 @@ func TestCommandProviderHelper(t *testing.T) {
 	switch request.Action {
 	case "capabilities":
 		values := []Capability{CapabilityEvidenceSnapshot, CapabilityChangeComment, CapabilityChangeCreate}
-		response["capabilities"] = Capabilities{ProtocolVersion: ProtocolVersion,
-			Values: values}
+		capabilities := Capabilities{ProtocolVersion: ProtocolVersion, Values: values}
+		if strings.HasPrefix(mode, "authority") {
+			capabilities = validMergeCapabilities()
+		}
+		response["capabilities"] = capabilities
 	case "snapshot":
 		var payload SnapshotRequest
 		_ = json.Unmarshal(request.Payload, &payload)
@@ -208,6 +215,15 @@ func TestCommandProviderHelper(t *testing.T) {
 			canonicalURL += "?access_token=secret"
 		}
 		response["mutation"] = MutationResult{Reference: payload.Reference, ExternalID: "comment-1", CanonicalURL: canonicalURL}
+	case "merge_snapshot":
+		var payload MergeSnapshotRequest
+		_ = json.Unmarshal(request.Payload, &payload)
+		response["merge_snapshot"] = validMergeSnapshot(payload)
+	case "merge_change":
+		var payload ConditionalMergeRequest
+		_ = json.Unmarshal(request.Payload, &payload)
+		response["merge"] = ConditionalMergeResult{Reference: payload.Reference, ExpectedHead: payload.ExpectedHead,
+			MergeID: "merge-42", MergedRevision: "merge789", CanonicalURL: "https://code.example/acme/widgets/change/42"}
 	default:
 		os.Exit(3)
 	}

@@ -14,7 +14,7 @@ Discovery order:
 2. Legacy `openspec/config.yaml` with schemas under `openspec/schemas/<schema>/schema.yaml`, only when no preferred issue-spec config exists.
 3. Built-in issue-spec workflow.
 
-Schema templates are resolved from the selected schema's `templates/` directory. Template paths must be relative, must not escape the schema template directory, and must exist before issue-spec uses them. Active proposal/design/implement content, SPEC/TASK/PROCESS/QUESTION/REVIEW/VERIFY typed comments, PR rationale, and review findings remain in GitHub issue-native storage. Legacy OpenSpec outputs such as `proposal.md`, `specs/**/*.md`, `tasks.md`, `review.md`, and `verify.md` are treated as storage mapping hints, not active files to write.
+Schema templates are resolved from the selected schema's `templates/` directory. Template paths must be relative, must not escape the schema template directory, and must exist before issue-spec uses them. Active proposal/design/implement content and SPEC/TASK/PROCESS/QUESTION typed comments remain in GitHub issue-native storage. Historical REVIEW/VERIFY comments, rationale, and findings remain readable audit data only. Legacy OpenSpec outputs such as `proposal.md`, `specs/**/*.md`, `tasks.md`, `review.md`, and `verify.md` are treated as storage mapping hints, not active files to write.
 
 Validate or inspect the selected workflow before writing artifacts:
 
@@ -23,7 +23,7 @@ issue-spec workflow validate --repo owner/repo --json
 issue-spec workflow which --repo owner/repo --json
 ```
 
-New durable specs default to `issue-spec/specs/<capability>/spec.md`. If `openspec/specs/<capability>/spec.md` already exists, archive can update that legacy durable spec and reports the compatibility path selection.
+New durable specs default to `issue-spec/specs/<capability>/spec.md`. If `openspec/specs/<capability>/spec.md` already exists, `durable-spec` can update that legacy durable spec and reports the compatibility path selection.
 
 ### HTML review authoring
 
@@ -39,7 +39,7 @@ When `html_review` is absent, `enabled` resolves to `true` for backward compatib
 
 With `enabled: false`, `issue-spec init` omits the projection checkpoints from generated skills, slash commands, and prompts, does not emit the embedded `human-review-projections.md` resource, and removes only that exact managed stale resource from an earlier enabled generation. Built-in Proposal, Design, and Implement issue bodies omit their Human Review Projection sections. Custom workflow templates and explicit `--body-file` content remain authoritative.
 
-This setting controls repository authoring guidance only. Typed SPEC, TASK, PROCESS, QUESTION, ANSWER, REVIEW, and VERIFY artifacts, independent implementation review, final verification, stored historical projection comments, HTML preview parsing/storage, and Web preview execution are unchanged.
+This setting controls repository authoring guidance only. Typed planning artifacts, stored historical REVIEW/VERIFY audit data, projection comments, HTML preview parsing/storage, and Web preview execution are unchanged. Provider-native review, configured checks, read-only merge-check, and conditional merge remain the sole merge authority.
 
 ### Preferred natural language
 
@@ -97,6 +97,8 @@ issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --su
 issue-spec issue close --repo owner/repo --issue 1 --json
 issue-spec issue reopen --repo owner/repo --issue 1 --json
 
+Design and Implement creation validate the explicit predecessor phase and change lineage, but do not gate authoring on optional SPEC, QUESTION, TASK, PROCESS, or relationship state. Planning status validates selected artifacts that exist; it does not require omitted optional artifact types.
+
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
 issue-spec comment edit --repo owner/repo --comment-id 123 --body-file reply.md --json
 issue-spec comment delete --repo owner/repo --comment-id 123 --json
@@ -145,18 +147,9 @@ caller-provided `--id` as the ANSWER identity.
 issue-spec --profile team code-change attach --repo acme/widgets --implement 3 --change-id 42 --revision abc123 [--refresh --expected-version 7] [--json]
 issue-spec --profile team code-change link-process --repo acme/widgets --implement 3 --process PROCESS-3001 --expected-version 5 [--json]
 
-issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-3001 --spec SPEC-1001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
-issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-3001 --pr 4
-issue-spec pr link-issues --repo owner/repo --pr 4 --proposal 1 --design 2 --implement 3
-
-issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-3001
-issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-3001 --spec SPEC-1001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
-issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding FINDING-001 --process PROCESS-3001 --status resolved --body "Fixed in the latest patch."
-
-issue-spec verify --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --durable-spec issue-spec/specs/issue-spec-cli/spec.md
-
-issue-spec archive durable-spec --repo owner/repo --proposal 1 --capability issue-spec-cli
-issue-spec archive durable-spec --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --capability issue-spec-cli --create-pr --branch issue-spec/durable-spec-issue-spec-cli --close-issues
+issue-spec workflow preflight --repo owner/repo --release-set 2.0.0 --server-release 2.0.0 --runner-release 2.0.0 --generated-digest sha256:... --provider-build bridge@sha256:... --json
+issue-spec merge-check --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --json
+issue-spec code-change merge --repo owner/repo --proposal 1 --design 2 --implement 3 --change-id 42 --expected-head abc123 --json
 
 issue-spec runner preflight --repo owner/repo --runner login
 issue-spec runner poll --repo owner/repo --runner login --once --dry-run
@@ -245,40 +238,23 @@ delete only the unwanted active reference with the corresponding
 `DELETE .../references/{reference-id}`, then retry. Never guess a winner or
 silently overwrite another active relationship.
 
-After the independent provider review converges, its review agent synchronizes
-the exact active revision under its own identity:
+After provider-native review and configured checks converge, evaluate the exact
+active revision without synchronizing it into Issue comments:
 
 ```bash
-issue-spec --profile team review sync \
+issue-spec --profile team merge-check \
   --repo acme/widgets \
-  --implement 3 \
-  --revision abc123 \
-  --process PROCESS-3002 \
-  --id REVIEW-3001 \
-  --agent reviewer \
+  --proposal 1 --design 2 --implement 3 \
+  --change-id 42 --head abc123 \
   --json
 ```
 
-A successful self-hosted sync persists and reloads provider facts, then writes
-one stable done REVIEW completion even when the provider reports zero findings.
-The final sync itself publishes the REVIEW owner's complete relationship set:
-its review PROCESS, every covered change-bearing PROCESS, and every covered
-active SPEC. Do not follow it with peer mutations, fabricate findings,
-hand-edit the completion stamp, infer links from IDs in prose, or substitute a
-generic approval framework. `status`
-and final `verify` validate the same exact provider/repository/change,
-reference-version, revision, freshness, links, and reviewer-independence
-carrier without refreshing REVIEW.
-
-During self-hosted closure, `archive` reads that existing implementation REVIEW
-completion only when the implementation `code_change` merge policy requires
-review. It does not create, update, refresh, or add archive-specific REVIEW
-state, and it never applies implementation completion to `archive_change`.
-
-GitHub profiles continue to use `pr link-process`, GitHub PR review and closing
-links, and the existing durable archive path. Self-hosted review, merge, and
-change closure remain on the selected code provider; the CLI does not route
-them through GitHub PR endpoints.
+`merge-check` is a read-only current decision: it writes no REVIEW/VERIFY,
+evidence, rationale, links, receipts, or lifecycle state. Merge only with
+`code-change merge --expected-head`, which recollects authority and passes the
+provider-issued complete token to conditional merge. Ordinary GitHub REST
+read-then-write remains fail-closed. After freshly observing merged state,
+reconcile exactly the selected Issue set idempotently.
 
 `comment create` writes an ordinary issue timeline comment through the selected
 hosted GitHub or self-hosted REST issue backend. It accepts `--body-file -` for
@@ -326,14 +302,14 @@ combined with `--include-body` for explicit audit detail. `--active-only` and
 
 ## Canonical Typed Comments
 
-Typed comments carry requirements, tasks, process ownership, review, and verification evidence across coordinator handoffs. Instead of hand-writing raw Markdown, use `issue-spec comment generate` to render canonical bodies from structured JSON, then pipe the output straight into `comment upsert`:
+Typed comments carry requirements, tasks, and optional implementation ownership across coordinator handoffs. Instead of hand-writing raw Markdown, use `issue-spec comment generate` to render canonical bodies from structured JSON, then pipe the output straight into `comment upsert`:
 
 ```bash
 issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json \
   | issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file -
 ```
 
-`comment generate` writes a complete typed-comment Markdown body (marker + visible header + canonical content) to stdout and never touches the network. The same command family renders `TASK`, `PROCESS`, `REVIEW`, and `VERIFY` bodies with type-specific JSON shapes.
+`comment generate` writes a complete typed-comment Markdown body (marker + visible header + canonical content) to stdout and never touches the network. The command family renders `SPEC`, `TASK`, and `PROCESS` bodies with type-specific JSON shapes; REVIEW and VERIFY generation has been removed.
 
 ### SPEC generator input JSON
 
@@ -409,76 +385,36 @@ issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process P
 
 The assigned implementation worker does not invoke `complete` or `integrate`. It returns a bounded handoff containing the exact result commit, focused-test results, and, when used, a sealed result receipt. The Coordinator supplies its owner token and runs `workspace complete --result-file`. That command validates the exact assignment id, digest, generation, schema, base/result revisions, one-commit/DCO/ownership Git contract, changed paths, and required tests before recording the result commit and advancing the workspace lifecycle.
 
-For every implementation or review role assignment, `design_context` is required and covered by the portable assignment digest. It contains the canonical Design `source_url`, fixed `read_mode: complete-issue-body`, fixed `conflict_policy: design-authoritative-stop`, and the Coordinator-authored `invariant`, `applicable_decisions`, `implementation_direction`, `must_preserve`, `must_not`, and `minimum_verification` fields. The workspace compiler derives the Design URL from the current Implement issue's canonical predecessor chain and fails closed on a missing, ambiguous, or mismatched source. It emits the structured values without sorting, summarizing, or reinterpreting them.
+For every implementation role assignment, `design_context` is required and covered by the portable assignment digest. It contains the canonical Design `source_url`, fixed `read_mode: complete-issue-body`, fixed `conflict_policy: design-authoritative-stop`, and the Coordinator-authored `invariant`, `applicable_decisions`, `implementation_direction`, `must_preserve`, `must_not`, and `minimum_verification` fields. The workspace compiler derives the Design URL from the current Implement issue's canonical predecessor chain and fails closed on a missing, ambiguous, or mismatched source. It emits the structured values without sorting, summarizing, or reinterpreting them.
 
 Before changing or reviewing code, the assigned role reads the complete Design issue body with `issue-spec read issue --repo owner/repo --issue <design_context.source_url>` without comments, timeline, history, or gate expansion. If that body conflicts with the structured projection, the role stops and reports the conflict. Runtime-specific session IDs are not collected or passed as Design authority, audit metadata, or correctness inputs.
 
-Generated guidance follows the same bounded read model. Coordinator guidance uses `status`/`verify --summary`, structured detail actions, exact `comment get`, filtered lists, sealed assignments, and reconcile checkpoints; full output remains a discoverable compatibility/debug path. Implementation, review, and verification role sections contain only their sealed assignment, authoritative Design read, owned invariant/work, focused checks, and bounded result responsibilities. Complete proposal/Design copies, full DAGs, link matrices, closure/archive policy, and provider-routing policy stay out of role sections. A repeated rule is removed only when a delivered command, validator, schema, or retained explicit stop replaces it. Deterministic regression budgets count UTF-8 bytes, headings/fields, and instruction-array items; they never use a model tokenizer or justify removing an uncovered safety rule.
+Generated guidance follows the same bounded read model. Coordinator guidance selects optional planning by risk, uses exact `comment get` and filtered lists, dispatches sealed implementation assignments when needed, runs immutable release preflight, and then follows provider review/checks, read-only `merge-check`, conditional merge, and post-merge reconciliation. The implementation role section contains only its sealed assignment, authoritative Design read, owned invariant/work, focused checks, and bounded result responsibilities. Complete proposal/Design copies, full DAGs, link matrices, closure/archive policy, and provider-routing policy stay out of role sections. Deterministic regression budgets count UTF-8 bytes, headings/fields, and instruction-array items; they never use a model tokenizer or justify removing an uncovered safety rule.
 
-Compatibility is deliberately asymmetric. A pre-D14 version-1 implementation or review assignment without `design_context` remains readable in an existing local registry or PROCESS workspace so inspection, cleanup, and recovery do not declare the registry corrupt. That historical object is read-only compatibility evidence: strict issuance and redispatch digests, assignment-file and packet parsing, and new implementation/review role submissions still reject it. The CLI never synthesizes missing Design context.
+Compatibility is deliberately asymmetric. A pre-D14 version-1 assignment without `design_context` remains readable in an existing local registry or PROCESS workspace so inspection, cleanup, and recovery do not declare the registry corrupt. That historical object is read-only compatibility evidence: strict implementation issuance, redispatch digests, assignment-file parsing, and new implementation submissions still reject it. The CLI never synthesizes missing Design context.
 
 An imported result file is not an identity or provenance trust root. Its writer, subject, logical agent name, credentials, and assurance labels are informational and cannot create accepted implementation receipt authority or satisfy a non-Coordinator/independence gate. Unverified imports and reserved assurance values may be structurally validated, but the resulting PROCESS workspace contains no accepted-implementation-receipt marker. Runtime-attested Coordinator import is explicitly deferred until a real runtime attestation trust root exists; there is no signer, secret, or caller-named attestor interface in this workflow.
 
-The existing narrow direct role-owned publication commands remain available for rationale, review, and verification compatibility. For example, the verification role invokes `verify submit --agent Verifier` against its exact assignment and snapshot. The logical agent field remains `self-reported` metadata; runtime-specific session fields are not collected. Coordinator-side owner-token import is not part of `verify submit`.
+Legacy rationale, review publication/synchronization, verification submission/finalization, and Archive commands return `deprecated_workflow` before mutation. Their historical artifacts remain explicit audit-read data and never become merge authority.
 
-`change-bearing` uses a writable owned branch. `review` and `verification` use detached immutable workflow snapshots: dirty state fails closed, but the CLI does not create an OS-enforced per-child sandbox. `orchestration` records lifecycle bookkeeping without a checkout. `external` uses mode `none`; completion and the final gate require consumed provider-neutral exact-revision evidence.
+The replacement for review explanation is not another issue-spec evidence command. The actual direct-path writer or each managed PROCESS worker owns zero or more line-rationale drafts for non-obvious decisions, identified by repository-relative path, stable symbol plus changed-line anchor, and why/tradeoff/risk—not a provider diff position—and containing no secret, raw payload, or credential. After the exact head is integrated and pushed, the Coordinator validates and maps those anchors, continued applicability, and sensitive-data absence, then publishes unchanged worker-authored text as non-blocking inline provider discussions. Invalid, stale, or sensitive drafts return to the writer or are dropped with explanation, never Coordinator-rewritten under worker authorship. The ordinary top-level `### Implementation Rationale` discussion summarizes and indexes them. If safe inline discussion is unavailable or would create an unresolved merge blocker, it instead preserves `path:symbol/line` plus the worker text in that top-level discussion. Obvious code creates no draft or quota. These discussions have no marker, rationale ID, typed carrier, PROCESS/SPEC binding, evidence field, gate, or merge effect. A required provider write failure is reported with the rendered body and leaves the human-review handoff incomplete, while `merge-check` and conditional merge remain independent.
+
+`change-bearing` uses a writable owned branch. Historical `review` and `verification` execution classes remain parseable for audit but generation and workspace mutation reject them. `orchestration` records lifecycle bookkeeping without a checkout. `external` uses mode `none`. Their completion state is implementation bookkeeping and never a merge gate.
 
 Runner commands never carry a PROCESS selector. The runner launches exactly one ACPX coordinator and keeps its cwd and primary sandbox workspace at the public session clone. The coordinator selects a ready PROCESS from the typed DAG and invokes the workspace CLI. Runner mode supplies trusted session-local defaults through `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` and `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT`; a standalone coordinator passes explicit roots.
 
-After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors a result commit, runs focused tests, seals an optional receipt, and returns that bounded handoff. The coordinator revalidates the exact Git result while running `complete` and `integrate` from its unchanged session clone before synchronizing status and cleanup; importing the receipt does not attest who produced it. Verification keeps its direct role-owned `verify submit` compatibility path, which validates the exact snapshot and required evidence before publishing the accepted VERIFY comment without a Coordinator-owned sidecar import.
+After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors a result commit, runs focused tests, seals an optional receipt, and returns that bounded handoff. The coordinator revalidates the exact Git result while running `complete` and `integrate` from its unchanged session clone before synchronizing status and cleanup; importing the receipt does not attest who produced it. These implementation controls never become review, check, or merge authority.
 
 After runner resume or restart, the top-level runner recovers only the ACPX/session job. From the unchanged session clone, the coordinator owns the PROCESS lifecycle: it uses `inspect` or `reconcile` on the exact lease before `complete` and `integrate`, then invokes owner-token cleanup only after an explicit integration or retention decision. Top-level runner session-clone retention calls `git worktree list` and fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails. It does not own, persist, or retry child PROCESS cleanup.
 
 `workflow workspace cleanup` is always an explicit owner-token-authorized destructive operation. It can remove unintegrated change-bearing work and does not decide or enforce integration/retention eligibility for its caller, so invoke it only after making that decision.
 
-## Accepted receipt projection
+## Historical receipt audit
 
-`workflow reconcile --projection` compiles already-accepted role receipt references into the existing deterministic transition/link plan and checkpoint engine:
-
-```bash
-issue-spec workflow reconcile \
-  --projection receipt-projection.json \
-  --allow-nonatomic \
-  --checkpoint .issue-spec/reconcile/receipt-projection.json \
-  --json
-```
-
-The version-1 projection is deliberately identity-only. It accepts no receipt content, subject revision, provenance, assurance, arbitrary body, or provider mutation:
-
-```json
-{
-  "version": 1,
-  "repo": "owner/repo",
-  "hostname": "github.com",
-  "proposal": 101,
-  "issue": 103,
-  "accepted_receipts": [
-    {
-      "role": "review",
-      "carrier": {"type": "REVIEW", "id": "REVIEW-001"},
-      "receipt_id": "receipt-review-1",
-      "receipt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "generation": 1,
-      "lifecycle": [
-        {"target": {"type": "REVIEW", "id": "REVIEW-001"}, "status": "done"}
-      ],
-      "coverage_targets": [
-        {"type": "PROCESS", "id": "PROCESS-002"},
-        {"type": "SPEC", "id": "SPEC-001"}
-      ],
-      "current_targets": [
-        {"type": "PROCESS", "id": "PROCESS-002"}
-      ]
-    }
-  ]
-}
-```
-
-Before any write, reconcile observes the carrier's compact immutable accepted-receipt marker and requires its role, receipt id, digest, assignment generation, and existing `done` carrier status to match exactly. The single lifecycle entry is therefore an assertion, not permission to transition the carrier: a projection cannot complete, supersede, downgrade, or reopen either the carrier or a related `PROCESS`/`TASK`. Review carriers are `REVIEW`, verification carriers are `VERIFY`, and implementation carriers are `PROCESS`. Implementation projection currently fails closed until the PROCESS contains the issue-native accepted-implementation-receipt marker; workspace assignment/result state is not a substitute.
-
-Relationship types are fixed: implementation coverage targets are `TASK`/`SPEC` and current targets are `TASK`; review and verification coverage targets are `PROCESS`/`SPEC` and current targets are `PROCESS`. Version 1 accepts no caller-supplied provider evidence URL; rationale, findings, and checks remain only in role-owned carriers or provider-authoritative observations. Production reconciliation binds the declared proposal to its canonical proposal/design/implementation issues, derives the exact authorized target IDs from the accepted carrier's immutable identity, SpecRefs, and managed assignment coverage, and resolves exactly one provider comment URL for each ID on the corresponding bound issue. Missing or duplicate carriers, a wrong change or issue, an unauthorized same-type ID, and a mismatched URL all fail closed before any write. The resolved plan records the exact authority representation digests, assignment identity, and provider URLs, so a retry also fails closed if authority becomes stale. Reconcile adds only the missing reverse link to the mutable target; accepted-carrier bytes are never rewritten, and carriers do not need preseeded target URLs.
-
-Non-atomic provider fallback is disabled by default. GitHub projection writes require an explicit `--allow-nonatomic` invocation (or top-level `"allow_nonatomic": true` in the projection). The compiled plan records that policy in its digest. Each fallback mutation performs a fresh exact observation, compares the representation digest with the body used to compute the mutation, and requires an exact post-write observation before checkpointing. Reusing the same compiled plan and checkpoint therefore resumes the existing digest-bound retry path; the result remains marked non-atomic because a backend without conditional mutation cannot eliminate the final write race.
+Previously stored accepted-receipt markers and REVIEW/VERIFY carriers remain
+available through explicit comment and receipt inspection. The removed
+`workflow reconcile --projection` writer cannot project them into lifecycle or
+relationship state, and no receipt can contribute to merge readiness.
 
 ### Canonical validation by default
 
@@ -488,14 +424,14 @@ Non-atomic provider fallback is disabled by default. GitHub projection writes re
 - **TASK** — rejects bodies missing a `## Task:` heading or the `### Execution Planning` section.
 - **PROCESS** — rejects bodies missing a `## Process:` heading or a `### Parent TASK` section.
 
-Serial-chain `### Handoff` evidence is not required at write time (only chains need it, which is not knowable per-comment at upsert) — it is enforced at `verify` instead. One shared validator in `internal/model` is reused by `comment upsert`, `comment list`, `status`, `verify`, and `archive`, operating on the logical body after marker/header stripping so raw generated bodies and already-wrapped bodies behave identically.
+Serial-chain `### Handoff` evidence is not required at write time (only chains need it, which is not knowable per-comment at upsert). Planning status evaluates it when the Implement gate is requested. One shared validator in `internal/model` is reused by `comment upsert`, `comment list`, and planning status, operating on the logical body after marker/header stripping so raw generated bodies and already-wrapped bodies behave identically.
 
 ### Migration escape hatch
 
 `--allow-noncanonical` is a **write-time migration bypass only**. It lets you write a malformed SPEC body for staged migration, but it does **not** create durable approval:
 
 - The write is marked `noncanonical` in command output.
-- `comment list`, `status`, `verify`, and archive readiness recompute canonical validity from the remote body and keep reporting or blocking on the malformed active comment.
-- `verify` and durable-spec archive fail before archive creation while an active SPEC comment remains malformed.
+- `comment list`, planning `status`, and `durable-spec check` recompute canonical validity from the remote body and keep reporting or blocking on the malformed active comment.
+- `durable-spec check` fails while an active SPEC comment remains malformed.
 
 The correct long-term fix is to regenerate the comment into canonical shape with `comment generate`, or supersede it if it is no longer active.

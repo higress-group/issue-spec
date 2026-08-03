@@ -199,6 +199,21 @@ func (s *Store) Get(ctx context.Context, workspaceID string) (LocalLease, bool, 
 	return result, found, err
 }
 
+// peek reads an atomically published registry snapshot without acquiring the
+// writer lock. It is reserved for pre-mutation deprecation checks where even a
+// lock-file ownership update would violate the zero-write contract.
+func (s *Store) peek(workspaceID string) (LocalLease, bool, error) {
+	if s == nil || s.path == "" {
+		return LocalLease{}, false, errors.New("process workspace store is not open")
+	}
+	registry, err := loadRegistry(s.path)
+	if err != nil {
+		return LocalLease{}, false, err
+	}
+	lease, found := registry.Leases[workspaceID]
+	return cloneLocalLease(lease), found, nil
+}
+
 func (s *Store) List(ctx context.Context) ([]LocalLease, error) {
 	registry, err := s.Load(ctx)
 	if err != nil {
@@ -285,6 +300,9 @@ func (s *Store) recoverAssignment(ctx context.Context, workspaceID string, value
 
 func (s *Store) bindAssignment(ctx context.Context, workspaceID string, value assignment.Assignment, redispatch bool,
 	expectedAssignmentGeneration *uint64, recovery *AssignmentBinding) (LocalLease, error) {
+	if value.Role != assignment.RoleImplementation {
+		return LocalLease{}, fmt.Errorf("%w: only change-bearing implementation assignments may be persisted", ErrDeprecatedWorkflow)
+	}
 	bindingValue, err := NewAssignmentBinding(value, 1)
 	if err != nil {
 		return LocalLease{}, err

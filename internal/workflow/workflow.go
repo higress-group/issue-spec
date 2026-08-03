@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,9 +9,7 @@ import (
 	"sort"
 	"strings"
 	"text/template"
-	"time"
 
-	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/durable"
 	"gopkg.in/yaml.v3"
@@ -93,25 +90,23 @@ func (c *WorkflowContext) UnmarshalYAML(value *yaml.Node) error {
 // executable, arguments, environment, or credential source can only be
 // registered in trusted operator configuration and is rejected here.
 type ExternalCodeConfig struct {
-	ProviderKey string               `json:"provider_key" yaml:"provider_key"`
-	Evidence    EvidencePolicyConfig `json:"evidence" yaml:"evidence"`
+	ProviderKey string             `json:"provider_key" yaml:"provider_key"`
+	Merge       *MergePolicyConfig `json:"merge,omitempty" yaml:"merge,omitempty"`
 }
 
-type EvidencePolicyConfig struct {
-	Required       []string          `json:"required,omitempty" yaml:"required"`
-	RequiredChecks []string          `json:"required_checks,omitempty" yaml:"required_checks"`
-	Freshness      map[string]string `json:"freshness,omitempty" yaml:"freshness"`
-	SyncBefore     []string          `json:"sync_before,omitempty" yaml:"sync_before"`
+// MergePolicyConfig contains only stable merge inputs. Executables,
+// credentials, tokens, actor mappings, and saved decisions are operator-owned
+// and cannot be supplied by repository configuration.
+type MergePolicyConfig struct {
+	RequiredChecks []MergeRequiredCheckConfig `json:"required_checks" yaml:"required_checks"`
 }
 
-func (c EvidencePolicyConfig) SynchronizesBefore(stage string) bool {
-	want := strings.ToLower(strings.TrimSpace(stage))
-	for _, configured := range c.SyncBefore {
-		if strings.ToLower(strings.TrimSpace(configured)) == want {
-			return true
-		}
-	}
-	return false
+type MergeRequiredCheckConfig struct {
+	Source      string `json:"source" yaml:"source"`
+	Provider    string `json:"provider" yaml:"provider"`
+	Key         string `json:"key" yaml:"key"`
+	Owner       string `json:"owner" yaml:"owner"`
+	DisplayName string `json:"display_name,omitempty" yaml:"display_name"`
 }
 
 type Source struct {
@@ -273,6 +268,30 @@ func (p Plan) HTMLReviewEnabled() bool {
 	return p.Config.HTMLReview.Enabled
 }
 
+// MergeAuthorityConfiguration returns the configured provider-native check
+// identities. It never maps the legacy evidence gate by name.
+func (p Plan) MergeAuthorityConfiguration() (string, []codereview.CheckIdentity, error) {
+	if p.Config.ExternalCode == nil || p.Config.ExternalCode.Merge == nil {
+		return "", nil, errors.New("external_code.merge is required for minimal merge authority")
+	}
+	provider := strings.TrimSpace(p.Config.ExternalCode.ProviderKey)
+	checks := make([]codereview.CheckIdentity, 0, len(p.Config.ExternalCode.Merge.RequiredChecks))
+	for _, configured := range p.Config.ExternalCode.Merge.RequiredChecks {
+		checks = append(checks, codereview.CheckIdentity{Provider: strings.TrimSpace(configured.Provider),
+			Key: strings.TrimSpace(configured.Key), Owner: strings.TrimSpace(configured.Owner),
+			DisplayName: strings.TrimSpace(configured.DisplayName)})
+	}
+	if len(checks) == 0 {
+		return "", nil, errors.New("external_code.merge.required_checks must not be empty")
+	}
+	for _, check := range checks {
+		if check.Validate() != nil || check.Provider != provider {
+			return "", nil, errors.New("external_code.merge.required_checks contains an invalid provider-native identity")
+		}
+	}
+	return provider, checks, nil
+}
+
 func (p Plan) ArtifactForIssue(kind string) (Artifact, bool) {
 	want := strings.ToLower(strings.TrimSpace(kind))
 	for _, artifact := range p.Artifacts {
@@ -295,55 +314,6 @@ func (p Plan) ArtifactForComment(commentType string) (Artifact, bool) {
 		}
 	}
 	return Artifact{}, false
-}
-
-// ProjectVerifierPacket projects only declarative verification policy from the
-// resolved workflow. rules.verify is carried as data and is never converted to
-// a test or provider-check selector.
-func (p Plan) ProjectVerifierPacket() (assignment.VerifierPacket, error) {
-	guidance := &assignment.VerifierGuidance{}
-	if len(p.Config.Context) > 0 {
-		contextJSON, err := json.Marshal(p.Config.Context)
-		if err != nil {
-			return assignment.VerifierPacket{}, fmt.Errorf("marshal verifier workflow context: %w", err)
-		}
-		guidance.Context = contextJSON
-	}
-	if verifyRule, ok := p.Config.Rules["verify"]; ok {
-		ruleJSON, err := json.Marshal(verifyRule)
-		if err != nil {
-			return assignment.VerifierPacket{}, fmt.Errorf("marshal rules.verify guidance: %w", err)
-		}
-		guidance.RulesVerify = ruleJSON
-	}
-	for _, artifact := range p.Artifacts {
-		if normalizeArtifactType(artifact.Type, artifact.ID, artifact.Generates) != "VERIFY" {
-			continue
-		}
-		if instructions := strings.TrimSpace(artifact.Instructions); instructions != "" {
-			guidance.Instructions = append(guidance.Instructions, assignment.VerifierInstruction{
-				ArtifactID: artifact.ID,
-				Text:       instructions,
-			})
-		}
-	}
-	if len(guidance.Context) == 0 && len(guidance.RulesVerify) == 0 && len(guidance.Instructions) == 0 {
-		guidance = nil
-	}
-
-	packet := assignment.VerifierPacket{Guidance: guidance}
-	if p.Config.ExternalCode != nil {
-		for _, name := range p.Config.ExternalCode.Evidence.RequiredChecks {
-			packet.RequiredChecks = append(packet.RequiredChecks, assignment.CheckSelector{
-				Provider: strings.TrimSpace(p.Config.ExternalCode.ProviderKey),
-				Name:     strings.TrimSpace(name),
-			})
-		}
-	}
-	if err := packet.Validate(); err != nil {
-		return assignment.VerifierPacket{}, fmt.Errorf("project verifier packet: %w", err)
-	}
-	return packet, nil
 }
 
 func RenderTemplate(path string, data any) (string, error) {
@@ -478,54 +448,50 @@ func validateExternalCodeConfig(data []byte, config *ExternalCodeConfig) error {
 	if external.Kind != yaml.MappingNode || config == nil {
 		return errors.New("external_code must be a mapping")
 	}
-	if unknown := unknownMappingKeys(external, map[string]bool{"provider_key": true, "evidence": true}); len(unknown) > 0 {
+	if unknown := unknownMappingKeys(external, map[string]bool{"provider_key": true, "evidence": true, "merge": true}); len(unknown) > 0 {
 		return fmt.Errorf("external_code contains operator-only or unsupported fields: %s", strings.Join(unknown, ", "))
 	}
 	evidence := mappingValue(external, "evidence")
 	if evidence != nil {
-		if evidence.Kind != yaml.MappingNode {
-			return errors.New("external_code.evidence must be a mapping")
+		return errors.New("external_code.evidence is deprecated and non-authoritative; configure provider-native external_code.merge.required_checks")
+	}
+	merge := mappingValue(external, "merge")
+	if merge != nil {
+		if merge.Kind != yaml.MappingNode || config.Merge == nil {
+			return errors.New("external_code.merge must be a mapping")
 		}
-		if unknown := unknownMappingKeys(evidence, map[string]bool{"required": true, "required_checks": true, "freshness": true, "sync_before": true}); len(unknown) > 0 {
-			return fmt.Errorf("external_code.evidence contains unsupported fields: %s", strings.Join(unknown, ", "))
+		if unknown := unknownMappingKeys(merge, map[string]bool{"required_checks": true}); len(unknown) > 0 {
+			return fmt.Errorf("external_code.merge contains unsupported fields: %s", strings.Join(unknown, ", "))
+		}
+		if err := validateMergePolicy(config.ProviderKey, merge, config.Merge); err != nil {
+			return err
 		}
 	}
 	if err := codereview.ValidateProviderKey(config.ProviderKey); err != nil {
 		return fmt.Errorf("external_code.provider_key: %w", err)
 	}
-	allowed := map[string]bool{"change": true, "review": true, "check": true, "merge": true, "archive": true}
+	return nil
+}
+
+func validateMergePolicy(providerKey string, node *yaml.Node, config *MergePolicyConfig) error {
+	if mappingValue(node, "required_checks") == nil {
+		return errors.New("external_code.merge.required_checks is required")
+	}
+	if len(config.RequiredChecks) == 0 {
+		return errors.New("external_code.merge.required_checks must not be empty")
+	}
 	seen := map[string]bool{}
-	for _, value := range config.Evidence.Required {
-		value = strings.ToLower(strings.TrimSpace(value))
-		if !allowed[value] || seen[value] {
-			return fmt.Errorf("external_code.evidence.required contains invalid or duplicate kind %q", value)
+	for _, check := range config.RequiredChecks {
+		if check.Source != "provider" {
+			return errors.New("external_code.merge.required_checks[].source must be provider")
 		}
-		seen[value] = true
-	}
-	for kind, raw := range config.Evidence.Freshness {
-		if !allowed[strings.ToLower(strings.TrimSpace(kind))] {
-			return fmt.Errorf("external_code.evidence.freshness contains invalid kind %q", kind)
+		identity := codereview.CheckIdentity{Provider: strings.TrimSpace(check.Provider), Key: strings.TrimSpace(check.Key),
+			Owner: strings.TrimSpace(check.Owner), DisplayName: strings.TrimSpace(check.DisplayName)}
+		key := identity.Provider + "\x00" + identity.Key + "\x00" + identity.Owner
+		if identity.Validate() != nil || identity.Provider != strings.TrimSpace(providerKey) || seen[key] {
+			return errors.New("external_code.merge.required_checks contains an invalid or duplicate provider-native identity")
 		}
-		duration, err := time.ParseDuration(strings.TrimSpace(raw))
-		if err != nil || duration <= 0 || duration > 365*24*time.Hour {
-			return fmt.Errorf("external_code.evidence.freshness[%s] must be a positive duration no greater than one year", kind)
-		}
-	}
-	seenChecks := map[string]bool{}
-	for _, check := range config.Evidence.RequiredChecks {
-		check = strings.ToLower(strings.TrimSpace(check))
-		if check == "" || len(check) > 256 || seenChecks[check] {
-			return fmt.Errorf("external_code.evidence.required_checks contains an empty, duplicate, or overlong name")
-		}
-		seenChecks[check] = true
-	}
-	seenStages := map[string]bool{}
-	for _, configured := range config.Evidence.SyncBefore {
-		stage := strings.ToLower(strings.TrimSpace(configured))
-		if (stage != "verify" && stage != "runner") || seenStages[stage] {
-			return fmt.Errorf("external_code.evidence.sync_before contains invalid or duplicate stage %q", configured)
-		}
-		seenStages[stage] = true
+		seen[key] = true
 	}
 	return nil
 }
@@ -780,10 +746,6 @@ func validateArtifacts(templateDir string, artifacts []Artifact, source SourceKi
 		if !supportedArtifactType(artifact.Type) {
 			diagnostics = append(diagnostics, Diagnostic{Severity: "error", Code: "unsupported_artifact_type", Artifact: artifact.ID, Message: fmt.Sprintf("artifact %s has unsupported type %q", artifact.ID, artifact.Type)})
 		}
-		if artifact.Type == "archive" {
-			diagnostics = append(diagnostics, Diagnostic{Severity: "warning", Code: "legacy_archive_artifact_deprecated",
-				Artifact: artifact.ID, Message: "legacy archive artifacts are deprecated; use durable-spec preview, apply, check, and detail"})
-		}
 		for _, field := range artifact.UnknownFields {
 			severity := "warning"
 			code := "unknown_artifact_field"
@@ -956,7 +918,7 @@ func normalizeArtifactType(typ, id string, generates []string) string {
 
 func supportedArtifactType(typ string) bool {
 	switch typ {
-	case "proposal", "design", "implement", "SPEC", "QUESTION", "TASK", "PROCESS", "REVIEW", "VERIFY", "rationale", "finding", "archive":
+	case "proposal", "design", "implement", "SPEC", "QUESTION", "TASK", "PROCESS":
 		return true
 	default:
 		return false
@@ -964,11 +926,6 @@ func supportedArtifactType(typ string) bool {
 }
 
 func storageMappings(artifact Artifact) []string {
-	if artifact.Type == "archive" {
-		// The type remains recognizable for one compatibility window, but it no
-		// longer participates in normal issue-native or repository storage routes.
-		return nil
-	}
 	seen := map[string]bool{}
 	add := func(value string) {
 		if value != "" {
@@ -990,15 +947,6 @@ func storageMappings(artifact Artifact) []string {
 		add("TASK-typed-comment")
 	case "PROCESS":
 		add("PROCESS-typed-comment")
-	case "REVIEW":
-		add("REVIEW-typed-comment")
-		add("pr-review-comment")
-	case "VERIFY":
-		add("VERIFY-typed-comment")
-	case "rationale":
-		add("pr-rationale-comment")
-	case "finding":
-		add("pr-review-comment")
 	}
 	for _, output := range artifact.Generates {
 		lower := strings.ToLower(output)
@@ -1011,11 +959,9 @@ func storageMappings(artifact Artifact) []string {
 			add("implement-issue-body")
 		case strings.Contains(lower, "tasks"):
 			add("TASK-typed-comment")
-		case strings.Contains(lower, "review"):
-			add("REVIEW-typed-comment")
-			add("pr-review-comment")
-		case strings.Contains(lower, "verify"):
-			add("VERIFY-typed-comment")
+		case strings.Contains(lower, "review"), strings.Contains(lower, "verify"):
+			// Retired outputs remain recognizable during parsing but never map
+			// to an active storage route.
 		case strings.Contains(lower, "spec"):
 			add("SPEC-typed-comment")
 		}
@@ -1041,8 +987,6 @@ func builtinArtifacts() []Artifact {
 		{ID: "design", Type: "design", Storage: []string{"design-issue-body"}},
 		{ID: "tasks", Type: "TASK", Storage: []string{"TASK-typed-comment"}},
 		{ID: "process", Type: "PROCESS", Storage: []string{"PROCESS-typed-comment"}},
-		{ID: "review", Type: "REVIEW", Storage: []string{"REVIEW-typed-comment", "pr-review-comment"}},
-		{ID: "verify", Type: "VERIFY", Storage: []string{"VERIFY-typed-comment"}},
 	}
 	return artifacts
 }

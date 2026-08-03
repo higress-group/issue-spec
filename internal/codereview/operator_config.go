@@ -29,12 +29,14 @@ type operatorConfigFile struct {
 }
 
 type operatorCommandConfig struct {
-	Path        string              `json:"path"`
-	Args        []string            `json:"args,omitempty"`
-	Environment []string            `json:"environment,omitempty"`
-	Timeout     string              `json:"timeout,omitempty"`
-	MaxOutput   int64               `json:"max_output_bytes,omitempty"`
-	Description ProviderDescription `json:"description,omitempty"`
+	Path                     string              `json:"path"`
+	Args                     []string            `json:"args,omitempty"`
+	Environment              []string            `json:"environment,omitempty"`
+	Timeout                  string              `json:"timeout,omitempty"`
+	MaxOutput                int64               `json:"max_output_bytes,omitempty"`
+	PrincipalMappings        []PrincipalMapping  `json:"principal_mappings,omitempty"`
+	PrincipalMappingIdentity string              `json:"principal_mapping_identity,omitempty"`
+	Description              ProviderDescription `json:"description,omitempty"`
 }
 
 // LoadOperatorRegistryFromEnvironment constructs the immutable provider
@@ -97,7 +99,8 @@ func LoadOperatorRegistry(profileReference string) (Registry, string, error) {
 			}
 		}
 		provider, err := NewCommandProvider(CommandConfig{Path: entry.Path, Args: entry.Args,
-			Environment: entry.Environment, Timeout: timeout, MaxOutput: entry.MaxOutput})
+			Environment: entry.Environment, Timeout: timeout, MaxOutput: entry.MaxOutput,
+			PrincipalMappings: entry.PrincipalMappings, PrincipalMappingIdentity: entry.PrincipalMappingIdentity})
 		if err != nil {
 			return Registry{}, source, fmt.Errorf("read %s: provider %q: %w", OperatorProvidersFileEnv, key, err)
 		}
@@ -149,4 +152,16 @@ func (r Registry) ResolveMutationProvider(_ context.Context, key string) (Mutati
 		return nil, fmt.Errorf("%w: %s does not implement mutations", ErrCapabilityMissing, strings.TrimSpace(key))
 	}
 	return mutation, nil
+}
+
+func (r Registry) ResolveMergeAuthorityProvider(_ context.Context, key string) (MergeAuthorityProvider, error) {
+	provider, err := r.Lookup(key)
+	if err != nil {
+		return nil, err
+	}
+	authority, ok := provider.(MergeAuthorityProvider)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s does not implement merge authority", ErrCapabilityMissing, strings.TrimSpace(key))
+	}
+	return authority, nil
 }

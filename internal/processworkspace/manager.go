@@ -16,10 +16,11 @@ import (
 )
 
 var (
-	ErrWorkspaceConflict = errors.New("process workspace conflicts with Git or registry truth")
-	ErrWorkspaceDirty    = errors.New("process workspace is dirty")
-	ErrUnsafeWorkspace   = errors.New("unsafe process workspace path")
-	ErrIntegrationLocked = errors.New("process workspace integration coordination locked")
+	ErrWorkspaceConflict  = errors.New("process workspace conflicts with Git or registry truth")
+	ErrWorkspaceDirty     = errors.New("process workspace is dirty")
+	ErrUnsafeWorkspace    = errors.New("unsafe process workspace path")
+	ErrIntegrationLocked  = errors.New("process workspace integration coordination locked")
+	ErrDeprecatedWorkflow = errors.New("deprecated_workflow")
 )
 
 type Manager struct {
@@ -75,6 +76,9 @@ type AssignmentRequest struct {
 func (m *Manager) IssueAssignment(ctx context.Context, request AssignmentRequest) (Inspection, assignment.Packet, error) {
 	if m == nil || m.Store == nil {
 		return Inspection{}, assignment.Packet{}, errors.New("process workspace manager is not open")
+	}
+	if request.Assignment.Role != assignment.RoleImplementation {
+		return Inspection{}, assignment.Packet{}, fmt.Errorf("%w: only change-bearing implementation assignments may be issued", ErrDeprecatedWorkflow)
 	}
 	var updated LocalLease
 	var err error
@@ -185,6 +189,9 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (Inspecti
 		return Inspection{}, errors.New("process workspace manager is not open")
 	}
 	lease := request.Lease
+	if lease.Portable.ExecutionClass == ExecutionReview || lease.Portable.ExecutionClass == ExecutionVerification {
+		return Inspection{}, fmt.Errorf("%w: %s PROCESS workspaces are historical audit data only", ErrDeprecatedWorkflow, lease.Portable.ExecutionClass)
+	}
 	lease.IntegrationRoot = m.IntegrationRoot
 	lease.WorktreePath = ""
 	lease.Portable.State = StatePreparing

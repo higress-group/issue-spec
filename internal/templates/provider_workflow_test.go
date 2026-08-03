@@ -4,119 +4,96 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
-func TestProviderWorkflowKeepsRunnerEvidenceSynchronizationOptIn(t *testing.T) {
-	provider := workflow.ProviderPlan{
-		ProviderKey:      "code.example",
-		DisplayName:      "Example Code",
-		CodeChangeLabel:  "change",
-		EvidenceSnapshot: true,
+func minimalProviderPlan() workflow.ProviderPlan {
+	return workflow.ProviderPlan{
+		ProviderKey:                  "code.example",
+		DisplayName:                  "Example Code",
+		CodeChangeLabel:              "change",
+		SemanticGeneration:           codereview.MergeAuthorityGeneration,
+		ProviderBuildIdentity:        "example-bridge@sha256:0123456789abcdef",
+		ReviewDecision:               true,
+		AuthoritativeCheckConclusion: true,
+		MergeConditional:             true,
 	}
+}
 
+func TestProviderWorkflowDeclaresOneImmutableAuthoritySet(t *testing.T) {
+	provider := minimalProviderPlan()
 	for name, content := range map[string]string{
 		"notice": ProviderWorkflowNotice(provider),
 		"skill":  IssueSpecProviderSkill("owner/repo", provider).Content,
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, want := range []string{"before verification gates", "reads HEAD before and after fact collection",
-				"returns `revision_mismatch` without a snapshot", "Runner dispatch synchronization remains an explicit `external_code.evidence.sync_before` project-policy opt-in"} {
+			for _, want := range []string{
+				"minimal-merge-authority/v1", "example-bridge@sha256:0123456789abcdef",
+				"review-decision=true", "authoritative-check-conclusion=true", "merge-conditional=true",
+				"stable authenticated reviewers", "opaque provider-native keys", "provider-selected current conclusion",
+				"provider-issued complete authority token", "Ordinary GitHub REST read-then-write",
+			} {
 				if !strings.Contains(content, want) {
 					t.Fatalf("provider workflow missing %q:\n%s", want, content)
 				}
-			}
-			if strings.Contains(content, "before verify and runner gates") {
-				t.Fatalf("provider workflow still presents runner synchronization as a default:\n%s", content)
 			}
 		})
 	}
 }
 
-func TestProviderWorkflowAttachesExistingChangeWithoutGitHubAssumptions(t *testing.T) {
-	provider := workflow.ProviderPlan{ProviderKey: "code.example", DisplayName: "Example Code", CodeChangeLabel: "change"}
-	content := IssueSpecProviderSkill("acme/widgets", provider).Content
+func TestProviderWorkflowOrdersReadOnlyDecisionBeforeConditionalMerge(t *testing.T) {
+	content := IssueSpecProviderSkill("acme/widgets", minimalProviderPlan()).Content
 	for _, want := range []string{
-		"Source Binding",
-		"code-change attach --repo acme/widgets",
-		"Attach does not create the change or ingest review/CI evidence",
-		"Refresh only the same active change",
-		"code-change link-process --repo acme/widgets",
-		"requires exactly one active `code_change`",
-		"explicitly delete only the unwanted active reference",
-		"code-change rationale --repo acme/widgets",
-		"strict versioned Issue carrier is authoritative",
-		"explicit gate-eligible issue-only fallback",
-		"Published external IDs/URLs are navigation metadata, not trusted evidence",
-		"Legacy version-1 carriers remain bounded gate-compatible and are never silently republished",
-		"fresh exact-current REVIEW completion",
-		"finding-backed consumed native-ledger evidence retained only for legacy compatibility",
-		"evidence-writer identity is never treated as the code author",
-		"review sync --repo acme/widgets --implement <issue> --revision <revision>",
-		"even with zero findings",
-		"review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC",
-		"never fabricate findings or hand-author its stamp",
-		"Prose IDs, automatic inference, and generic approval frameworks are not carriers",
-		"Archive reads implementation REVIEW completion only for implementation code_change merge policy",
-		"never applies it to archive_change or mutates REVIEW",
-		"do not substitute GitHub PR endpoints",
+		"active Source Binding", "Run release preflight", "provider-native policy-complete review",
+		"### Implementation Rationale", "before requesting human review", "direct single writer or managed PROCESS",
+		"retain the rendered body", "do not claim review handoff complete",
+		"writer anchors", "map them to changed lines", "valid text",
+		"non-blocking inline discussion", "summary/index", "path:symbol/line", "Publish no filler",
+		"issue-spec merge-check --repo acme/widgets", "read-only current decision",
+		"issue-spec code-change merge", "caller-observed `--expected-head`",
+		"Freshly observe merged state", "idempotent selected-Issue reconciliation",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("provider workflow missing %q:\n%s", want, content)
 		}
 	}
+	assertTextOrder(t, content, "Run release preflight", "Once the exact change is reviewable", "provider-native policy-complete review", "issue-spec merge-check", "issue-spec code-change merge", "Freshly observe merged state")
 }
 
-func TestProviderWorkflowDocumentsRecoverableRationalePublication(t *testing.T) {
-	capable := workflow.ProviderPlan{ProviderKey: "code.example", DisplayName: "Example Code",
-		CodeChangeLabel: "change", ChangeComment: true}
-	content := IssueSpecProviderSkill("acme/widgets", capable).Content
+func TestProviderWorkflowKeepsPlanningAndHistoryOutOfAuthority(t *testing.T) {
+	content := IssueSpecProviderSkill("acme/widgets", minimalProviderPlan()).Content
 	for _, want := range []string{
-		"stable external projection",
-		"exact replay recovers lost provider or Issue acknowledgements",
-		"pending never passes final gates",
-		"original external comment for exact `rationale_id` replay",
-		"reject conflicting reuse",
+		"Optional PROCESS links remain planning metadata and never enter merge-check",
+		"Do not synchronize them into typed workflow comments",
+		"Historical REVIEW, VERIFY, PROCESS evidence, rationale, receipts, coverage, finalization, and Archive data are audit-only",
+		"never become merge input",
+		"ordinary top-level provider discussion", "no typed carrier, marker, rationale ID, PROCESS/SPEC binding, evidence field, gate, or merge input",
+		"merge-check and merge authority remain unchanged",
+		"Writers need no provider access", "never guess final diff positions", "no filler, quota, or coverage comments",
+		"would become an unresolved merge blocker", "secret, raw payload, or credential",
+		"continued applicability", "sensitive-data absence", "Invalid, stale, or sensitive drafts",
 	} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("capable provider workflow missing %q:\n%s", want, content)
+			t.Fatalf("provider workflow missing boundary %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{"issue-spec code-change rationale", "issue-spec:code-change-rationale", "Rationale ID:"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("provider guidance restores legacy rationale mechanism %q:\n%s", forbidden, content)
 		}
 	}
 }
 
-func TestProviderWorkflowUsesIssueScopedTypedIDGuidance(t *testing.T) {
-	provider := workflow.ProviderPlan{ProviderKey: "code.example", DisplayName: "Example Code", CodeChangeLabel: "change"}
-	content := IssueSpecProviderSkill("acme/widgets", provider).Content
-	for _, want := range []string{
-		"<TYPE>-<issue><three-digit sequence>",
-		"--process <process-id>",
-		"--id <review-id>",
-		"--spec <spec-id>",
-		"preserve legacy IDs",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("provider workflow missing typed ID guidance %q:\n%s", want, content)
-		}
+func TestProviderWorkflowDescribesCreateOnlyAsCapability(t *testing.T) {
+	provider := minimalProviderPlan()
+	withoutCreate := IssueSpecProviderSkill("acme/widgets", provider).Content
+	if !strings.Contains(withoutCreate, "Select a pre-existing provider change") {
+		t.Fatalf("workflow must select an existing change when create is unavailable:\n%s", withoutCreate)
 	}
-	for _, legacyExample := range []string{"PROCESS-001", "REVIEW-001", "SPEC-001"} {
-		if strings.Contains(content, legacyExample) {
-			t.Fatalf("provider workflow still contains legacy new-ID example %q:\n%s", legacyExample, content)
-		}
-	}
-}
-
-func TestProviderWorkflowKeepsProjectVerificationDeclarative(t *testing.T) {
-	provider := workflow.ProviderPlan{ProviderKey: "code.example", DisplayName: "Example Code", CodeChangeLabel: "change", EvidenceSnapshot: true}
-	content := IssueSpecProviderSkill("acme/widgets", provider).Content
-	for _, want := range []string{
-		"sealed verifier assignment carries workflow context, `rules.verify`, VERIFY instructions, affected scenarios, and exact required test/check selectors",
-		"Core never executes rule prose",
-		"exact sealed selector identities at the exact subject revision",
-		"provider-check outcome and authority come only from the provider observation",
-		"Natural-language VERIFY conclusions remain role-owned evidence and never become provider-owned authority",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("provider workflow missing declarative verification boundary %q:\n%s", want, content)
-		}
+	provider.ChangeCreate = true
+	withCreate := IssueSpecProviderSkill("acme/widgets", provider).Content
+	if !strings.Contains(withCreate, "approved operator tool") || !strings.Contains(withCreate, "capability contract") {
+		t.Fatalf("workflow must keep provider creation operator-owned:\n%s", withCreate)
 	}
 }

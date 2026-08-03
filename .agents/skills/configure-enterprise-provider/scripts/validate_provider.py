@@ -20,13 +20,27 @@ PROTOCOL = "issue-spec.code-provider/v1"
 PROVIDER_KEY = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)")
-ALLOWED_CAPABILITIES = {"evidence.snapshot", "change.create", "change.comment"}
+MERGE_AUTHORITY_CAPABILITIES = {
+    "evidence.review-decision",
+    "evidence.authoritative-check-conclusion",
+    "change.merge-conditional",
+}
+LEGACY_CAPABILITIES = {"evidence.snapshot", "change.create", "change.comment"}
+ALLOWED_CAPABILITIES = MERGE_AUTHORITY_CAPABILITIES | LEGACY_CAPABILITIES
+SEMANTIC_GENERATION = "minimal-merge-authority/v1"
+CONFORMANCE_PROTOCOL = "issue-spec.code-provider-conformance/v1"
+CONFORMANCE_SENTINEL = "__issue_spec_conformance_probe__"
 ALLOWED_EVIDENCE = {"change", "review", "check", "merge", "archive"}
 MAXIMUM_REGISTRY_BYTES = 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 30.0
 MAXIMUM_TIMEOUT_SECONDS = 120.0
 DEFAULT_OUTPUT_BYTES = 1024 * 1024
 MAXIMUM_OUTPUT_BYTES = 4 * 1024 * 1024
+MAXIMUM_CONFORMANCE_TIMEOUT_SECONDS = 5.0
+
+
+class ProviderInvocationError(Exception):
+    pass
 
 
 def strict_object(pairs):
@@ -104,6 +118,15 @@ def valid_provider_key(value) -> bool:
     return isinstance(value, str) and len(value) <= 128 and PROVIDER_KEY.fullmatch(value) is not None
 
 
+def valid_opaque_identity(value, limit: int) -> bool:
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and 0 < len(value) <= limit
+        and all(0x21 <= ord(character) <= 0x7E for character in value)
+    )
+
+
 def valid_authority(value: str) -> bool:
     if not isinstance(value, str) or not value or len(value) > 253 or any(
         character in value for character in "/@?#\\\r\n\t "
@@ -170,7 +193,7 @@ def string_list(value, name: str, maximum: int | None = None) -> list[str]:
     return value
 
 
-def validate_description(value, key: str) -> list[str]:
+def validate_description(value, key: str) -> dict:
     if value is None:
         value = {}
     allowed = {
@@ -178,6 +201,8 @@ def validate_description(value, key: str) -> list[str]:
         "display_name",
         "remote_authorities",
         "code_change_label",
+        "semantic_generation",
+        "provider_build_identity",
         "capabilities",
         "recommended_evidence",
     }
@@ -198,14 +223,61 @@ def validate_description(value, key: str) -> list[str]:
     capabilities = string_list(value.get("capabilities"), "capabilities")
     if len(capabilities) != len(set(capabilities)) or not set(capabilities).issubset(ALLOWED_CAPABILITIES):
         fail(f"provider {key} capabilities are invalid")
+    generation = value.get("semantic_generation", "")
+    build = value.get("provider_build_identity", "")
+    has_merge_authority = bool(set(capabilities) & MERGE_AUTHORITY_CAPABILITIES)
+    if has_merge_authority:
+        if generation != SEMANTIC_GENERATION or not valid_opaque_identity(build, 256):
+            fail(f"provider {key} merge-authority generation or immutable build identity is invalid")
+    elif generation not in (None, "") or build not in (None, ""):
+        fail(f"provider {key} generation metadata requires merge-authority capabilities")
     evidence = string_list(value.get("recommended_evidence"), "recommended_evidence")
     if len(evidence) != len(set(evidence)) or not set(evidence).issubset(ALLOWED_EVIDENCE):
         fail(f"provider {key} recommended evidence is invalid")
-    return capabilities
+    return {"capabilities": capabilities, "generation": generation or "", "build": build or ""}
+
+
+def validate_principal_mappings(entry, key: str) -> tuple[list[dict], str]:
+    mappings = entry.get("principal_mappings", [])
+    identity = entry.get("principal_mapping_identity", "")
+    if not isinstance(mappings, list):
+        fail(f"provider {key} principal_mappings must be an array")
+    if mappings and not valid_opaque_identity(identity, 256):
+        fail(f"provider {key} principal_mapping_identity is required")
+    if not mappings and identity not in (None, ""):
+        fail(f"provider {key} principal_mapping_identity has no mappings")
+    seen = set()
+    for mapping in mappings:
+        if not isinstance(mapping, dict) or set(mapping) != {"provider", "stable_id", "principal"}:
+            fail(f"provider {key} principal mapping shape is invalid")
+        principal = mapping["principal"]
+        if (
+            not isinstance(principal, dict)
+            or set(principal) != {"realm", "stable_id"}
+            or not valid_provider_key(mapping["provider"])
+            or not valid_opaque_identity(mapping["stable_id"], 256)
+            or not valid_opaque_identity(principal["realm"], 128)
+            or not valid_opaque_identity(principal["stable_id"], 256)
+        ):
+            fail(f"provider {key} principal mapping identity is invalid")
+        source = (mapping["provider"], mapping["stable_id"])
+        if source in seen:
+            fail(f"provider {key} principal mapping source is duplicated")
+        seen.add(source)
+    return mappings, identity or ""
 
 
 def validate_entry(key: str, entry) -> dict:
-    allowed = {"path", "args", "environment", "timeout", "max_output_bytes", "description"}
+    allowed = {
+        "path",
+        "args",
+        "environment",
+        "timeout",
+        "max_output_bytes",
+        "principal_mappings",
+        "principal_mapping_identity",
+        "description",
+    }
     if not isinstance(entry, dict) or set(entry) - allowed or "path" not in entry:
         fail(f"provider {key} registration shape is invalid")
     command_value = entry["path"]
@@ -239,13 +311,18 @@ def validate_entry(key: str, entry) -> dict:
         output_limit = DEFAULT_OUTPUT_BYTES
     if isinstance(output_limit, bool) or not isinstance(output_limit, int) or not 1024 <= output_limit <= MAXIMUM_OUTPUT_BYTES:
         fail(f"provider {key} output bound must be between 1 KiB and 4 MiB")
-    capabilities = validate_description(entry.get("description"), key)
+    description = validate_description(entry.get("description"), key)
+    mappings, mapping_identity = validate_principal_mappings(entry, key)
     return {
         "command": [command_value, *arguments],
         "environment": environment,
         "timeout": timeout,
         "output_limit": output_limit,
-        "capabilities": capabilities,
+        "capabilities": description["capabilities"],
+        "generation": description["generation"],
+        "build": description["build"],
+        "principal_mappings": mappings,
+        "principal_mapping_identity": mapping_identity,
     }
 
 
@@ -267,7 +344,7 @@ def read_bounded(stream, limit: int, output: dict, name: str, exceeded: threadin
     output[name] = b"".join(chunks)
 
 
-def invoke_capabilities(config: dict, request: dict) -> str:
+def invoke_provider(config: dict, request: dict, action: str, timeout_limit: float | None = None) -> str:
     try:
         process = subprocess.Popen(
             config["command"],
@@ -277,7 +354,7 @@ def invoke_capabilities(config: dict, request: dict) -> str:
             env=config["environment"],
         )
     except OSError:
-        fail("capabilities command could not start")
+        raise ProviderInvocationError(f"{action} command could not start")
     captured = {}
     exceeded = threading.Event()
     stdout_thread = threading.Thread(
@@ -297,14 +374,15 @@ def invoke_capabilities(config: dict, request: dict) -> str:
         process.stdin.close()
     except OSError:
         process.kill()
-    deadline = time.monotonic() + config["timeout"]
+    timeout = config["timeout"] if timeout_limit is None else min(config["timeout"], timeout_limit)
+    deadline = time.monotonic() + timeout
     while process.poll() is None and not exceeded.is_set():
         if time.monotonic() >= deadline:
             process.kill()
             process.wait()
             stdout_thread.join()
             stderr_thread.join()
-            fail("capabilities command timed out")
+            raise ProviderInvocationError(f"{action} command timed out")
         time.sleep(0.01)
     if exceeded.is_set() and process.poll() is None:
         process.kill()
@@ -312,13 +390,107 @@ def invoke_capabilities(config: dict, request: dict) -> str:
     stdout_thread.join()
     stderr_thread.join()
     if exceeded.is_set():
-        fail("provider output exceeds its configured bound")
+        raise ProviderInvocationError(f"{action} output exceeds its configured bound")
     if process.returncode != 0:
-        fail("capabilities command returned a non-zero exit code")
+        raise ProviderInvocationError(f"{action} command returned a non-zero exit code")
     try:
         return captured.get("stdout", b"").decode("utf-8")
     except UnicodeDecodeError:
-        fail("capabilities response is not UTF-8")
+        raise ProviderInvocationError(f"{action} response is not UTF-8")
+
+
+def conformance_request(provider_key: str, action: str) -> tuple[dict, str, str]:
+    nonce = uuid.uuid4().hex
+    sentinel = f"{CONFORMANCE_SENTINEL}:{nonce}"
+    probe = {
+        "schema_version": CONFORMANCE_PROTOCOL,
+        "action": action,
+        "nonce": nonce,
+        "mutation": "forbidden",
+    }
+    reference = {
+        "provider_key": provider_key,
+        "external_repository": sentinel,
+        "change_id": sentinel,
+    }
+    if action == "merge_snapshot":
+        payload = {
+            "reference": reference,
+            "expected_subject_revision": sentinel,
+            "required_checks": [
+                {"provider": provider_key, "key": sentinel, "owner": sentinel}
+            ],
+            "conformance_probe": probe,
+        }
+        response_field = "merge_snapshot"
+    else:
+        payload = {
+            "reference": reference,
+            "expected_head": sentinel,
+            "authority_token": sentinel,
+            "conformance_probe": probe,
+        }
+        response_field = "merge"
+    request = {
+        "protocol": PROTOCOL,
+        "request_id": f"conformance-{action}-{nonce}",
+        "action": action,
+        "payload": payload,
+    }
+    return request, response_field, nonce
+
+
+def validate_conformance_action(config: dict, provider_key: str, action: str) -> str | None:
+    request, response_field, nonce = conformance_request(provider_key, action)
+    try:
+        raw_response = invoke_provider(
+            config,
+            request,
+            action,
+            timeout_limit=MAXIMUM_CONFORMANCE_TIMEOUT_SECONDS,
+        )
+    except ProviderInvocationError as error:
+        return str(error)
+    try:
+        response = load_strict_json(raw_response)
+    except (ValueError, json.JSONDecodeError):
+        return f"{action} response is not one strict JSON object"
+    if not isinstance(response, dict):
+        return f"{action} response must be an object"
+    if response.get("protocol") != PROTOCOL or response.get("request_id") != request["request_id"]:
+        return f"{action} response identity does not match"
+    if "error" in response:
+        error = response["error"]
+        if (
+            set(response) != {"protocol", "request_id", "error"}
+            or not isinstance(error, dict)
+            or set(error) != {"code", "message"}
+            or not valid_opaque_identity(error.get("code"), 64)
+            or not isinstance(error.get("message"), str)
+        ):
+            return f"{action} error response shape is invalid"
+        return f"{action} returned {error['code']} instead of a non-mutating conformance acknowledgement"
+    if set(response) != {"protocol", "request_id", response_field}:
+        return f"{action} response has unexpected fields"
+    action_payload = response[response_field]
+    if not isinstance(action_payload, dict) or set(action_payload) != {"conformance_probe"}:
+        return f"{action} returned a normal action result; validation refuses any result that could represent provider mutation"
+    acknowledgement = action_payload["conformance_probe"]
+    if not isinstance(acknowledgement, dict) or set(acknowledgement) != {
+        "schema_version",
+        "action",
+        "nonce",
+        "mutation_performed",
+    }:
+        return f"{action} conformance acknowledgement shape is invalid"
+    if (
+        acknowledgement["schema_version"] != CONFORMANCE_PROTOCOL
+        or acknowledgement["action"] != action
+        or acknowledgement["nonce"] != nonce
+        or acknowledgement["mutation_performed"] is not False
+    ):
+        return f"{action} conformance acknowledgement identity or mutation result does not match"
+    return None
 
 
 def main() -> None:
@@ -340,7 +512,10 @@ def main() -> None:
 
     request_id = str(uuid.uuid4())
     request = {"protocol": PROTOCOL, "request_id": request_id, "action": "capabilities", "payload": None}
-    raw_response = invoke_capabilities(config, request)
+    try:
+        raw_response = invoke_provider(config, request, "capabilities")
+    except ProviderInvocationError as error:
+        fail(str(error))
     try:
         response = load_strict_json(raw_response)
     except (ValueError, json.JSONDecodeError):
@@ -350,7 +525,12 @@ def main() -> None:
     if response["protocol"] != PROTOCOL or response["request_id"] != request_id:
         fail("capabilities response identity does not match")
     capabilities = response["capabilities"]
-    if not isinstance(capabilities, dict) or set(capabilities) != {"protocol_version", "values"}:
+    if not isinstance(capabilities, dict) or not {"protocol_version", "values"}.issubset(capabilities) or set(capabilities) - {
+        "protocol_version",
+        "semantic_generation",
+        "provider_build_identity",
+        "values",
+    }:
         fail("capabilities payload shape is invalid")
     values = capabilities["values"]
     if capabilities["protocol_version"] != PROTOCOL or not isinstance(values, list):
@@ -360,7 +540,50 @@ def main() -> None:
     if sorted(values) != sorted(config["capabilities"]):
         fail("runtime capabilities do not match operator description")
 
-    print(json.dumps({"ok": True, "provider_key": args.provider_key, "capabilities": sorted(values)}, indent=2))
+    merge_values = set(values) & MERGE_AUTHORITY_CAPABILITIES
+    if not values:
+        if set(capabilities) != {"protocol_version", "values"}:
+            fail("inert provider capabilities must omit generation metadata")
+        print(json.dumps({"ok": True, "provider_key": args.provider_key, "merge_capable": False,
+                          "capabilities": []}, indent=2))
+        return
+    if not merge_values:
+        fail("legacy provider capabilities are audit-only and ineligible for merge authority")
+    missing = sorted(MERGE_AUTHORITY_CAPABILITIES - merge_values)
+    if missing:
+        fail("merge-authority capabilities are incomplete; missing " + ", ".join(missing))
+    if set(capabilities) != {
+        "protocol_version",
+        "semantic_generation",
+        "provider_build_identity",
+        "values",
+    }:
+        fail("merge-authority capabilities payload must declare generation and immutable build identity")
+    generation = capabilities["semantic_generation"]
+    build = capabilities["provider_build_identity"]
+    if generation != SEMANTIC_GENERATION or not valid_opaque_identity(build, 256):
+        fail("runtime merge-authority generation or immutable build identity is invalid")
+    if generation != config["generation"] or build != config["build"]:
+        fail("runtime generation or immutable build identity does not match operator description")
+    if not config["principal_mappings"] or not config["principal_mapping_identity"]:
+        fail("merge-authority provider requires operator-owned principal_mappings and principal_mapping_identity")
+
+    conformance_errors = []
+    for action in ("merge_snapshot", "merge_change"):
+        error = validate_conformance_action(config, args.provider_key, action)
+        if error is not None:
+            conformance_errors.append(error)
+    if conformance_errors:
+        fail("runtime action conformance failed: " + "; ".join(conformance_errors))
+
+    print(json.dumps({"ok": True, "provider_key": args.provider_key, "merge_capable": True,
+                      "semantic_generation": generation, "provider_build_identity": build,
+                      "principal_mapping_identity": config["principal_mapping_identity"],
+                      "actions": ["merge_snapshot", "merge_change"],
+                      "conformance": {"schema_version": CONFORMANCE_PROTOCOL,
+                                      "actions": ["merge_snapshot", "merge_change"],
+                                      "mutation_performed": False},
+                      "capabilities": sorted(values)}, indent=2))
 
 
 if __name__ == "__main__":

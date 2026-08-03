@@ -111,20 +111,25 @@ external_code:
 The `issue-spec` CLI is how agents participate in the same workflow humans
 review in the browser:
 
-- agents author and read the typed artifacts (`SPEC`, `TASK`, `PROCESS`, ...)
-  with validation, safe transitions, and workflow gates
-- a coordinator splits implementation into PROCESS nodes and dispatches each to
-  the agent that fits it — workers, reviewers, and verifiers stay in narrow,
-  effective context windows
-- teammates and their agents pick up any change mid-flight, because the entire
-  state — decisions, blockers, review findings, evidence — lives in the issues,
-  not in someone's local files
+- agents author and read optional typed planning artifacts (`SPEC`, `TASK`,
+  `PROCESS`, ...) with validation and safe transitions
+- a coordinator defaults bounded implementation to one writer, and uses managed
+  PROCESS workspaces only when concurrency, isolation, ownership, recovery, or
+  dependency-ordered integration requires them
+- teammates and their agents pick up planning mid-flight because optional
+  decisions and blockers live in Issues, while review findings, current checks,
+  and merge authority remain owned by the code provider
 - `issue-spec runner` executes authorized comment commands (`/new`, `/resume`)
   in managed workspaces, so work can be triggered straight from an issue
 
-Line-level PR findings, rationale, and checks sync back into `REVIEW` comments,
-and `verify` gates the change on unresolved blocking questions, traceability,
-and P0/P1 findings before archive.
+The actual code writer records line-local rationale only for non-obvious design
+decisions, using stable code anchors rather than provider diff positions. After
+the exact head is pushed, the coordinator validates those anchors and publishes
+the worker-authored text as non-blocking inline comments. The ordinary
+`### Implementation Rationale` discussion summarizes and indexes them, or
+carries `path:symbol/line` fallbacks when safe inline discussion is unavailable.
+No rationale quota or gate exists; provider review and current configured checks
+remain the only merge authority.
 
 ## Works with GitHub too
 

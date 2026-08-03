@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define operator-controlled provider contracts, external references, immutable revision-bound evidence, fail-closed synchronization, and authoritative current-revision assertions at terminal workflow gates.
+Define operator-controlled provider contracts, navigation references, ephemeral exact-head merge authority, and fail-closed current-revision assertions at the provider merge boundary.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/160
@@ -12,255 +12,153 @@ Proposal Issues:
 
 ### Requirement: Core owns neutral integration contracts while vendor behavior remains external
 
-The project MUST provide versioned provider-neutral contracts for source bindings, code evidence and external mutations required before agent startup or at workflow gates, MUST NOT compile vendor-specific adapters into the server or CLI, and MUST restrict executable adapter configuration to trusted operator scope.
+Core MUST keep vendor behavior behind issue-spec.code-provider/v1, MUST strictly validate the new required review-decision, authoritative-check, and conditional-merge capabilities, MUST fail before authority consumption or mutation on every missing or unknown capability, and MUST permit this deliberate v1 breaking subtraction without a second protocol or legacy gate.
 
-#### Scenario: GitHub and self-hosted modes implement the same neutral boundaries differently
+#### Scenario: v1 capability marks the semantic generation
 
-- **WHEN** the CLI requests issue data, source resolution or code evidence
-- **THEN** GitHub mode MAY satisfy the boundaries with one adapter while self-hosted mode MUST use its issue backend plus configured neutral bindings/evidence without changing workflow semantics
-
-#### Scenario: repository content cannot select an executable
-
-- **WHEN** a project workflow names an external provider
-- **THEN** it MAY reference an operator-registered provider key and evidence policy but MUST NOT supply an arbitrary executable path, arguments or credential source
-
-#### Scenario: vendor adapters remain replaceable
-
-- **WHEN** an operator installs a bridge for a code host, CI system or requirement tracker
-- **THEN** the adapter MUST communicate through the documented versioned contract and neutral server APIs without requiring vendor fields in core tables or durable specs
-
-#### Scenario: missing capabilities fail before partial mutation
-
-- **WHEN** a selected provider lacks an operation required by review, verify or archive
-- **THEN** capability discovery MUST fail the command with an actionable error before any partial workflow evidence is written
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4926529483
-
-### Requirement: External links and trusted evidence have separate lifecycle and provenance
-
-The Server MUST store mutable provider-namespaced external references separately from immutable revision-bound evidence, MUST authorize and audit external-reference writers, and MUST provide idempotent retrieval and ingestion semantics that prevent URL-only records from being treated as proof; for trusted evidence publication, the self-hosted Server MUST require an active supported credential carrying explicit `evidence:write`, its applicable repository cap, and the authenticated identity's live `write`-or-higher permission for the exact repository, MUST NOT require, infer, or consult a separate Evidence Writer assignment, and MUST preserve immutable authenticated writer provenance, audit, tenant isolation, idempotency, visibility, and exact-revision validation.
-
-#### Scenario: external references use a non-null provider identity
-
-- **WHEN** a bridge records a work item, source repository, code change, build or archive link
-- **THEN** the server MUST require provider key, relation kind, external repository/object identity and canonical URL and MUST upsert idempotently without NULL-based uniqueness gaps
-
-#### Scenario: Scoped repository writer publishes without designation
-
-- **WHEN** an active PAT carries `evidence:write`, allows the exact repository, and authenticates an active identity with live repository `write` permission, but no Active Evidence Writer assignment exists
-- **THEN** the Server accepts an otherwise valid evidence append and records the authenticated writer identity without consulting designation state
-
-#### Scenario: Repository write does not replace evidence credential scope
-
-- **WHEN** an owner, administrator, maintainer, or writer has live repository write authority but the active credential lacks `evidence:write`
-- **THEN** the Server rejects evidence publication with the credential-scope reason and audits the denial
-
-#### Scenario: Evidence scope does not replace repository authority
-
-- **WHEN** a credential carries `evidence:write` but its repository cap excludes the target, its identity is inactive, or its live repository permission is below `write`
-- **THEN** the Server rejects publication with the precise repository-cap, identity, or permission reason and audits the denial
-
-#### Scenario: Legacy assignments are non-authoritative
-
-- **WHEN** an existing Evidence Writer assignment is active or inactive during the compatibility window
-- **THEN** the assignment neither grants publication to an otherwise unauthorized caller nor denies an otherwise authorized caller
-
-#### Scenario: Runner preflight uses the same authorization model
-
-- **WHEN** Runner preflight validates a self-hosted profile and repository
-- **THEN** it validates credential identity, required scopes, repository cap and live permission without calling or reporting an Evidence Writer designation check
-
-#### Scenario: Evidence trust properties remain unchanged
-
-- **WHEN** an authorized caller publishes a provider observation
-- **THEN** the Server still enforces normalized evidence kind and state, exact subject revision, deterministic ingest identity, immutable provenance, visibility, supersession, idempotency and audit requirements
-
-#### Scenario: reads respect tenant and field visibility
-
-- **WHEN** the SPA, board or CLI lists references or evidence
-- **THEN** the server MUST filter by repository visibility, caller permission and record visibility, return the normalized payload and provenance of a repository-visible evidence row to repository readers, omit a maintainers-visible row in full from non-maintainers, and MUST not leak credentials or hidden provider URLs or metadata
+- **WHEN** Core and a bridge negotiate the unchanged v1 protocol string
+- **THEN** both must recognize the complete required capability set or fail closed without partial workflow behavior
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/343#issuecomment-5099614411
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767
 
-### Requirement: Core review, verify and archive validate neutral external evidence fail closed
+### Requirement: navigation links and merge authority remain separate
 
-For externally hosted code changes, issue-spec MUST validate trusted structured evidence for the exact active subject revision, independent review findings, sealed required tests and provider checks, and authoritative merge state. Final verification MUST fail closed on missing, stale, untrusted, conflicting, or revision-mismatched evidence. Durable projection MUST appear only as an ordinary required test/check result, and post-merge issue closure MUST require exact merged evidence and active binding without restoring Archive review or verification semantics.
+The Server and CLI MUST keep navigation references and historical evidence separate from the provider's ephemeral exact-head review/check snapshot, MUST obtain every canonical principal from an operator-owned mapping source, and MUST NOT treat URL, ingest writer identity, legacy PROCESS/SPEC fields, mutable workflow carriers, or caller assertions as proof. No fallback attestation or external-authority generation is produced.
 
-#### Scenario: verify passes only for exact trusted evidence
+#### Scenario: historical evidence remains audit-only
 
-- **WHEN** the active external subject has exact-current accepted review and verification, no unresolved blocking findings, and every sealed test/check passes
-- **THEN** core final verification MAY pass and MUST retain the evidence identities and revision used
-
-#### Scenario: stale or untrusted evidence blocks
-
-- **WHEN** external evidence is absent, expired, untrusted, conflicting, pending, failed, or bound to another subject revision
-- **THEN** review or verification MUST fail closed and MUST NOT accept free-form approval prose
-
-#### Scenario: durable result stays ordinary evidence
-
-- **WHEN** repository durable checking is required
-- **THEN** the exact checker outcome MUST be recorded through the ordinary required test/check contract and core final MUST NOT parse durable files or intent
-
-#### Scenario: post-merge closure uses merged binding only
-
-- **WHEN** a self-hosted implementation change has authoritative merged evidence for the exact active binding
-- **THEN** idempotent closure MAY close only the bound lifecycle issues without re-running review, verification, or durable checks
+- **WHEN** legacy evidence or navigation metadata remains stored after cutover
+- **THEN** explicit audit reads preserve it while merge-check and conditional merge consume only freshly mapped provider-native authority
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452933
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764761
 
-### Requirement: Provider-neutral evidence synchronization before workflow gates
+### Requirement: merge readiness is read-only and merge is exact-head conditional
 
-The issue-spec CLI and runner MUST provide a provider-neutral evidence synchronization stage that resolves the active external code-change reference, selects an operator-registered adapter by `provider_key`, requests an `evidence.snapshot` for one exact subject revision, validates and immutably persists the returned neutral records through the self-hosted evidence authority, and only then evaluates review or verify gates from the persisted ledger; repository workflow configuration MAY select synchronization policy and required evidence but MUST NOT supply provider executables, credentials, or vendor-specific approval decisions.
+The workflow MUST compute merge readiness with zero writes from only the selected simple Issue or Proposal contract, exact current code subject, current authoritative required-check conclusions, configured provider review policy and reviewer-owned findings, and required durable/provider policies; it MUST ignore optional or historical TEST, VERIFY, FinalReceipt, PROCESS, rationale, coverage, finalization, and pre-merge closure state, and the provider-native merge MUST atomically validate the complete authority token/generation plus expected head without a generic issue-spec merge state machine, while exact issue closure is reconciled idempotently after observed merge.
 
-#### Scenario: Explicit evidence synchronization uses the active code-change reference
+#### Scenario: necessary exact-head facts are sufficient
 
-- **WHEN** an operator or workflow invokes evidence synchronization for an implement issue and exact revision
-- **THEN** issue-spec resolves exactly one active `code_change` reference, verifies the requested revision matches its pinned head revision, resolves the registered provider adapter, requires `evidence.snapshot`, and rejects an absent, ambiguous, mismatched, or incapable provider before evidence is written
+- **WHEN** the exact current subject satisfies configured provider-enforced checks, review policy, finding resolution, durable, DCO, and CLA policy
+- **THEN** merge-check returns ready with the expected head and performs zero provider writes regardless of optional or historical workflow artifacts
 
-#### Scenario: Verify can run workflow-directed synchronization before its gate
+#### Scenario: a necessary authority fails closed
 
-- **WHEN** the repository workflow enables pre-gate synchronization and `issue-spec verify` or the equivalent runner stage reaches external evidence validation
-- **THEN** the synchronization stage runs first using the workflow's provider and evidence policy, persists the accepted snapshot, and verify evaluates the resulting exact-revision ledger records instead of requiring a separate vendor-specific command sequence
+- **WHEN** a required conclusion is missing, failed, stale, untrusted, policy-incomplete, or bound to another subject
+- **THEN** merge-check returns a focused blocker with zero writes and no legacy evidence fallback
 
-#### Scenario: Adapters return facts rather than gate decisions
+#### Scenario: head movement cannot race merge
 
-- **WHEN** a GitHub, Aone, or other registered adapter snapshots a code change
-- **THEN** it emits only protocol-versioned neutral `change`, `review`, `check`, `merge`, or `archive` records with stable identity, normalized state, observation time, exact revision, canonical URL where applicable, and payload digest, and issue-spec core independently decides whether the gate passes
-
-#### Scenario: Evidence persistence is trusted and idempotent
-
-- **WHEN** the synchronization stage writes a validated snapshot to the self-hosted server
-- **THEN** the server requires an active supported credential with explicit `evidence:write`, exact repository access, and live `write`-or-higher permission, derives immutable writer provenance from the authenticated identity, uses deterministic ingest identity to make replay idempotent, preserves supersession history, and rejects untrusted approval booleans or identity changes
-
-#### Scenario: Revision movement during synchronization fails closed
-
-- **WHEN** the external change head or active reference changes while a snapshot is being collected or persisted
-- **THEN** the stage does not mix records across revisions, does not advance the reference implicitly, and fails with an actionable revision-mismatch result that requires a new synchronization attempt for the new head
-
-#### Scenario: Missing or failed synchronization never becomes successful verification
-
-- **WHEN** the adapter is unavailable, its output is malformed, required checks are missing, pending, failed, stale, or tied to another reference or revision, or persistence is unauthorized
-- **THEN** the synchronization or verify command fails closed and MUST NOT substitute a typed VERIFY comment, skill execution transcript, cached vendor response, or adapter-provided approved flag for trusted evidence
-
-#### Scenario: Repository workflow cannot install executable authority
-
-- **WHEN** a checked-out repository configures pre-gate evidence synchronization
-- **THEN** it may select a registered provider key, required evidence kinds, required check names, freshness, and synchronization timing, while executable paths, arguments, environment, credentials, writer grants, and network authority remain operator-controlled outside the repository
-
-#### Scenario: Runner and interactive CLI share one synchronization contract
-
-- **WHEN** evidence synchronization is triggered interactively, by runner polling, or by a trusted webhook-driven runner job
-- **THEN** all modes use the same provider-neutral snapshot validation, exact-revision persistence, idempotency, authorization, audit, and gate-evaluation semantics and produce equivalent evidence identities
+- **WHEN** the provider head or same-head policy, review, finding, conversation, or required-check authority changes after merge-check, or the provider cannot prove complete conditional merge
+- **THEN** provider merge or preflight fails closed through complete authority-token validation and issue-spec does not repair evidence or create a merge lifecycle
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/343#issuecomment-5099614411
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764772
 
-### Requirement: Authoritative final gates assert the current code-change revision
+### Requirement: implementation rationale remains an ordinary provider discussion for human review
 
-At authoritative final gates, issue-spec MUST resolve the current code-change revision through the existing mode-specific authority: GitHub-native mode MUST read the live pull-request HEAD, while self-hosted external-Provider mode MUST synchronously request the active code_change revision through the existing evidence.snapshot path regardless of optional sync_before policy and accept it only when the operator-trusted Provider asserts that the requested revision is still current. For a self-hosted code_change snapshot, the Provider MUST read current HEAD before collecting facts and read it again after collection, and MUST return success only when both observations equal the requested revision; movement before or during collection MUST return a stable revision-mismatch failure instead of a snapshot. In both modes, verify and status --gate final MUST fail closed unless the authoritative revision agrees with the eligible REVIEW completion and VERIFY input, including active reference identity and version where applicable. The assertion SHALL remain read-only, preserve historical artifacts, avoid mandatory Provider calls for non-terminal authoring and synchronization, expose the asserted revision for human pre-merge comparison, and MUST NOT perform merge or introduce a new Provider capability, evidence kind, Server API, or persisted-data model.
+Every actual code writer MUST own zero or more line-rationale drafts for non-obvious design decisions in the code it changes. The direct-path actual writer owns its drafts, whether that writer is the coordinator or one delegated child; under managed PROCESS each worker owns the drafts for its code. Each useful draft MUST identify a repository-relative path, a stable symbol plus changed-line anchor, and concise why, tradeoff, and risk text, and MUST NOT contain a secret, raw payload, or credential. A writer MUST NOT require provider credentials, guess a final provider diff position, or create filler to satisfy a quota or coverage target.
 
-#### Scenario: GitHub-native final gate reads the live pull-request HEAD
+After integrating and pushing the reviewable exact head, the coordinator MUST validate each supplied anchor against that head, confirm the rationale remains applicable and contains no sensitive information, map it to a changed line, and publish the worker-authored text as provider-native non-blocking inline discussion. An invalid, stale, or sensitive draft MUST be returned to the writer for correction or dropped with an explanation; the coordinator MUST NOT rewrite it and impersonate the worker's authorship. The coordinator MUST publish or refresh one ordinary top-level provider discussion headed `### Implementation Rationale` before requesting human review; it MUST summarize intent, important decisions and tradeoffs, boundaries and non-goals, risks, validation and results, exact subject/head, selected planning links, and index the published inline rationale. If the provider lacks non-blocking inline discussion or an inline discussion would itself become an unresolved merge blocker, the coordinator MUST preserve `path:symbol/line` plus the worker rationale in the top-level discussion instead. These discussions MUST require no Implement, TASK, PROCESS, SPEC, typed carrier, machine marker, rationale ID, PROCESS/SPEC binding, evidence field, or gate, and MUST remain mutable human-review UX that merge-check and conditional merge ignore completely.
 
-- **WHEN** GitHub-native verify or status --gate final reads a pull request whose live HEAD, eligible review state, and VERIFY input all identify revision A
-- **THEN** issue-spec uses the existing GitHub pull-request authority without a Code Provider bridge and may pass the final gate for revision A under the remaining policy
+#### Scenario: direct and managed implementation have the same review handoff
 
-#### Scenario: GitHub-native HEAD movement invalidates old final evidence
+- **WHEN** either a direct single writer or selected managed PROCESS work produces a reviewable exact change
+- **THEN** the actual writer returns only valuable path/symbol/changed-line rationale drafts and never provider positions, while the coordinator validates and publishes those drafts against the pushed exact head
+- **THEN** the coordinator publishes or refreshes the same ordinary provider-native `### Implementation Rationale` summary and index before requesting human review without manufacturing planning or evidence state
 
-- **WHEN** the GitHub pull-request HEAD advances from revision A to revision B after review or verification evidence for A was recorded
-- **THEN** verify and status --gate final treat the evidence for A as stale and do not report current final readiness
+#### Scenario: obvious code does not manufacture inline rationale
 
-#### Scenario: Self-hosted Provider confirms the pinned revision is current
+- **WHEN** the actual writer made no non-obvious design decision that benefits from line-local explanation
+- **THEN** the writer returns no line-rationale draft and the coordinator creates no placeholder, quota, or coverage comment
 
-- **WHEN** a self-hosted Implement Issue has one active code_change at reference version 3 and revision A, the Provider reads HEAD A both before and after collecting the exact-revision facts, and the eligible external REVIEW completion and VERIFY input are bound to the same identity, version, and revision
-- **THEN** issue-spec validates and persists the snapshot through the existing native evidence authority, confirms the active reference did not move, and may pass verify or status --gate final under the remaining policy
+#### Scenario: unsafe or stale worker text is not silently rewritten
 
-#### Scenario: Self-hosted Provider rejects a retrievable historical revision
+- **WHEN** a draft no longer applies to the exact pushed head, its anchor is invalid, or it contains a secret, raw payload, credential, or other sensitive information
+- **THEN** the coordinator returns it to the writer for correction or drops it with an explanation, and does not publish Coordinator-rewritten text under worker authorship
 
-- **WHEN** the Provider current HEAD has advanced to revision B while the Server active code_change and stored REVIEW and VERIFY state still consistently identify revision A
-- **THEN** the Provider reports a stable revision mismatch for the requested historical revision A and verify and status --gate final fail closed without silently refreshing the active reference
+#### Scenario: unsafe inline discussion degrades to the top-level rationale
 
-#### Scenario: Provider HEAD movement during snapshot collection fails closed
+- **WHEN** the provider lacks non-blocking inline discussion or publishing inline would create an unresolved merge blocker
+- **THEN** the coordinator keeps the worker-authored `path:symbol/line` rationale in the ordinary top-level discussion and creates no blocking inline discussion
 
-- **WHEN** the Provider reads current HEAD A for requested revision A, the code change advances to revision B while facts are collected, and the Provider's post-collection HEAD read observes B
-- **THEN** the Provider returns a stable revision mismatch instead of a successful snapshot, issue-spec persists no partial Provider facts from that attempt, and verify and status --gate final do not report current readiness
+#### Scenario: discussion publication failure is visible but non-authoritative
 
-#### Scenario: Provider authority failure cannot become a final green result
+- **WHEN** a required top-level or inline rationale discussion cannot be published or refreshed and cannot be safely preserved through the top-level fallback
+- **THEN** the coordinator reports the provider error, retains the rendered body for retry or manual posting, and does not claim the human-review handoff is complete
+- **THEN** merge-check and conditional merge neither consume the failure nor reinterpret it as a legacy delivery gate or authority result
 
-- **WHEN** the self-hosted Provider is unavailable, lacks evidence.snapshot, returns malformed or mismatched identity, or the active reference moves during synchronization
-- **THEN** the current final invocation returns a non-success result with actionable retry or refresh guidance and does not accept stored Server state as proof of current HEAD
+Source Design amendment:
+- https://github.com/higress-group/issue-spec/issues/407
 
-#### Scenario: Explicit refresh starts a new exact-revision evidence cycle
+### Requirement: checks consume one current authoritative conclusion across attempts
 
-- **WHEN** an operator observes revision movement, explicitly refreshes the same active code_change from revision A to revision B, and reruns review synchronization and final verification
-- **THEN** evidence bound to the former reference version or revision A remains historical but is ineligible, and only matching evidence for the refreshed reference version and revision B may satisfy the final gate
+The workflow MUST allow CI retries and reruns, MUST consume only the provider-normalized current authoritative conclusion for each configured provider-native opaque check key, owner/integration identity, exact current subject, and configuration generation, and MUST keep display names and historical attempts non-conflicting and non-authoritative. A check that cannot be represented by the selected provider makes that provider ineligible; Core MUST NOT substitute an external attestation.
 
-#### Scenario: Failure preserves history and unchanged retry is idempotent
+#### Scenario: reruns replace current authority without erasing history
 
-- **WHEN** a final assertion fails or the same unchanged current revision is asserted again
-- **THEN** issue-spec preserves earlier REVIEW, VERIFY, and Provider evidence without deletion or downgrade and repeats the exact successful synchronization without duplicating authoritative evidence
+- **WHEN** a required check has multiple attempts for the exact subject
+- **THEN** the provider selects one current authoritative conclusion for the exact key and owner, while older attempts and same-name checks from another owner neither satisfy nor conflict with merge-check
 
-#### Scenario: Non-terminal work and human merge remain outside enforcement
+#### Scenario: missing provider-native check support fails closed
 
-- **WHEN** proposal, design, task, apply, local authoring, or another non-terminal synchronization operation continues, or a human prepares to merge after a successful final assertion
-- **THEN** non-terminal work does not require a live Provider round trip, final output identifies the asserted revision for immediate comparison with the code host, and issue-spec does not execute or proxy merge
+- **WHEN** a configured required check cannot be returned and conditionally enforced by the selected provider
+- **THEN** preflight fails before authority collection or mutation and does not accept a caller or issue-server attestation
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/271#issuecomment-5009746561
+#### Scenario: merge evaluation never executes checks
 
-### Requirement: Self-hosted rationale publication is external, exact, and recoverable
-
-For a self-hosted Implement Issue, issue-spec MUST retain one strict Issue Backend rationale carrier as workflow authority, MUST publish a validated general comment to the exact active external code change when the selected Provider advertises change.comment, MUST bind both surfaces to one deterministic logical rationale identity, MUST converge exact retries without duplicating either surface across partial failures, MUST fail closed on identity or revision movement, and MUST report an explicit issue-only compatibility result when change.comment is unavailable.
-
-#### Scenario: capable provider receives an exact rationale projection
-
-- **WHEN** a reviewed change-bearing PROCESS and active SPEC are linked to one active self-hosted code change, the Provider advertises change.comment, and the active reference and Provider HEAD match the requested revision
-- **THEN** core creates or observes one authoritative Issue carrier, sends one general comment mutation carrying the stable rationale identity and exact revision, validates the returned reference, external ID, and canonical URL, and records the completed external publication state
-
-#### Scenario: complete exact retry is a no-op
-
-- **WHEN** the same provider, repository, change, reference version, revision, PROCESS, SPEC, logical author, and normalized rationale body are submitted after both carrier and external projection completed
-- **THEN** core returns the existing Issue and external comment identities without creating or mutating another comment
-
-#### Scenario: lost provider acknowledgement converges
-
-- **WHEN** the Provider created the external rationale but its successful response was lost and the command is retried from the pending Issue carrier
-- **THEN** the Provider treats the same rationale identity and content as an idempotent replay, returns the original external comment, and core completes the existing carrier without duplication
-
-#### Scenario: failed carrier completion converges
-
-- **WHEN** the Provider returned a valid external comment but the Issue Backend failed to persist the completed publication state
-- **THEN** an exact retry reuses the pending carrier and stable Provider identity, obtains the same external receipt, and conditionally completes that carrier without creating another Issue or external comment
-
-#### Scenario: provider failure remains recoverable and non-successful
-
-- **WHEN** all workflow preflight succeeds but the advertised change.comment mutation fails
-- **THEN** the command returns non-success, retains at most one recoverable pending carrier, records no false external receipt, and an unchanged retry continues from the same logical rationale identity
-
-#### Scenario: reference or HEAD movement fails closed
-
-- **WHEN** the active change identity, reference version, subject revision, or Provider HEAD moves before mutation or before carrier completion
-- **THEN** publication is rejected as stale, the old carrier cannot become externally completed for the new head, and the operator must explicitly refresh and repeat review and rationale for the new exact revision
-
-#### Scenario: missing comment capability uses explicit fallback
-
-- **WHEN** the selected Provider is valid but does not advertise change.comment
-- **THEN** core creates or reuses the canonical Issue carrier with an explicit external-unavailable compatibility state, performs no Provider mutation, reports the reduced visibility in bounded output, and preserves existing final-gate authority
-
-#### Scenario: identity conflicts and malformed state are rejected
-
-- **WHEN** a rationale identity is reused with different bound content, duplicate or malformed carriers exist, returned Provider identity differs, or the advertised Provider cannot implement mutations
-- **THEN** core fails closed without overwriting the carrier, accepting the receipt, or silently falling back
-
-#### Scenario: legacy carriers remain bounded compatibility evidence
-
-- **WHEN** an exact version-1 Issue-only rationale carrier predating external publication is observed
-- **THEN** existing gate parsing remains compatible, core reports its legacy issue-only state, and does not guess that an external comment exists or silently republish it
-
-#### Scenario: guidance and conformance match the destination
-
-- **WHEN** provider bridge documentation, generated provider workflows, generated agent skills, CLI help or result fields, and provider-neutral fake-provider tests describe code-change rationale
-- **THEN** they consistently identify the Issue carrier as authority, the external change comment as the capable-provider projection, the stable replay identity and recovery behavior, the exact-head requirement, and the explicit missing-capability result
+- **WHEN** a required conclusion is missing, pending, failed, stale, or bound to another subject or configuration
+- **THEN** merge-check reports that fact with zero writes and does not rerun, copy, or relabel the check
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/366#issuecomment-5125664390
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764758
+
+### Requirement: v1 review decisions are policy-complete exact-subject authority
+
+The v1 workflow MUST represent provider-native review with the exact subject, stable authenticated source reviewer identity distinct from bridge identity, operator-trusted canonical principals comparable across reviewer and author identity domains, a closed opener/commit-author/coauthor/committer set, verdict and dismissal state, finding ownership and reviewer-owned resolution, and configured provider review-policy state; it MUST require reviewer independence and the configured reviewer count, CODEOWNERS or equivalent, stale-dismissal, and conversation-resolution rules, while PROCESS/SPEC linkage is deprecated and non-authoritative and no issue-native fallback is eligible.
+
+#### Scenario: provider-native review satisfies configured policy
+
+- **WHEN** the exact current subject has review decisions whose mapped canonical principals, verdicts, findings, and conversation state satisfy the configured provider policy and include a principal outside the complete author set
+- **THEN** merge-check accepts the provider decisions without REVIEW PROCESS, sync, coverage projection, or a copied receipt
+
+#### Scenario: provider without policy-complete review is unsupported
+
+- **WHEN** a provider cannot return policy-complete provider-native review with stable actors and a closed author set
+- **THEN** preflight fails before authority collection or mutation and Core does not synthesize decisions from issue comments
+
+#### Scenario: stale dismissed or self-authored review blocks
+
+- **WHEN** a decision targets another head, is dismissed or stale, has an unmapped or ambiguous principal, matches any opener/author/coauthor/committer principal, or leaves configured findings or conversations unresolved
+- **THEN** merge-check fails closed without consulting logical Agent, PROCESS, SPEC, rationale, receipt, or comment order
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764761
+
+### Requirement: v1 capability cutover removes legacy authority as one pinned release set
+
+The workflow MUST keep the issue-spec.code-provider/v1 protocol and built-in issue-spec schema while supporting a bounded simple-Issue path or a selected Proposal/Design/Implement path and requiring evidence.review-decision, provider-native keyed evidence.authoritative-check-conclusion when checks are configured, and complete authority-token change.merge-conditional at the merge boundary; new and old components MUST fail fast on missing or unknown capabilities, any non-atomic provider, or unmapped principals, legacy fields MUST be read-only and non-authoritative, deprecated evidence writers MUST return deprecated_workflow with zero writes, and CLI, Server, Runner, bridge, and generated skills MUST switch and roll back as one pinned immutable release set with no dual gate or legacy adapter.
+
+#### Scenario: mixed releases fail before authority is consumed
+
+- **WHEN** new Core sees an old bridge without required capabilities or old Core sees a new capability
+- **THEN** preflight fails closed before a green merge decision or workflow mutation and does not fall back to legacy evidence, bare-name checks, heuristic identity, or expected-head-only merge
+
+#### Scenario: upgrade uses an immutable coordinated set
+
+- **WHEN** an operator adopts the breaking v1 subtraction
+- **THEN** the operator quiesces dispatch and merge, switches pinned CLI, Server, Runner, bridge, and generated skills, validates capabilities and release identities, and resumes only after preflight succeeds
+
+#### Scenario: historical and optional planning remain non-authoritative
+
+- **WHEN** legacy REVIEW, VERIFY, PROCESS, rationale, receipt, finalization, TASK, workspace, or handoff data remains readable
+- **THEN** merge-check ignores it and deprecated writers perform zero writes while optional implementation workspaces retain their execution-safety rules
+
+#### Scenario: rollback is a complete-set switch
+
+- **WHEN** an operator must restore the previous release
+- **THEN** the operator quiesces work, restores the pinned prior binaries, bridge, configuration, generated skills, and required backup as one set, and re-obtains facts rather than reinterpreting new evidence
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/405#issuecomment-5155764767

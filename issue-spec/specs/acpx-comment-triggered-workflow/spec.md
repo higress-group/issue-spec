@@ -212,7 +212,7 @@ The runner MUST own job lifecycle status writeback while allowing the sandboxed 
 
 #### Scenario: workflow artifact writes
 
-- **WHEN** the coordinator needs to create or update proposal, design, typed-comment, link, review, verify, or archive artifacts
+- **WHEN** the coordinator needs to create or update optional proposal, design, SPEC, QUESTION, TASK, PROCESS, or planning-link artifacts
 - **THEN** it SHALL invoke existing issue-spec CLI commands inside the sandbox using runner-provided GitHub authentication access, while the runner captures bounded command and artifact provenance in durable state rather than applying a custom workflow-action envelope.
 
 Source SPEC comments:

@@ -9,7 +9,6 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
-	"github.com/higress-group/issue-spec/internal/relationships"
 	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
@@ -232,22 +231,8 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 			a.errorf("%v\n", err)
 			return 2
 		}
-		artifacts, err := collectArtifacts(ctx, client, repo, proposalIssue)
-		if err != nil {
-			a.errorf("read proposal issue comments: %v\n", err)
-			return 1
-		}
-		if countType(artifacts, "SPEC") == 0 {
-			a.errorf("design gate blocked: proposal issue %d has no SPEC comments\n", proposalIssue)
-			return 1
-		}
-		answers, err := collectAnswerResolution(ctx, client, repo, proposalIssue)
-		if err != nil {
-			a.errorf("read proposal ANSWER authority: %v\n", err)
-			return 1
-		}
-		if hasUnsatisfiedQuestion(artifacts, answers) {
-			a.errorf("design gate blocked: proposal issue %d has open blocking QUESTION comments\n", proposalIssue)
+		if err := validatePhasePredecessor(ctx, client, repo, proposalIssue, "proposal", *change); err != nil {
+			a.errorf("invalid proposal predecessor: %v\n", err)
 			return 1
 		}
 		title, body, labels = templates.DesignIssueWithOptions(*change, *proposal, authoringOptions)
@@ -261,22 +246,8 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 			a.errorf("%v\n", err)
 			return 2
 		}
-		artifacts, err := collectArtifacts(ctx, client, repo, designIssue)
-		if err != nil {
-			a.errorf("read design issue comments: %v\n", err)
-			return 1
-		}
-		if countType(artifacts, "TASK") == 0 {
-			a.errorf("implement gate blocked: design issue %d has no TASK comments\n", designIssue)
-			return 1
-		}
-		answers, err := collectAnswerResolution(ctx, client, repo, designIssue)
-		if err != nil {
-			a.errorf("read design ANSWER authority: %v\n", err)
-			return 1
-		}
-		if hasUnsatisfiedQuestion(artifacts, answers) {
-			a.errorf("implement gate blocked: design issue %d has open blocking QUESTION comments\n", designIssue)
+		if err := validatePhasePredecessor(ctx, client, repo, designIssue, "design", *change); err != nil {
+			a.errorf("invalid design predecessor: %v\n", err)
 			return 1
 		}
 		if *proposal != "" {
@@ -285,31 +256,9 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 				a.errorf("%v\n", err)
 				return 2
 			}
-			fullArtifacts, err := collectArtifacts(ctx, client, repo, proposalIssue, designIssue)
-			if err != nil {
-				a.errorf("read proposal/design issue comments: %v\n", err)
+			if err := validatePhasePredecessor(ctx, client, repo, proposalIssue, "proposal", *change); err != nil {
+				a.errorf("invalid proposal predecessor: %v\n", err)
 				return 1
-			}
-			index, indexErr := relationships.BuildIndex(fullArtifacts)
-			if indexErr != nil {
-				a.errorf("implement gate blocked: canonical relationship index: %v\n", indexErr)
-				return 1
-			}
-			report := mergeVerifyReports(model.VerifyTraceability(fullArtifacts),
-				model.VerifyTraceabilityWithRelationships(fullArtifacts, commandTraceabilityEdges(index), nil))
-			if !report.OK {
-				a.errorf("implement gate blocked: proposal/design traceability errors:\n")
-				for _, msg := range report.Errors {
-					a.errorf("- %s\n", msg)
-				}
-				return 1
-			}
-		} else {
-			for _, artifact := range artifacts {
-				if artifact.Comment.Type == "TASK" && len(model.RelatedCommentURLs(artifact.Comment)) == 0 {
-					a.errorf("implement gate blocked: %s has no Related Comments links; pass --proposal for full SPEC backlink verification\n", artifact.Comment.ID)
-					return 1
-				}
 			}
 		}
 		title, body, labels = templates.ImplementIssueWithOptions(*change, *design, authoringOptions)
@@ -367,6 +316,39 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 	}
 	fmt.Fprintf(a.out, "created %s issue #%d: %s\n", kind, issue.Number, issue.HTMLURL)
 	return 0
+}
+
+var exactPhaseIssueMarkerLineRe = regexp.MustCompile(`^<!--\s*issue-spec:issue=([a-z]+)\s+change=([^\s>]+)\s+version=([0-9]+)\s*-->$`)
+
+// validatePhasePredecessor protects explicit lineage without turning optional
+// planning comments into an authoring gate. SPEC, QUESTION, TASK, and their
+// relationships remain useful planning state, but phase issue creation neither
+// requires nor interprets them.
+func validatePhasePredecessor(ctx context.Context, client github.Operations, repo string, issueNumber int, wantKind, wantChange string) error {
+	issue, err := client.GetIssue(ctx, repo, issueNumber)
+	if err != nil {
+		return fmt.Errorf("read %s issue %d: %w", wantKind, issueNumber, err)
+	}
+	var markers [][]string
+	for _, line := range strings.Split(issue.Body, "\n") {
+		if match := exactPhaseIssueMarkerLineRe.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
+			markers = append(markers, match)
+		}
+	}
+	if len(markers) != 1 {
+		return fmt.Errorf("issue %d must contain exactly one supported issue-spec marker, found %d", issueNumber, len(markers))
+	}
+	marker := markers[0]
+	if marker[1] != wantKind {
+		return fmt.Errorf("issue %d is %s, want %s", issueNumber, marker[1], wantKind)
+	}
+	if marker[2] != wantChange {
+		return fmt.Errorf("issue %d belongs to change %q, want %q", issueNumber, marker[2], wantChange)
+	}
+	if marker[3] != "1" {
+		return fmt.Errorf("issue %d uses unsupported marker version %s", issueNumber, marker[3])
+	}
+	return nil
 }
 
 func collectAnswerResolution(ctx context.Context, client github.Operations, repo string, issueNumbers ...int) (model.AnswerResolution, error) {

@@ -41,9 +41,9 @@ Server 是以下数据的权威来源：
 
 ### Issue 保留完整决策历史
 
-Proposal、Design 和 Implement Issue 的正文保存当前产物；SPEC、QUESTION、TASK、
-PROCESS、REVIEW 和 VERIFY 以类型化评论出现在同一时间线。普通人的评论仍可用于
-讨论与通知。
+Proposal、Design 和 Implement Issue 的正文保存当前产物；SPEC、QUESTION、TASK 与
+PROCESS 是同一时间线中的活跃类型化评论，历史 REVIEW 与 VERIFY 只保留审计展示。
+普通人的评论仍可用于讨论与通知。
 
 ![包含类型化工作流评论的 Issue 详情](assets/self-hosted-issue-detail.zh-CN.png)
 
@@ -230,15 +230,26 @@ Provider 与外部仓库身份来自 Source Binding。`code-change attach` 不�
 的 Active Reference，再重试；禁止猜测或静默覆盖。GitHub 继续使用原有 PR 流程；
 self-hosted 的 Review、Merge 与关闭仍由所选 Code Provider 负责。
 
-独立 Review 收敛后，Reviewer 使用 Implement Issue、精确 Active Revision、稳定的
-REVIEW ID 和自身 Agent/Session 身份运行 `review sync`。Provider Review 没有 Finding
-时仍会产生稳定的 Done REVIEW Completion。最终 Sync 后，应把 REVIEW 显式链接到它的
-Review PROCESS、每个覆盖到的 Change-bearing PROCESS 和每个覆盖到的 Active SPEC。
-禁止伪造 Finding、手工编辑 Completion Stamp、从正文 ID 推断链接，或用通用 Approval
-Framework 替代证据。`status` 与最终 `verify` 使用同一个 Exact-current Completion
-Validator，且都不会刷新 REVIEW。只有 Implementation `code_change` 的 Merge Review
-为必需时，`archive` 才会读取该 Completion；它不会修改 REVIEW，也不会把 Completion
-应用于 `archive_change`。
+direct 路径的实际写作者或各 managed PROCESS worker，只为非显然决策返回零条或
+多条行级 rationale 草稿：仓库相对路径、稳定 symbol 加 changed-line anchor，以及
+why/tradeoff/risk，且不得包含 secret、raw payload 或 credential。写作者不需要
+provider 权限，也不猜最终 diff position。精确 head 集成并推送后，coordinator 校验
+anchor、内容继续适用性及敏感信息缺失，再映射并发布未经改写的 worker 原文。无效、
+过时或敏感的草稿应退回 writer，或说明原因后丢弃，不能由 coordinator 改写后冒充
+worker。没有配额；显然代码不产生行级评论。
+
+人类评审前，发布或刷新普通顶层 `### Implementation Rationale`，作为摘要和行级评论
+索引。非阻塞行级讨论不可用，或者会产生 unresolved merge blocker 时，应在顶层评论
+保留 `path:symbol/line` 和 worker 原文，并且不创建阻塞 thread。这些讨论只是可变的
+评审体验，不包含类型化 carrier、rationale ID、PROCESS/SPEC 绑定、证据字段、门禁或
+合并效力。必需的提供方写入失败时必须报告并保留已渲染正文；不能宣告评审交接完成，
+但绝不能把评论或失败送入 `merge-check`。
+
+Provider 原生评审与已配置检查在精确 head 上收敛后，只运行只读 `merge-check`；不要
+把权威同步到 REVIEW/VERIFY、理由或 PROCESS 状态。只能使用 `code-change merge
+--expected-head` 合并；该命令重新采集新鲜权威，并把完整提供方令牌交给条件合并。
+普通 GitHub REST 的先读后写保持失败关闭。只有新鲜观察到提供方已合并后，才幂等
+协调精确选择的 Issue 集合。
 
 完整的 Provider-neutral 集成方案、运维 Registry 示例、Bridge 脚手架、代码证据
 映射和 Jira 类工作项投影模式见
