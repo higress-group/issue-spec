@@ -69,6 +69,15 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 			t.Fatalf("prompt contains stale rule %q", forbidden)
 		}
 	}
+	assertTextOrder(t, prompt,
+		"Materialize durable specs on the implementation branch",
+		"Push the current exact reviewable head and create or select its PR/MR",
+		"Dispatch one real read-only reviewer independent of every code writer",
+		"Repeat automatically until that reviewer reports zero P0/P1",
+		"Keep only still-applicable P2 findings from the final reviewed head",
+		"Complete final-head rationale publication",
+		"stop before approval or merge",
+	)
 }
 
 func TestCoordinatorPromptRolePacketBoundary(t *testing.T) {
