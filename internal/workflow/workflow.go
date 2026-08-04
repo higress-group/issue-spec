@@ -858,6 +858,9 @@ func retiredArtifactType(typ string) bool {
 }
 
 func storageMappings(artifact Artifact) []string {
+	if retiredArtifactType(artifact.Type) {
+		return nil
+	}
 	seen := map[string]bool{}
 	add := func(value string) {
 		if value != "" {

@@ -91,10 +91,16 @@ artifacts:
     type: specs
   review:
     type: review
+    generates: specs/**/*.md
+    apply:
+      tracks: tasks.md
     requires:
       - tasks
   verify:
     type: verification
+    generates: proposal.md
+    apply:
+      tracks: verification.md
     requires:
       - review
   tasks:
