@@ -110,6 +110,74 @@ func TestRenderRunnerStatusCommentKeepsPublicBodyConcise(t *testing.T) {
 	}
 }
 
+func TestRenderRunnerStatusCommentIncludesCoordinatorReplyDiagnostics(t *testing.T) {
+	body, err := RenderRunnerStatusComment(RunnerStatusComment{
+		Status:          "completed",
+		PublicSessionID: "s_123",
+		CoordinatorSummary: &runnercontext.CoordinatorSummary{
+			Status: "completed",
+			Diagnostics: []runnercontext.DiagnosticSummary{
+				{Severity: "info", Message: "LIVE_RUNNER_3368E33_OK"},
+				{Severity: "info", Message: "No tools used; workspace remains clean."},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## Reply",
+		"LIVE_RUNNER_3368E33_OK",
+		"No tools used; workspace remains clean.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing coordinator reply %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestRenderRunnerStatusCommentBoundsAndEscapesCoordinatorReplyDiagnostics(t *testing.T) {
+	body, err := RenderRunnerStatusComment(RunnerStatusComment{
+		Status:       "completed",
+		MaxTextBytes: 24,
+		MaxItems:     1,
+		CoordinatorSummary: &runnercontext.CoordinatorSummary{
+			Status: "completed",
+			Diagnostics: []runnercontext.DiagnosticSummary{
+				{Severity: "info", Message: "line one\nline two `unsafe` " + strings.Repeat("x", 80)},
+				{Severity: "info", Message: "must not render"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "## Reply") || !strings.Contains(body, "line one line two 'un...") {
+		t.Fatalf("bounded reply missing or malformed:\n%s", body)
+	}
+	if strings.Contains(body, "must not render") || strings.Contains(body, "`unsafe`") || strings.Contains(body, "\nline two") {
+		t.Fatalf("reply was not bounded/escaped:\n%s", body)
+	}
+}
+
+func TestRenderRunnerStatusCommentDoesNotPublishCoordinatorErrors(t *testing.T) {
+	body, err := RenderRunnerStatusComment(RunnerStatusComment{
+		Status: "failed",
+		CoordinatorSummary: &runnercontext.CoordinatorSummary{
+			Status: "failed",
+			Diagnostics: []runnercontext.DiagnosticSummary{
+				{Severity: "error", Message: "secret local failure details"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "## Reply") || strings.Contains(body, "secret local failure details") {
+		t.Fatalf("error diagnostic leaked publicly:\n%s", body)
+	}
+}
+
 func TestRenderRunnerStatusCommentIncludesResumeGuidanceForTerminalSession(t *testing.T) {
 	body, err := RenderRunnerStatusComment(RunnerStatusComment{
 		Status:          "completed",

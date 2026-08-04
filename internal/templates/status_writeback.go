@@ -82,6 +82,7 @@ func RenderRunnerStatusComment(comment RunnerStatusComment) (string, error) {
 	}
 
 	writeResultSummary(&b, comment)
+	writeCoordinatorReply(&b, comment)
 	writeRejectedReason(&b, comment)
 	writeResumeGuidance(&b, comment)
 	return b.String(), nil
@@ -188,6 +189,33 @@ func writeResultSummary(b *strings.Builder, comment RunnerStatusComment) {
 	seen := map[string]bool{}
 	for _, command := range limited(comment.CLIDirect, comment.MaxItems) {
 		writePublicArtifactLine(b, publicCLIArtifactLine(command), comment.MaxTextBytes, seen)
+	}
+}
+
+func writeCoordinatorReply(b *strings.Builder, comment RunnerStatusComment) {
+	if comment.CoordinatorSummary == nil || strings.TrimSpace(comment.CoordinatorSummary.Status) != "completed" {
+		return
+	}
+	seen := map[string]bool{}
+	var lines []string
+	for _, diagnostic := range limited(comment.CoordinatorSummary.Diagnostics, comment.MaxItems) {
+		severity := strings.ToLower(strings.TrimSpace(diagnostic.Severity))
+		if severity != "" && severity != "info" {
+			continue
+		}
+		line := inlineText(diagnostic.Message, comment.MaxTextBytes)
+		if line == "N/A" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return
+	}
+	b.WriteString("\n## Reply\n\n")
+	for _, line := range lines {
+		fmt.Fprintf(b, "- %s\n", line)
 	}
 }
 
