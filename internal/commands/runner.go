@@ -19,6 +19,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/commentrunner/storage"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/sandbox"
@@ -68,6 +69,8 @@ func (a *app) runRunner(ctx context.Context, args []string) int {
 		return a.runRunnerPoll(ctx, args[1:])
 	case "serve":
 		return a.runRunnerServe(ctx, args[1:])
+	case "storage":
+		return a.runRunnerStorage(ctx, args[1:])
 	case "preflight":
 		return a.runRunnerPreflightCommand(ctx, args[1:])
 	default:
@@ -80,11 +83,13 @@ func (a *app) printRunnerUsage(out io.Writer) {
 	fmt.Fprintln(out, `Usage:
   issue-spec runner poll [options]
   issue-spec runner serve [options]
+  issue-spec runner storage reconcile [options]
   issue-spec runner preflight [options]
 
 Subcommands:
   poll       continuously poll comments and dispatch authorized runner jobs
   serve      receive signed deliveries for a self-hosted profile
+  storage    reconcile runner-managed storage (runtimes and process pools)
   preflight  validate runner auth, repository access, sandbox, acpx, and agent prerequisites
 
 Use "issue-spec runner <subcommand> -h" to show all options and defaults.`)
@@ -152,6 +157,32 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) (exitCode int) {
 		if !opts.JSON {
 			a.printPreflightReport(report)
 			fmt.Fprintln(a.out, "polling: started")
+		}
+		// One canonical root has one destructive owner: poll holds the owner
+		// lock for its lifetime and shares it with every reconcile/cleanup
+		// entry below.
+		owner, err := storage.AcquireOwner(cfg.WorkspaceRoot)
+		if err != nil {
+			a.errorf("runner poll storage owner: %v\n", err)
+			return 1
+		}
+		defer owner.Release()
+		ctx = storage.WithOwner(ctx, owner)
+		// Preserve the raw pre-Normalize state before any current-binary save
+		// so legacy ownership evidence survives the first migration.
+		if _, err := storage.EnsureRawStateBackup(cfg.WorkspaceRoot, cfg.StatePath); err != nil {
+			a.errorf("runner poll storage backup: %v\n", err)
+			return 1
+		}
+		if !opts.AsyncDispatch {
+			// Sync cycles share one storage service for the owner lifetime so
+			// pressure cooldown and pool inspection backoff survive across
+			// cycles. The loader reads fresh state per pass.
+			if service, err := runnerStorageServiceWithLoader(cfg, func(context.Context) (crstate.RunnerState, error) {
+				return crstate.LoadFile(cfg.StatePath)
+			}); err == nil {
+				ctx = storage.WithService(ctx, service)
+			}
 		}
 		if opts.AsyncDispatch {
 			return a.runRunnerPollAsync(ctx, cfg, opts, report)
@@ -360,6 +391,9 @@ func (a *app) runRunnerPollAsync(ctx context.Context, cfg commentrunner.Config, 
 		return 1
 	}
 	defer store.Close()
+	if service, err := runnerStorageService(cfg, store); err == nil {
+		ctx = storage.WithService(ctx, service)
+	}
 
 	startupReconcile, err := a.runRunnerReconcileWithStore(ctx, cfg, store)
 	if err != nil {
@@ -573,6 +607,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 			AcpxPath:                "acpx",
 			Agent:                   commentrunner.DefaultAgentConfig(),
 			WorkspaceRetention:      commentrunner.NewDuration(7 * 24 * time.Hour),
+			StorageOrphanGrace:      commentrunner.NewDuration(7 * 24 * time.Hour),
 			CancellationEnabled:     true,
 		}
 	}
@@ -601,6 +636,8 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	model := fs.String("model", defaults.Agent.Model, "coordinator model/profile name")
 	workspaceRoot := fs.String("workspace-root", "", "managed workspace root; default is beside the repository/runner-scoped state path")
 	workspaceRetention := fs.Duration("workspace-retention", defaults.WorkspaceRetention.Duration, "managed workspace retention duration for expired inactive workspaces")
+	storageMinFree := fs.Int64("storage-min-free-bytes", defaults.StorageMinFreeBytes, "minimum free filesystem bytes required before dispatch; 0 disables the statfs admission guard")
+	storageOrphanGrace := fs.Duration("storage-orphan-grace", defaults.StorageOrphanGrace.Duration, "observation window before an unmatched storage runtime becomes deletion-eligible")
 	bwrapPath := fs.String("bwrap-path", defaults.BwrapPath, "bubblewrap binary path")
 	unsafeNoSandbox := fs.Bool("unsafe-no-sandbox", defaults.UnsafeNoSandbox, "explicitly disable the default bubblewrap filesystem boundary")
 	ghConfigDir := fs.String("gh-config-dir", "", "host gh config directory to mirror for sandboxed issue-spec CLI auth")
@@ -743,6 +780,12 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	}
 	if seen["workspace-retention"] {
 		cfg.WorkspaceRetention = commentrunner.NewDuration(*workspaceRetention)
+	}
+	if seen["storage-min-free-bytes"] {
+		cfg.StorageMinFreeBytes = *storageMinFree
+	}
+	if seen["storage-orphan-grace"] {
+		cfg.StorageOrphanGrace = commentrunner.NewDuration(*storageOrphanGrace)
 	}
 	if seen["bwrap-path"] {
 		cfg.BwrapPath = *bwrapPath
@@ -1039,6 +1082,12 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 	if a.runnerReconcile != nil {
 		return a.runnerReconcile(ctx, cfg)
 	}
+	owner, releaseOwner, err := storage.EnsureOwner(ctx, cfg.WorkspaceRoot)
+	if err != nil {
+		return jobs.ReconcileResult{}, fmt.Errorf("runner storage owner: %w", err)
+	}
+	defer releaseOwner()
+	ctx = storage.WithOwner(ctx, owner)
 	selection, err := a.selectBackendForRunner(ctx, cfg)
 	if err != nil {
 		return jobs.ReconcileResult{}, err
@@ -1063,6 +1112,7 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 	writebacks := wrapRunnerWriteback(&writeback.Service{GitHub: runnerBackend, Store: store}, a.runnerDiagnostics)
 	dispatcher := jobs.Dispatcher{
 		Store:      store,
+		Storage:    runnerStorageLifecycle(ctx, cfg, store),
 		Workspaces: workspaces,
 		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{
 			UnsafeNoSandbox: cfg.UnsafeNoSandbox,
@@ -1077,6 +1127,12 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 }
 
 func (a *app) runRunnerWorkspaceCleanupWithStore(ctx context.Context, cfg commentrunner.Config, store crstate.StateStore) (jobs.ReconcileResult, error) {
+	owner, releaseOwner, err := storage.EnsureOwner(ctx, cfg.WorkspaceRoot)
+	if err != nil {
+		return jobs.ReconcileResult{}, fmt.Errorf("runner storage owner: %w", err)
+	}
+	defer releaseOwner()
+	ctx = storage.WithOwner(ctx, owner)
 	if store == nil {
 		opened, err := crstate.OpenFileStore(cfg.StatePath)
 		if err != nil {
@@ -1087,6 +1143,7 @@ func (a *app) runRunnerWorkspaceCleanupWithStore(ctx context.Context, cfg commen
 	}
 	dispatcher := jobs.Dispatcher{
 		Store:      store,
+		Storage:    runnerStorageLifecycle(ctx, cfg, store),
 		Workspaces: runnerWorkspaceManager(cfg),
 	}
 	return dispatcher.CleanupWorkspaces(ctx)
@@ -1104,6 +1161,9 @@ func (a *app) runRunnerAsyncReconcileWithStore(ctx context.Context, cfg commentr
 		return cleanup, err
 	}
 	reconcile, err := a.runRunnerReconcileWithStore(ctx, cfg, store)
+	if reconcile.StorageCleanup == nil {
+		reconcile.StorageCleanup = cleanup.StorageCleanup
+	}
 	reconcile.WorkspaceCleanup = append(reconcile.WorkspaceCleanup, cleanup.WorkspaceCleanup...)
 	reconcile.Diagnostics = append(reconcile.Diagnostics, cleanup.Diagnostics...)
 	return reconcile, err
@@ -1177,6 +1237,7 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 	writebacks := wrapRunnerWriteback(&writeback.Service{GitHub: runnerBackend, Store: store}, a.runnerDiagnostics)
 	dispatcher := &jobs.Dispatcher{
 		Store:        store,
+		Storage:      runnerStorageLifecycle(ctx, cfg, store),
 		Repositories: repository.GitHubResolver{Metadata: metadataBackend},
 		Workspaces:   workspaces,
 		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{

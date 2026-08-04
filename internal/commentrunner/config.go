@@ -48,11 +48,16 @@ type Config struct {
 	Agent                   AgentConfig            `json:"agent"`
 	WorkspaceRoot           string                 `json:"workspace_root"`
 	WorkspaceRetention      Duration               `json:"workspace_retention"`
-	BwrapPath               string                 `json:"bwrap_path,omitempty"`
-	UnsafeNoSandbox         bool                   `json:"unsafe_no_sandbox"`
-	AllowHostSSH            bool                   `json:"allow_host_ssh,omitempty"`
-	GitAuthorName           string                 `json:"git_author_name,omitempty"`
-	GitAuthorEmail          string                 `json:"git_author_email,omitempty"`
+	// StorageMinFreeBytes is the live statfs admission floor for new dispatch;
+	// zero disables the guard. StorageOrphanGrace is the observation window
+	// before an unmatched storage directory becomes deletion-eligible.
+	StorageMinFreeBytes int64    `json:"storage_min_free_bytes,omitempty"`
+	StorageOrphanGrace  Duration `json:"storage_orphan_grace,omitempty"`
+	BwrapPath           string   `json:"bwrap_path,omitempty"`
+	UnsafeNoSandbox     bool     `json:"unsafe_no_sandbox"`
+	AllowHostSSH        bool     `json:"allow_host_ssh,omitempty"`
+	GitAuthorName       string   `json:"git_author_name,omitempty"`
+	GitAuthorEmail      string   `json:"git_author_email,omitempty"`
 	// OperatorSkillDirs are operator-trusted local skill roots copied into each
 	// session's isolated CODEX_HOME. Repository workflow skills belong in the
 	// repository and arrive through the normal clone path.
@@ -126,6 +131,7 @@ func DefaultConfigFromEnv() (Config, error) {
 		Agent:                   DefaultAgentConfig(),
 		WorkspaceRoot:           defaultWorkspaceRoot(),
 		WorkspaceRetention:      NewDuration(7 * 24 * time.Hour),
+		StorageOrphanGrace:      NewDuration(7 * 24 * time.Hour),
 		CancellationEnabled:     true,
 		// Logging configuration defaults
 		LogMaxSizeMB:     10,
@@ -250,6 +256,12 @@ func (c Config) Validate() error {
 	}
 	if c.WorkspaceRetention.Duration <= 0 {
 		return fmt.Errorf("--workspace-retention must be positive")
+	}
+	if c.StorageMinFreeBytes < 0 {
+		return fmt.Errorf("--storage-min-free-bytes must not be negative")
+	}
+	if c.StorageOrphanGrace.Duration < 0 {
+		return fmt.Errorf("--storage-orphan-grace must not be negative")
 	}
 	if c.MaxConcurrentJobs <= 0 {
 		return fmt.Errorf("--max-concurrency must be positive")

@@ -17,6 +17,7 @@ import (
 	webhook "github.com/higress-group/issue-spec/internal/commentrunner/intake/webhook"
 	runnerserver "github.com/higress-group/issue-spec/internal/commentrunner/server"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/commentrunner/storage"
 	"github.com/higress-group/issue-spec/internal/gitidentity"
 )
 
@@ -30,6 +31,8 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 	statePath := fs.String("state", "", "durable runner state path")
 	workspaceRoot := fs.String("workspace-root", "", "runner workspace root")
 	workspaceRetention := fs.Duration("workspace-retention", 7*24*time.Hour, "non-active workspace retention")
+	storageMinFree := fs.Int64("storage-min-free-bytes", 0, "minimum free filesystem bytes required before dispatch; 0 disables the statfs admission guard")
+	storageOrphanGrace := fs.Duration("storage-orphan-grace", storage.DefaultOrphanGrace, "observation window before an unmatched storage runtime becomes deletion-eligible")
 	acpxPath := fs.String("acpx", "acpx", "acpx executable path")
 	agentKind := fs.String("agent", commentrunner.AgentCodex, "coordinator agent: codex, claude, or qoder")
 	model := fs.String("model", "", "optional coordinator model")
@@ -230,6 +233,8 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 		runnerConfig.Agent.QoderAgentFullAccess = *qoderFullAccess
 	}
 	runnerConfig.WorkspaceRetention = commentrunner.NewDuration(*workspaceRetention)
+	runnerConfig.StorageMinFreeBytes = *storageMinFree
+	runnerConfig.StorageOrphanGrace = commentrunner.NewDuration(*storageOrphanGrace)
 	runnerConfig.UnsafeNoSandbox, runnerConfig.BwrapPath = *unsafeNoSandbox, strings.TrimSpace(*bwrapPath)
 	runnerConfig.AllowHostSSH = *allowHostSSH
 	runnerConfig.GitAuthorName, runnerConfig.GitAuthorEmail = *gitAuthorName, *gitAuthorEmail
@@ -297,6 +302,19 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 		a.printPreflightReport(preflight)
 		return 1
 	}
+	// One canonical root has one destructive owner: serve acquires the owner
+	// lock before the state flock and holds it for the process lifetime.
+	owner, err := storage.AcquireOwner(runnerConfig.WorkspaceRoot)
+	if err != nil {
+		a.errorf("runner serve storage owner: %v\n", err)
+		return 1
+	}
+	defer owner.Release()
+	ctx = storage.WithOwner(ctx, owner)
+	if _, err := storage.EnsureRawStateBackup(runnerConfig.WorkspaceRoot, runnerConfig.StatePath); err != nil {
+		a.errorf("runner serve storage backup: %v\n", err)
+		return 1
+	}
 	store, err := crstate.OpenFileStore(runnerConfig.StatePath)
 	if err != nil {
 		a.errorf("runner serve state: %v\n", err)
@@ -328,7 +346,7 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 	service, err := runnerserver.New(runnerserver.Config{ListenAddress: *listen, TLSCertFile: *tlsCert,
 		TLSKeyFile: *tlsKey, Production: *production,
 		ReadHeaderTimeout: *readHeaderTimeout,
-		ReadTimeout: *readTimeout, WriteTimeout: *writeTimeout, IdleTimeout: *idleTimeout,
+		ReadTimeout:       *readTimeout, WriteTimeout: *writeTimeout, IdleTimeout: *idleTimeout,
 		ShutdownTimeout: *shutdownTimeout, MaxHeaderBytes: *maxHeader, MaxConnections: *maxConnections}, handler)
 	if err != nil {
 		a.errorf("runner serve configuration: %v\n", err)
@@ -342,8 +360,9 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 	if profileToken.Source == "env:ISSUE_SPEC_TOKEN" {
 		_ = os.Unsetenv("ISSUE_SPEC_TOKEN")
 	}
+	storageLifecycle := runnerStorageLifecycle(ctx, runnerConfig, store)
 	runtime, err := runnerServeBuildRuntime(ctx, runnerServeRuntimeInput{Profile: profile, ProfileToken: profileToken.Value,
-		Runner: runnerConfig, Queue: queue, Store: store, HTTP: service, GitCredentialCommand: *gitCredentialCommand,
+		Runner: runnerConfig, Queue: queue, Store: store, HTTP: service, Storage: storageLifecycle, GitCredentialCommand: *gitCredentialCommand,
 		GitCredentialArgs: gitCredentialArgs.Values(), GitCredentialTimeout: *gitCredentialTimeout,
 		GitCredentialMaxOutput: *gitCredentialMaxOutput, GitCredentialConcurrency: *gitCredentialConcurrency,
 		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease, Diagnostics: logger})

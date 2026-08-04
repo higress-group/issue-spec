@@ -429,6 +429,36 @@ NO_PROXY=127.0.0.1,localhost,issues.example.test,code.example.test
 代码平台应放进 `NO_PROXY`；不要把 Proxy 凭据写进 systemd Unit 或公开的排障评论。修改环境
 文件后重启服务，并以同一用户执行 `runner preflight --verify-agent-runtime`。
 
+### 存储生命周期与单一 owner
+
+Runner 的存储以 `--workspace-root` 为锚点：私有的 `.storage` 目录保存 session runtime 根与
+PROCESS workspace pool 的 sidecar 清单、owner 锁以及首次迁移备份。一个规范化 root 只有一个
+具备破坏性的 owner，因此同一 state/workspace 对只能运行一个 systemd unit。在同一 root 上启动
+第二个 `runner serve`（或 `runner poll`）会在启动时失败并提示「stop the old runner before
+starting a new one」；更换实例前务必先停止旧 unit。
+
+`runner serve` 上有两个可选的存储参数：
+
+- `--storage-min-free-bytes <n>`：当 workspace 文件系统空闲字节低于 `n` 时延迟分发（先做一次
+  安全的 reconciliation 复查）。任务保持 queued 而不会失败。默认 `0` 表示关闭该守卫。
+- `--storage-orphan-grace <duration>`：无匹配的 session runtime 目录在被 applied
+  reconciliation 删除前的观察窗口。默认 7 天。
+
+维护期间可以用同一引擎检查或回收存储：
+
+```bash
+sudo -u issue-spec-runner issue-spec --profile team runner storage reconcile \
+  --state /var/lib/issue-spec-runner/state.json \
+  --workspace-root /var/lib/issue-spec-runner/workspaces \
+  --dry-run --json
+```
+
+`--dry-run` 只报告分类与 `would_delete` 动作；`--apply` 在对照重新加载的 runner 状态重新校验
+每一项之后删除符合条件的资源。两种模式都会获取 owner 锁，因此请在停止 unit 后运行该命令。如果
+命令报告 sidecar 处于 report-only 状态（root 身份不同或 schema 更新），它只读清点并以非零码
+退出；除非同时接受丢失所有权与孤儿观察证明，否则不要手工删除 `.storage`。已退役的 PROCESS
+pool 仅在被证明为空时才会删除；不确定的 pool 会被保留并给出处置诊断，绝不会被强制放弃。
+
 ## 8. 通过评论触发 Agent
 
 命令必须从评论第一行开头开始：
