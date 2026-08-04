@@ -99,12 +99,17 @@ Source SPEC comments:
 
 ### Requirement: init-generated workflow assets reflect the resolved workflow
 
-Init MUST generate Skills and workflow guidance from the selected built-in or project workflow, MUST expose provider capabilities only for requested operations, and MUST produce a usable implementation-to-human-handoff path without classifying a repository as planning-only or disabling Runner dispatch because automatic merge is unavailable.
+Init MUST generate Skills and workflow guidance from the selected built-in or project workflow, MUST expose provider capabilities only for requested operations, and MUST produce a usable implementation-to-human-handoff path without classifying a repository as planning-only or disabling Runner dispatch because automatic merge is unavailable. When init applies a non-English workflow language, the generated guidance MUST keep the English `Proposal:`, `Design:`, and `Implement:` stage prefixes while using the selected language for each staged title subject and every ordinary issue title, MUST require an explicit `--title` for staged issues instead of relying on title derivation, and MUST keep canonical structural tokens in English.
 
 #### Scenario: non-merging provider receives complete handoff guidance
 
 - **WHEN** init selects a provider with change creation and ordinary discussion but no conditional merge
 - **THEN** generated assets include implementation, PR or MR creation, rationale, and human handoff without provider-authority skills or merge-capability warnings
+
+#### Scenario: non-English workflow language localizes title subjects explicitly
+
+- **WHEN** init applies a non-English workflow language
+- **THEN** generated guidance requires explicit staged issue titles with an English stage prefix and a subject in the selected language, uses the selected language for ordinary issue titles, and preserves canonical structural tokens in English
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908

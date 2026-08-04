@@ -263,7 +263,11 @@ func writeWorkflowLanguageConfig(root, language string) (string, error) {
 		rules = map[string]any{}
 	}
 	rules["language"] = display
-	rules["language_instructions"] = fmt.Sprintf("Write natural-language body content (descriptions, rationale, design notes, questions, decisions, task descriptions, and QUESTION/scenario prose) in %[1]s. For Proposal, Design, and Implement issue titles, keep the English stage prefix plus the kebab-case change name to match the standardized title family: `Proposal: <change-name>`, `Design: <change-name>`, `Implement: <change-name>`; either omit --title to use the CLI-derived title or pass --title in exactly that `Stage: <change-name>` shape, and do not rewrite these staged titles into %[1]s. Ordinary (non-staged) issue titles use a descriptive %[1]s title. Keep canonical structural tokens in English so validation passes: the `## Requirement:` and `### Scenario:` headings, the `**WHEN**`/`**THEN**` scenario bullets, the MUST/SHALL normative keywords, and typed comment headers.", display)
+	stagedTitleInstructions := "For Proposal, Design, and Implement issue titles, use the standardized English title family: `Proposal: <change-name>`, `Design: <change-name>`, and `Implement: <change-name>`."
+	if display != "English" {
+		stagedTitleInstructions = fmt.Sprintf("For Proposal, Design, and Implement issue titles, keep the English stage prefix (`Proposal:`, `Design:`, or `Implement:`) and write the subject after that prefix in %s; pass an explicit `--title` for these staged issues and do not rely on the CLI-derived title.", display)
+	}
+	rules["language_instructions"] = fmt.Sprintf("Write natural-language body content (descriptions, rationale, design notes, questions, decisions, task descriptions, and QUESTION/scenario prose) in %[1]s. %[2]s Ordinary (non-staged) issue titles use a descriptive %[1]s title. Keep canonical structural tokens in English so validation passes: the `## Requirement:` and `### Scenario:` headings, the `**WHEN**`/`**THEN**` scenario bullets, the MUST/SHALL normative keywords, and typed comment headers.", display, stagedTitleInstructions)
 	cfg["rules"] = rules
 
 	out, err := yaml.Marshal(cfg)

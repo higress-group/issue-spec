@@ -70,11 +70,22 @@ func TestInitLanguageWritesWorkflowConfigWithGeneratedTools(t *testing.T) {
 	}
 	for _, want := range []string{
 		"keep the English stage prefix",
-		"`Proposal: <change-name>`",
-		"do not rewrite these staged titles into Simplified Chinese (简体中文)",
+		"(`Proposal:`, `Design:`, or `Implement:`)",
+		"write the subject after that prefix in Simplified Chinese (简体中文)",
+		"pass an explicit `--title` for these staged issues",
+		"do not rely on the CLI-derived title",
 	} {
 		if !strings.Contains(cfg.Rules["language_instructions"], want) {
 			t.Fatalf("language_instructions missing staged-title guidance %q: %q", want, cfg.Rules["language_instructions"])
+		}
+	}
+	for _, obsolete := range []string{
+		"omit --title",
+		"kebab-case change name",
+		"do not rewrite these staged titles",
+	} {
+		if strings.Contains(cfg.Rules["language_instructions"], obsolete) {
+			t.Fatalf("language_instructions retained obsolete staged-title guidance %q: %q", obsolete, cfg.Rules["language_instructions"])
 		}
 	}
 	if !strings.Contains(out.String(), "workflow language: Simplified Chinese") {
@@ -134,6 +145,22 @@ func TestInitLanguageMergesExistingConfigWithGeneratedTools(t *testing.T) {
 	}
 	if !strings.Contains(cfg.Rules["language_instructions"], "## Requirement:") {
 		t.Fatalf("merge dropped canonical-token guidance: %q", cfg.Rules["language_instructions"])
+	}
+	for _, want := range []string{
+		"use the standardized English title family",
+		"`Proposal: <change-name>`",
+	} {
+		if !strings.Contains(cfg.Rules["language_instructions"], want) {
+			t.Fatalf("English language_instructions missing unchanged staged-title guidance %q: %q", want, cfg.Rules["language_instructions"])
+		}
+	}
+	for _, nonEnglishGuidance := range []string{
+		"write the subject after that prefix",
+		"pass an explicit `--title`",
+	} {
+		if strings.Contains(cfg.Rules["language_instructions"], nonEnglishGuidance) {
+			t.Fatalf("English language_instructions unexpectedly require localized staged titles %q: %q", nonEnglishGuidance, cfg.Rules["language_instructions"])
+		}
 	}
 }
 
