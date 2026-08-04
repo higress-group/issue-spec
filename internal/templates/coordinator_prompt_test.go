@@ -38,6 +38,12 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 		"invalid, stale, or sensitive drafts", "never rewrite and impersonate the writer",
 		"map to changed lines", "valid unchanged text", "non-blocking inline discussions", "summary/index",
 		"inline discussion is unsupported or would create an unresolved merge blocker", "path:symbol/line", "Never demand filler, quota, coverage",
+		"real read-only reviewer independent of every code writer", "exact base and current exact head", "no write path or provider credentials",
+		"findings classified P0, P1, or P2", "route the unchanged finding to the original writer", "runs focused tests, and returns a new exact commit",
+		"same reviewer to recheck it", "Repeat automatically until that reviewer reports zero P0/P1", "still-applicable P2 findings from the final reviewed head",
+		"provider-native non-blocking line comment", "provider supports safe line coordinates", "ordinary change-level `change.comment`",
+		"P2 never enters the repair loop and never pauses completion", "report the rendered comment body and continue",
+		"Never create typed REVIEW/VERIFY, finding evidence, a receipt, a readiness gate, or reviewer merge authority",
 		"Phase projections are ordinary statusless human synthesis",
 		"Persist the selected phase body, perform the first QUESTION pass, upsert the projection",
 		"PROCESS only when managed coordination was selected",
@@ -63,6 +69,15 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 			t.Fatalf("prompt contains stale rule %q", forbidden)
 		}
 	}
+	assertTextOrder(t, prompt,
+		"Materialize durable specs on the implementation branch",
+		"Push the current exact reviewable head and create or select its PR/MR",
+		"Dispatch one real read-only reviewer independent of every code writer",
+		"Repeat automatically until that reviewer reports zero P0/P1",
+		"Keep only still-applicable P2 findings from the final reviewed head",
+		"Complete final-head rationale publication",
+		"stop before approval or merge",
+	)
 }
 
 func TestCoordinatorPromptRolePacketBoundary(t *testing.T) {

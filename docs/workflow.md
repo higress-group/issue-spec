@@ -63,6 +63,29 @@ reviewable head. Create or select the provider-native PR/MR using an advertised
 Optional `evidence.snapshot` data remains audit/navigation context. Issue-spec
 does not normalize current provider policy or reproduce its merge decision.
 
+## Converge reviewer findings
+
+Before human handoff, dispatch one real read-only reviewer independent of every
+code writer. Give it the exact base and current exact head, but no write path or
+provider credentials. The reviewer returns actionable P0, P1, or P2 findings
+with stable changed-line anchors.
+
+Route each P0/P1 unchanged to the original writer that owns the affected code.
+That writer repairs it, runs focused tests, and returns a new exact commit.
+Integrate and push the repair, then have the same reviewer recheck it. Repeat
+automatically until no P0/P1 remains. This routing needs no PROCESS unless a
+separate managed-coordination need already exists.
+
+Keep only still-applicable P2 findings from the final reviewed head. Publish
+each unchanged as a provider-native non-blocking line comment when safe line
+coordinates are supported. Otherwise publish an ordinary change-level
+`change.comment` preserving `path:symbol/line`. P2 never enters the repair loop
+and never pauses completion. If publication is unavailable or fails, report the
+rendered body and continue.
+
+This loop creates no typed REVIEW/VERIFY, finding evidence, receipt, readiness
+gate, provider approval, or merge authority.
+
 ## Explain non-obvious code
 
 Each actual code writer owns zero or more line-rationale drafts for non-obvious
