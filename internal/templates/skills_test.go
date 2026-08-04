@@ -174,6 +174,11 @@ func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
 		"Invalid, stale, or sensitive drafts", "never rewrites and impersonates the writer",
 		"Each worker owns one package's code changes, focused tests, exact result commit", "Coordinator owns dispatch and wait, exact-commit inspection, integration",
 		"proportionate final validation, anchor validation, and provider publication", "Do not give provider credentials to workers",
+		"real read-only reviewer that is independent of every code writer", "exact base and current exact head", "no write path or provider credentials",
+		"actionable P0, P1, or P2 findings", "Route every P0/P1 unchanged to the original writer", "same reviewer recheck it",
+		"Repeat automatically until that reviewer reports zero P0/P1", "still-applicable P2 findings from the final reviewed head",
+		"provider-native non-blocking line comment", "ordinary change-level `change.comment`", "P2 never enters the repair loop and never pauses completion",
+		"report the rendered comment body and continue", "no typed REVIEW/VERIFY, finding evidence, receipt, readiness gate, or reviewer merge authority",
 	}
 	for _, want := range wants {
 		if !strings.Contains(workflow, want) {
@@ -212,6 +217,12 @@ func TestApplyGuidanceDistinguishesUnmanagedWorkerFromManagedPackages(t *testing
 		"### Implementation Rationale", "Every actual code writer owns zero or more line-rationale drafts",
 		"No Implement, TASK, PROCESS, or SPEC is required", "Comments and status remain human review context and never certify mergeability",
 		"On the unmanaged delegated path this is the single non-Coordinator worker", "on the narrow Coordinator fast path it is the Coordinator", "under managed PROCESS each package owner owns its drafts",
+		"real read-only reviewer that is independent of every code writer", "exact base and current exact head", "no write path or provider credentials",
+		"actionable P0, P1, or P2 findings", "Route every P0/P1 unchanged to the original writer", "same reviewer recheck it",
+		"Repeat automatically until the reviewer reports zero P0/P1", "still-applicable P2 findings from the final reviewed head",
+		"provider-native non-blocking line comment", "ordinary change-level `change.comment` preserving `path:symbol/line`",
+		"P2 never enters the repair loop or pauses completion", "report the rendered comment body and continue",
+		"no typed REVIEW/VERIFY, finding evidence, receipt, readiness gate, or reviewer merge authority",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply guidance missing direct delegation rule %q:\n%s", want, apply)
@@ -323,9 +334,9 @@ func TestGeneratedGuidanceDeterministicSizeBudgets(t *testing.T) {
 		maxItems    int
 	}
 	budgets := map[string]budget{
-		"issue-spec-workflow": {maxBytes: 11800, maxHeadings: 8, maxItems: 40},
+		"issue-spec-workflow": {maxBytes: 12400, maxHeadings: 8, maxItems: 40},
 		"issue-spec-propose":  {maxBytes: 5000, maxHeadings: 4, maxItems: 16},
-		"issue-spec-apply":    {maxBytes: 7300, maxHeadings: 5, maxItems: 12},
+		"issue-spec-apply":    {maxBytes: 8500, maxHeadings: 5, maxItems: 12},
 	}
 	for _, skill := range IssueSpecSkills("owner/repo") {
 		limit, ok := budgets[skill.Name]

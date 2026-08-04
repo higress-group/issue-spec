@@ -30,6 +30,8 @@ Use this coordinator protocol for a bounded simple Issue or optional Proposal, D
 - Each PROCESS owns one independently verifiable Design invariant and its major entry points. Balance end-to-end invariant cohesion against the role agent's bounded context and working set. Split only at a stable interface when each side has independent acceptance criteria and can be reviewed in isolation. Paths, file overlap, parallelism, commands, findings, token counts, and runtime session IDs are not semantic boundaries.
 - When managed PROCESS implementation is selected, it preserves exact base, owned paths, DCO, tests, managed worktree isolation, dependency order, and bounded handoff. Direct single-writer delegation does not acquire that lifecycle. These facts protect execution only and never certify delivery acceptance.
 
+Before human handoff, dispatch one real read-only reviewer that is independent of every code writer. Give the reviewer the exact base and current exact head, but no write path or provider credentials. It returns only actionable P0, P1, or P2 findings with stable changed-line anchors. Route every P0/P1 unchanged to the original writer that owns the affected code; that writer repairs it, runs focused tests, and returns a new exact commit. Integrate and push the new head, then have the same reviewer recheck it. Repeat automatically until that reviewer reports zero P0/P1. Review and repair routing do not require PROCESS unless an existing managed-coordination need does. Keep only still-applicable P2 findings from the final reviewed head, publish each unchanged as a provider-native non-blocking line comment when safe line coordinates are supported, and otherwise use an ordinary change-level `change.comment` that preserves `path:symbol/line`. P2 never enters the repair loop and never pauses completion; if publication is unavailable or fails, report the rendered comment body and continue. This loop creates no typed REVIEW/VERIFY, finding evidence, receipt, readiness gate, or reviewer merge authority.
+
 Every actual code writer owns zero or more line-rationale drafts for non-obvious decisions in its work package. On an unmanaged delegated path this is the single non-Coordinator worker; on the narrow Coordinator fast path it is the Coordinator; under managed PROCESS each package owner owns its drafts. A useful draft names repository-relative path, stable symbol plus changed-line anchor, and concise why/tradeoff/risk, with no secret, raw payload, or credential. Writers need no provider credentials and MUST NOT guess final diff positions. Obvious code needs no draft, quota, coverage target, or placeholder.
 
 Each worker owns one package's code changes, focused tests, exact result commit, decisions, risks, and rationale drafts. The Coordinator owns dispatch and wait, exact-commit inspection, integration, proportionate final validation, anchor validation, and provider publication. Do not give provider credentials to workers.
@@ -39,11 +41,12 @@ After integration and exact-head push, the Coordinator validates each anchor, co
 ## Human Review Handoff
 
 1. Materialize repository durable specs on the implementation branch and run the selected implementation tests and checks.
-2. Push one exact reviewable head and create or select the provider-native PR/MR through an approved provider operation.
-3. Publish valuable writer-owned line rationale and the top-level `### Implementation Rationale` summary when the requested provider discussion surface is available.
-4. Report the exact head, PR/MR link, tests and results, known risks, boundaries, and rationale publication status to the human.
-5. Stop before approval or merge. The human reviews current provider-native CI, approvals, conversations, ownership, and branch policy and decides whether to merge in the provider UI.
-6. Do not add a readiness receipt, normalized provider-policy model, merge command, or automatic post-merge lifecycle step.
+2. Push the current exact reviewable head and create or select the provider-native PR/MR through an approved provider operation.
+3. Run the independent finding loop; every P0/P1 repair produces a tested, pushed head that the same reviewer rechecks until zero remain.
+4. Publish final-head P2 comments without pausing, then publish valuable writer-owned line rationale and the top-level `### Implementation Rationale` summary when the requested provider discussion surface is available.
+5. Report the exact head, PR/MR link, tests and results, known risks, boundaries, P2 publication status, and rationale publication status to the human.
+6. Stop before approval or merge. The human reviews current provider-native CI, approvals, conversations, ownership, and branch policy and decides whether to merge in the provider UI.
+7. Do not add a readiness receipt, normalized provider-policy model, merge command, or automatic post-merge lifecycle step.
 
 ## Cutover Boundary
 

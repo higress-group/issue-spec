@@ -58,9 +58,38 @@ Generated guidance MUST select execution mode before assigning writers. Once Des
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
+### Requirement: generated guidance converges reviewer findings by severity
+
+Before human handoff, generated workflow guidance MUST dispatch one real read-only reviewer independent of every actual code writer against the exact base and current exact head, without a write path or provider credentials. The reviewer MUST classify actionable findings as P0, P1, or P2 and provide stable changed-line anchors. The coordinator MUST route every P0/P1 unchanged to the original writer that owns the affected code. That writer MUST repair the finding, run focused tests, and return a new exact commit; after integration and push, the same reviewer MUST recheck the new exact head. The workflow MUST repeat this loop automatically until the reviewer reports zero P0/P1.
+
+The workflow MUST retain only still-applicable P2 findings from the final reviewed head and MUST publish each unchanged as a provider-native non-blocking line comment when an approved provider tool supports safe line coordinates. Otherwise it MUST use the provider-neutral ordinary `change.comment` operation and preserve `path:symbol/line`. P2 MUST NOT enter the repair loop or pause completion. When P2 publication is unavailable or fails, the workflow MUST report the rendered comment body and continue. Finding convergence MUST NOT require PROCESS without a separate managed-coordination need and MUST NOT create typed REVIEW/VERIFY, finding evidence, receipts, readiness gates, provider approval, or merge authority.
+
+#### Scenario: P1 automatically returns to its original writer
+
+- **WHEN** the independent reviewer reports a P1 against the current exact head
+- **THEN** the coordinator routes the unchanged finding to the original writer that owns the affected code
+- **THEN** that writer repairs and tests a new exact commit
+- **THEN** the same reviewer rechecks the new exact head
+- **THEN** the workflow repeats until no P0/P1 remains
+
+#### Scenario: P2 is visible and non-blocking
+
+- **WHEN** the final reviewed exact head has a still-applicable P2
+- **THEN** the workflow publishes the unchanged finding as a non-blocking provider comment
+- **THEN** the workflow continues to human handoff without waiting for a repair or human confirmation
+
+#### Scenario: provider has no safe line-comment coordinates
+
+- **WHEN** the selected code provider cannot safely publish a non-blocking line comment
+- **THEN** the workflow publishes an ordinary change-level `change.comment` that preserves `path:symbol/line`
+- **THEN** publication failure is reported with the rendered body and does not pause completion
+
+Source issue:
+- https://github.com/higress-group/issue-spec/issues/429
+
 ### Requirement: coordinator owns orchestration and gates only
 
-The coordinator MUST own only selected planning, scheduling, workspace preparation and integration, exact-head anchor/applicability/sensitive-data validation and provider publication of worker-authored line rationale, the ordinary provider-native `### Implementation Rationale` summary/index, project validation summary, PR or MR handoff, blocker routing, and bounded handoff. It MUST return or explain dropping invalid, stale, or sensitive drafts and MUST NOT rewrite the actual code writers' line rationale, impersonate workers or reviewers, own review sync, verify, legacy rationale evidence, finding resolution, evidence publication, compute merge readiness, approve, or merge.
+The coordinator MUST own only selected planning, scheduling, workspace preparation and integration, exact-head anchor/applicability/sensitive-data validation and provider publication of worker-authored line rationale, the ordinary provider-native `### Implementation Rationale` summary/index, project validation summary, PR or MR handoff, verbatim P0/P1 writer-reviewer routing, non-blocking P2 provider publication, blocker routing, and bounded handoff. It MUST return or explain dropping invalid, stale, or sensitive drafts and MUST NOT rewrite the actual code writers' line rationale or reviewer findings, impersonate workers or reviewers, own review sync, verify, legacy rationale evidence, finding resolution, evidence publication, compute merge readiness, approve, or merge.
 
 #### Scenario: coordinator routes but does not create provider policy
 
