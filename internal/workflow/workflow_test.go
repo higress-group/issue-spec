@@ -80,6 +80,63 @@ artifacts:
 	}
 }
 
+func TestResolveLegacyOpenSpecRetiredArtifacts(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "openspec", "config.yaml"), "schema: retired-evidence\n")
+	writeFile(t, filepath.Join(root, "openspec", "schemas", "retired-evidence", "schema.yaml"), `
+artifacts:
+  proposal:
+    type: proposal
+  specs:
+    type: specs
+  review:
+    type: review
+    requires:
+      - tasks
+  verify:
+    type: verification
+    requires:
+      - review
+  tasks:
+    type: tasks
+`)
+
+	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("retired legacy artifacts should resolve: %v diagnostics=%+v", err, plan.Diagnostics)
+	}
+	if plan.Source.Kind != SourceLegacyOpenSpec {
+		t.Fatalf("source kind = %q, want legacy", plan.Source.Kind)
+	}
+	for _, test := range []struct {
+		id  string
+		typ string
+	}{
+		{id: "review", typ: "REVIEW"},
+		{id: "verify", typ: "VERIFY"},
+	} {
+		artifact := artifactByID(plan.Artifacts, test.id)
+		if artifact.Type != test.typ {
+			t.Errorf("artifact %s type = %q, want normalized %q", test.id, artifact.Type, test.typ)
+		}
+		if len(artifact.Storage) != 0 {
+			t.Errorf("retired artifact %s acquired storage: %+v", test.id, artifact.Storage)
+		}
+		found := false
+		for _, diagnostic := range plan.Diagnostics {
+			if diagnostic.Code == "retired_artifact_type" && diagnostic.Artifact == test.id {
+				found = true
+				if diagnostic.Severity != "warning" || !strings.Contains(diagnostic.Message, test.typ) || !strings.Contains(diagnostic.Message, "parsed but never projected") {
+					t.Errorf("retired artifact %s diagnostic = %+v", test.id, diagnostic)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("retired artifact %s warning missing: %+v", test.id, plan.Diagnostics)
+		}
+	}
+}
+
 func TestResolveBuiltInFallbackWhenNoConfigExists(t *testing.T) {
 	root := t.TempDir()
 	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})

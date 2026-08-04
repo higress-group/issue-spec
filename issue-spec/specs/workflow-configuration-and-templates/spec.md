@@ -200,3 +200,20 @@ Legacy review sync, verify submit, evidence-only PROCESS completion, rationale-g
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
+
+### Requirement: retired workflow artifact compatibility
+
+The workflow resolver MUST recognize normalized REVIEW and VERIFY artifacts as retired, non-projected inputs, MUST emit a non-blocking retired-artifact diagnostic for each, and MUST continue to reject artifact types that are neither active nor retired.
+
+#### Scenario: legacy review and verify artifacts resolve without active storage
+
+- **WHEN** a legacy OpenSpec schema declares review and verify artifacts alongside active proposal and specification artifacts
+- **THEN** workflow resolution succeeds, reports a retired_artifact_type warning for each retired artifact, and assigns neither retired artifact an active issue-spec storage route
+
+#### Scenario: unknown artifact types remain invalid
+
+- **WHEN** a workflow schema declares an artifact whose normalized type is neither active nor one of the recognized retired REVIEW or VERIFY types
+- **THEN** workflow resolution fails with an unsupported_artifact_type error for that artifact
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/425#issuecomment-5176867003

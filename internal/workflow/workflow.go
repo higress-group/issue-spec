@@ -664,7 +664,9 @@ func validateArtifacts(templateDir string, artifacts []Artifact, source SourceKi
 			diagnostics = append(diagnostics, Diagnostic{Severity: "error", Code: "duplicate_artifact_id", Artifact: artifact.ID, Message: "duplicate artifact id " + artifact.ID})
 		}
 		ids[artifact.ID] = true
-		if !supportedArtifactType(artifact.Type) {
+		if retiredArtifactType(artifact.Type) {
+			diagnostics = append(diagnostics, Diagnostic{Severity: "warning", Code: "retired_artifact_type", Artifact: artifact.ID, Message: fmt.Sprintf("artifact %s has retired type %q; it is parsed but never projected", artifact.ID, artifact.Type)})
+		} else if !supportedArtifactType(artifact.Type) {
 			diagnostics = append(diagnostics, Diagnostic{Severity: "error", Code: "unsupported_artifact_type", Artifact: artifact.ID, Message: fmt.Sprintf("artifact %s has unsupported type %q", artifact.ID, artifact.Type)})
 		}
 		for _, field := range artifact.UnknownFields {
@@ -840,6 +842,15 @@ func normalizeArtifactType(typ, id string, generates []string) string {
 func supportedArtifactType(typ string) bool {
 	switch typ {
 	case "proposal", "design", "implement", "SPEC", "QUESTION", "TASK", "PROCESS":
+		return true
+	default:
+		return false
+	}
+}
+
+func retiredArtifactType(typ string) bool {
+	switch typ {
+	case "REVIEW", "VERIFY":
 		return true
 	default:
 		return false
