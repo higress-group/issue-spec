@@ -222,8 +222,13 @@ func (a *app) runCommentCreate(ctx context.Context, args []string) int {
 		a.errorf("--body-file must not be empty\n")
 		return 2
 	}
-	if model.ParseTypedComment(body).Type == "ANSWER" {
+	typed := model.ParseTypedComment(body)
+	if typed.Type == "ANSWER" {
 		a.errorf("ANSWER comments are creation-only; use `issue-spec question answer`\n")
+		return 2
+	}
+	if typed.Type != "" {
+		a.errorf("typed %s comments cannot use ordinary `comment create`; use `comment upsert` or `question create` so new-ID validation runs\n", typed.Type)
 		return 2
 	}
 	client, _, err := a.clientFor(ctx, *host)
@@ -493,6 +498,7 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	commentType := fs.String("type", "", "typed comment type")
 	id := fs.String("id", "", "typed comment id")
+	allowLegacyID := fs.Bool("allow-legacy-id", false, "allow an intentional new legacy ID without the target issue prefix")
 	bodyFile := fs.String("body-file", "", "markdown body file, or - for stdin")
 	agent := fs.String("agent", "Coordinator", "logical agent identity")
 	agentSession := addAgentSessionFlag(fs)
@@ -519,6 +525,10 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	}
 	if strings.EqualFold(strings.TrimSpace(*commentType), "ANSWER") {
 		a.errorf("ANSWER comments cannot be upserted; use `issue-spec question answer` to append a new immutable ANSWER\n")
+		return 2
+	}
+	if err := model.ValidateTypedIdentity(*commentType, *id); err != nil {
+		a.errorf("%v\n", err)
 		return 2
 	}
 	// Validate the --covers-issue flag combination before any auth/network so a
@@ -652,9 +662,12 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 		}
 	}
 
-	action, comment, dropped, err := upsertTypedComment(ctx, client, repo, issueNumber, *commentType, *id, body)
+	action, comment, dropped, err := upsertTypedComment(ctx, client, repo, issueNumber, *commentType, *id, body, *allowLegacyID)
 	if err != nil {
 		a.errorf("upsert comment: %v\n", err)
+		if isNewTypedIDPolicyError(err) {
+			return 2
+		}
 		return 1
 	}
 	result := map[string]any{"ok": true, "action": action, "issue": issueNumber, "comment_id": comment.ID, "url": comment.HTMLURL, "api_url": comment.URL, "type": strings.ToUpper(*commentType), "id": *id}

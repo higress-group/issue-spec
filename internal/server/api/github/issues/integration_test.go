@@ -484,7 +484,7 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 	}
 
 	var answers []models.CommentSnapshot
-	for range 2 {
+	for answerIndex := range 2 {
 		_, answer, usedQuestion, err := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
 			issue.Issue.Number, subject, webOrigin,
 			issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: question.BodyDigest,
@@ -494,8 +494,10 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 		}
 		payload, err := model.ParseAnswerPayload(answer.Comment.Body)
 		parsed := model.ParseTypedComment(answer.Comment.Body)
+		wantAnswerID := fmt.Sprintf("ANSWER-%d%03d", issue.Issue.Number, answerIndex+1)
 		if err != nil || !reflect.DeepEqual(payload.Question, usedQuestion.Snapshot) || payload.Selection.Options[0].ID != "safe" ||
 			parsed.Type != "ANSWER" || parsed.Status != "done" || parsed.Agent != environment.owner.User.Login ||
+			parsed.ID != wantAnswerID || model.ValidateIssueScopedTypedIdentity("ANSWER", parsed.ID, issue.Issue.Number) != nil ||
 			parsed.AgentSessionID != "" || answer.Comment.AuthorID == nil ||
 			*answer.Comment.AuthorID != environment.owner.User.ID ||
 			answer.Comment.CreatedAt.IsZero() || answer.Comment.UpdatedAt.Before(answer.Comment.CreatedAt) ||
@@ -515,6 +517,13 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 	if _, _, err := environment.service.UpdateComment(t.Context(), "acme", "widgets",
 		codec.StableNumericID(answers[0].Comment.ID.String()), subject, "rewritten"); !errors.Is(err, issueapi.ErrAnswerImmutable) {
 		t.Fatalf("ANSWER patch error=%v", err)
+	}
+	beforeAnswerDelete := countRows(t, environment.pool, "comments")
+	if _, _, err := environment.service.DeleteComment(t.Context(), "acme", "widgets",
+		codec.StableNumericID(answers[0].Comment.ID.String()), subject); !errors.Is(err, issueapi.ErrAnswerImmutable) ||
+		countRows(t, environment.pool, "comments") != beforeAnswerDelete {
+		t.Fatalf("ANSWER delete error=%v comments=%d/%d", err,
+			beforeAnswerDelete, countRows(t, environment.pool, "comments"))
 	}
 
 	changedQuestion := trustedQuestionBody(t, "QUESTION-007", "Choose again?",

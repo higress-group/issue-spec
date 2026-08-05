@@ -37,6 +37,7 @@ func (a *app) runQuestionCreate(ctx context.Context, args []string) int {
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	id := fs.String("id", "", "QUESTION id")
+	allowLegacyID := fs.Bool("allow-legacy-id", false, "allow an intentional new legacy ID without the target issue prefix")
 	question := fs.String("question", "", "question text")
 	bodyFile := fs.String("body-file", "", "question body file, or - for stdin")
 	choiceFile := fs.String("choice-file", "", "choice model JSON file, or - for stdin")
@@ -57,6 +58,10 @@ func (a *app) runQuestionCreate(ctx context.Context, args []string) int {
 	}
 	issueNumber, err := parseIssueFlag(*issueFlag, "issue")
 	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	if err := model.ValidateTypedIdentity("QUESTION", *id); err != nil {
 		a.errorf("%v\n", err)
 		return 2
 	}
@@ -130,9 +135,12 @@ func (a *app) runQuestionCreate(ctx context.Context, args []string) int {
 		a.errorf("render question body: %v\n", err)
 		return 2
 	}
-	action, comment, _, err := upsertTypedComment(ctx, client, repo, issueNumber, "QUESTION", *id, body)
+	action, comment, _, err := upsertTypedComment(ctx, client, repo, issueNumber, "QUESTION", *id, body, *allowLegacyID)
 	if err != nil {
 		a.errorf("upsert QUESTION %s: %v\n", *id, err)
+		if isNewTypedIDPolicyError(err) {
+			return 2
+		}
 		return 1
 	}
 	result := map[string]any{"ok": true, "action": action, "issue": issueNumber, "comment_id": comment.ID, "url": comment.HTMLURL, "api_url": comment.URL, "type": "QUESTION", "id": *id, "status": status, "blocking": *blocking}
@@ -149,6 +157,7 @@ func (a *app) runQuestionAnswer(ctx context.Context, args []string) int {
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	id := fs.String("id", "", "new ANSWER id")
+	allowLegacyID := fs.Bool("allow-legacy-id", false, "allow an intentional new legacy ID without the target issue prefix")
 	questionID := fs.String("question-id", "", "owning QUESTION id")
 	var selected stringListFlag
 	fs.Var(&selected, "select", "selected stable option ID; repeat or comma-separate")
@@ -170,6 +179,11 @@ func (a *app) runQuestionAnswer(ctx context.Context, args []string) int {
 	}
 	if err := model.ValidateTypedIdentity("ANSWER", *id); err != nil {
 		a.errorf("%v\n", err)
+		return 2
+	}
+	if err := model.ValidateIssueScopedTypedIdentity("ANSWER", *id, int64(issueNumber)); err != nil && !*allowLegacyID {
+		a.errorf("%v\n", err)
+		a.errorf("pass --allow-legacy-id only for an intentional legacy-compatible create\n")
 		return 2
 	}
 	if err := model.ValidateTypedIdentity("QUESTION", *questionID); err != nil {
@@ -246,7 +260,9 @@ func (a *app) runNativeQuestionAnswer(ctx context.Context, profile auth.Profile,
 	}
 	canonical := model.ParseTypedComment(created.Comment.Body)
 	payload, payloadErr := model.ParseAnswerPayload(created.Comment.Body)
-	if payloadErr != nil || canonical.Type != "ANSWER" || canonical.ID == "" || payload.Question.ID != questionID {
+	identityErr := model.ValidateIssueScopedTypedIdentity("ANSWER", canonical.ID, int64(issueNumber))
+	if payloadErr != nil || len(canonical.Errors) > 0 || canonical.Type != "ANSWER" || identityErr != nil ||
+		payload.Question.ID != questionID {
 		a.errorf("append self-hosted ANSWER: server returned an invalid canonical ANSWER\n")
 		return 1
 	}

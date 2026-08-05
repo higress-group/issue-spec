@@ -42,7 +42,7 @@ func ProposalIssueWithOptions(change string, options WorkflowAuthoringOptions) (
 	b.WriteString(plainSection("Key Constraints", "- Active change artifacts live in this GitHub proposal/design/implement issue set."))
 	b.WriteString(fillSection("Related Specs Analysis", "Summarize the existing SPECs or durable specs this interacts with and how, so a reader need not rediscover them."))
 	b.WriteString(fillSection("Existing Assumptions Impact", "Record the assumptions in force and how this change affects or depends on them."))
-	b.WriteString(plainSection("Open Questions", "- No blocking QUESTION is currently recorded."))
+	b.WriteString(plainSection("Question Convergence Check", "- Canonical carrier: any genuine unresolved decision belongs only in a blocking typed QUESTION comment attached to this Proposal, not this issue body.\n- Issue-body policy: summarize only settled decisions and assumptions."))
 	if options.HTMLReviewEnabled {
 		b.WriteString(plainSection("Human Review Projection", "- Timing: after the first QUESTION discovery/create pass and before complete SPEC authoring.\n- Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.\n- Presentation: lead with an affected person or operator and one concrete before/after case before introducing technical structure.\n- Coverage: build a coverage ledger and present the complete current problem, outcome, boundaries, non-goals, assumptions, risks, decisions, alternatives, and expected SPEC coverage; do not emit only a delta or executive summary.\n- Context: projection HTML source is excluded from default Agent context."))
 	}
@@ -61,7 +61,7 @@ func DesignIssueWithOptions(change, proposalRef string, options WorkflowAuthorin
 	var b strings.Builder
 	fmt.Fprintf(&b, "<!-- issue-spec:issue=design change=%s version=1 -->\n", change)
 	fmt.Fprintf(&b, "# Design: %s\n\n", change)
-	b.WriteString(plainSection("Question Convergence Check", fmt.Sprintf("- Proposal Issue: %s\n- Blocking QUESTION status: confirmed or explicitly accepted as assumptions.", valueOr(proposalRef, "N/A"))))
+	b.WriteString(plainSection("Question Convergence Check", fmt.Sprintf("- Proposal Issue: %s\n- Proposal QUESTION status: resolved or explicitly accepted as assumptions before Design authoring.\n- Design carrier: any newly discovered genuine unresolved decision belongs only in a blocking typed QUESTION comment, not this issue body.", valueOr(proposalRef, "N/A"))))
 	if options.HTMLReviewEnabled {
 		b.WriteString(plainSection("Human Review Projection", "- Timing: after the first QUESTION discovery/create pass and before complete TASK planning.\n- Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.\n- Presentation: lead with a concrete request or operator case, observable outcome, and meaningful failure path before introducing components.\n- Coverage: build a coverage ledger and present the complete current architecture, invariants, flow, boundaries, interfaces and state, alternatives, compatibility, rollout/rollback, risks, verification, and SPEC traceability; do not assume the reviewer already knows omitted design information.\n- Context: keep projection HTML source outside default Agent context."))
 	}
@@ -76,7 +76,7 @@ func DesignIssueWithOptions(change, proposalRef string, options WorkflowAuthorin
 	b.WriteString(fillSection("Rejected Alternatives", "Record the alternatives rejected and why, so they are not re-litigated."))
 	b.WriteString(fillSection("Test Strategy and Acceptance Criteria", "Describe how each SPEC is verified and what acceptance looks like."))
 	b.WriteString(fillSection("Rollout / Rollback Notes", "Note rollout and rollback considerations."))
-	b.WriteString(plainSection("Confirmation Checklist", "- [ ] SPEC comments are linked and testable.\n- [ ] Blocking QUESTION comments are resolved or accepted as assumptions."))
+	b.WriteString(plainSection("Confirmation Checklist", "- [ ] SPEC comments are linked and testable.\n- [ ] Proposal and Design blocking QUESTION comments are resolved or explicitly accepted as assumptions."))
 	body := strings.TrimRight(b.String(), "\n") + "\n"
 	title := IssueTitle("design", change, body, "")
 	return title, body, []string{"issue-spec/design"}

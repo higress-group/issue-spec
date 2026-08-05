@@ -55,7 +55,7 @@ func TestQuestionAnswerAppendsCanonicalSnapshotsAndNeverUpdates(t *testing.T) {
 		},
 	}
 	app, out := transitionApp(backend)
-	for _, id := range []string{"ANSWER-701", "ANSWER-702"} {
+	for _, id := range []string{"ANSWER-7001", "ANSWER-7002"} {
 		if code := app.runQuestionAnswer(t.Context(), []string{
 			"--repo", "o/r", "--issue", "7", "--id", id, "--question-id", "QUESTION-701", "--select", "keep",
 		}); code != 0 {
@@ -74,6 +74,33 @@ func TestQuestionAnswerAppendsCanonicalSnapshotsAndNeverUpdates(t *testing.T) {
 			len(payload.Selection.Options) != 1 || payload.Selection.Options[0].ID != "keep" {
 			t.Fatalf("answer[%d] payload = %+v", i, payload)
 		}
+	}
+}
+
+func TestQuestionAnswerRequiresIssueScopedNewIDUnlessLegacyBypassIsExplicit(t *testing.T) {
+	questionBody := commandChoiceQuestion(t)
+	question := github.Comment{ID: 70, HTMLURL: "https://example.test/issues/7#issuecomment-70", Body: questionBody}
+	creates := 0
+	backend := fakeGitHubBackend{
+		info: github.BackendInfo{Name: "fake", Kind: "test", Host: "github.com"},
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{question}, nil
+		},
+		createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			creates++
+			return github.Comment{ID: 71, HTMLURL: "https://example.test/answer", Body: body}, nil
+		},
+	}
+	app, out, errOut := transitionAppWithError(backend)
+	args := []string{"--repo", "o/r", "--issue", "7", "--id", "ANSWER-701", "--question-id", "QUESTION-701", "--select", "keep"}
+	if code := app.runQuestionAnswer(t.Context(), args); code != 2 || creates != 0 || !strings.Contains(errOut.String(), "expected ANSWER-7<NNN>") {
+		t.Fatalf("without bypass code=%d creates=%d stdout=%q stderr=%q", code, creates, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	args = append(args, "--allow-legacy-id")
+	if code := app.runQuestionAnswer(t.Context(), args); code != 0 || creates != 1 {
+		t.Fatalf("with bypass code=%d creates=%d stdout=%q stderr=%q", code, creates, out.String(), errOut.String())
 	}
 }
 
@@ -221,6 +248,48 @@ func TestQuestionAnswerUsesNativeHostedAuthorityForSelectedAndCustomIntent(t *te
 				}
 			}
 		})
+	}
+}
+
+func TestQuestionAnswerRejectsNativeCanonicalIDForAnotherIssue(t *testing.T) {
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Setenv("ISSUE_SPEC_TOKEN", "native-question-token")
+	profile := auth.Profile{
+		Name: "native-question-invalid-answer", Kind: auth.ProfileKindHosted, Hostname: "issues.test",
+		APIURL: "https://issues.test/api/v3", NativeAPIURL: "https://issues.test/api/v1",
+		WebURL: "https://issues.test", ServerInstanceID: "native-question-invalid-answer-instance",
+	}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := model.QuestionSnapshot{
+		ID: "QUESTION-701", Question: "Which behavior?", IssueURL: "https://issues.test/o/r/issues/7",
+		SourceURL: "https://issues.test/o/r/issues/7#issuecomment-70",
+		ChoiceModel: model.ChoiceModel{
+			Version: model.ChoiceModelVersion, Mode: model.ChoiceModeSingle,
+			Options: []model.ChoiceOption{{ID: "keep", Label: "Keep"}},
+		},
+	}
+	provider := &fakeNativeQuestionAnswerProvider{
+		question: github.NativeQuestionAuthority{
+			Question: snapshot, RepresentationVersion: 3,
+			BodyDigest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		},
+		answerID: "ANSWER-8001",
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.profileName = profile.Name
+	app.newNativeQuestionAnswerProvider = func(auth.Profile, string) (github.NativeQuestionAnswerOperations, error) {
+		return provider, nil
+	}
+	code := app.runQuestionAnswer(t.Context(), []string{
+		"--repo", "o/r", "--issue", "7", "--id", "ANSWER-7001", "--question-id", "QUESTION-701",
+		"--select", "keep", "--json",
+	})
+	if code != 1 || out.Len() != 0 ||
+		!strings.Contains(errOut.String(), "server returned an invalid canonical ANSWER") {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
 }
 

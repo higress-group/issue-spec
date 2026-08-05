@@ -80,6 +80,8 @@ Project templates MAY customize generated issue bodies, typed comment bodies, sk
 
 Template rendering MUST NOT weaken typed comment wrapping, canonical SPEC validation, issue body markers, artifact writer metadata, issue-native storage rules, or repository path safety. Rendered SPEC comments MUST still satisfy canonical SPEC discipline before they can be written or used as archive source material.
 
+The built-in phase sequence and canonical artifact carriers MUST remain authoritative over project workflow context, rules, and artifact instructions, including preserved configuration from an earlier init. Project text MAY constrain work within an existing phase step, but MUST NOT reorder or omit an enabled QUESTION-discovery, human-review projection, or typed-child authoring step, and MUST NOT move a genuine unresolved decision out of a blocking typed QUESTION into issue-body or projection prose. Workflow resolution SHALL emit non-blocking, source-located diagnostics for mechanically recognizable order and carrier conflicts without overwriting user-authored project configuration.
+
 #### Scenario: custom SPEC template output is canonical
 
 - **WHEN** a project workflow template renders a SPEC typed comment body
@@ -92,10 +94,29 @@ Template rendering MUST NOT weaken typed comment wrapping, canonical SPEC valida
 - **THEN** issue-spec SHALL warn or fail with clear diagnostics before writing GitHub workflow state
 - **THEN** it SHALL NOT silently follow instructions that would break issue-native active storage.
 
+#### Scenario: preserved project rules cannot reverse a phase protocol
+
+- **WHEN** re-initialization preserves project guidance that places QUESTION authoring after SPEC authoring
+- **THEN** workflow validation SHALL warn at the conflicting project source
+- **THEN** generated guidance SHALL place the authoritative enabled phase sequence after the project text so the preserved rule cannot reorder or omit built-in steps
+
+#### Scenario: issue-body instructions cannot carry an open decision
+
+- **WHEN** a Proposal, Design, or Implement rule or artifact instruction assigns remaining questions or unresolved decisions to issue-body prose
+- **THEN** workflow validation SHALL warn that blocking typed QUESTION is the canonical carrier
+- **THEN** generated guidance SHALL keep issue-body and enabled projection prose free of open decisions
+
+#### Scenario: built-in issue scaffolds do not invite body-carried decisions
+
+- **WHEN** the CLI scaffolds a built-in Proposal or Design issue body
+- **THEN** its question-convergence sections SHALL describe typed QUESTION carrier and convergence status only
+- **THEN** the scaffold SHALL NOT ask the author to record open or remaining decisions in issue-body prose
+
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704607
 - https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861705034
 - https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861728628
+- https://github.com/higress-group/issue-spec/issues/434
 
 ### Requirement: init-generated workflow assets reflect the resolved workflow
 

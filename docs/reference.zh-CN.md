@@ -37,7 +37,7 @@ html_review:
 
 缺少 `html_review` 时，`enabled` 会解析为 `true`，以保持向后兼容。若映射存在，`enabled` 必须存在且必须是布尔值；标量、缺少 `enabled`、非布尔值及未知字段都会让工作流校验失败，并且失败发生在生成或 issue 创建产生任何变更之前。
 
-使用 `enabled: false` 时，`issue-spec init` 会从生成的 skills、slash commands 与 prompts 中省略 projection 检查点，不生成内嵌的 `human-review-projections.md` 资源，并且只移除先前启用生成所留下的这个精确托管资源。内置 Proposal、Design 与 Implement issue 正文也会省略 Human Review Projection 章节。自定义工作流模板和显式 `--body-file` 内容仍具有权威性。
+使用 `enabled: false` 时，`issue-spec init` 会从生成的 skills、slash commands 与 prompts 中省略 projection 检查点，不生成内嵌的 `human-review-projections.md` 资源，并且只移除先前启用生成所留下的这个精确托管资源。内置 Proposal、Design 与 Implement issue 正文也会省略 Human Review Projection 章节。自定义工作流模板和显式 `--body-file` 仍决定各制品的正文内容，但不能覆盖内置阶段顺序或 canonical typed carrier；真正未决的决策仍必须写入 blocking typed QUESTION comment，而不是 issue body prose。
 
 该设置只控制仓库的创作指引。类型化规划制品、已存储的历史 REVIEW/VERIFY 审计数据、projection 评论、HTML preview 解析与存储以及 Web preview 执行均保持不变。当前 provider 原生评审、检查、批准和合并仍留在原生界面由人控制。
 
@@ -132,11 +132,16 @@ issue-spec search issues --repo owner/repo --query "错误或代码符号" --sta
 当前 Issue、当前类型内分配的序号，前面的数字是仓库内唯一的 Issue 号。例如，
 Issue 44 的第一个 QUESTION 是 `QUESTION-44001`。类型前缀已经隔离不同产物类型，
 不需要扫描整个仓库，也不需要额外编码类型数字。旧 ID 必须保持不变，因为 links、
-ANSWER scope 和历史记录可能已经引用它。
+ANSWER scope 和历史记录可能已经引用它。新建的 `comment upsert`、`question create`
+以及由调用方提供 ID 的 `question answer` 会拒绝 Issue 前缀或三位序号与目标 Issue
+不匹配的 ID。既有 legacy ID 仍可原 ID 更新，无需重新编号；只有在迁移时确实需要
+刻意创建新的 legacy-compatible ID，才使用显式的 `--allow-legacy-id` 绕过参数。
 
 对于自托管 profile，`question answer` 会通过该 profile 已验证的原生 API 确认当前
 QUESTION，并且只提交当前摘要以及所选选项 ID 或自定义文本。规范 ANSWER 由服务端
-创建；JSON 输出中的 `id` 是服务端生成的实际 ID，调用方传入且与它不同的 `--id`
+在事务内按目标 Issue 和类型分配 ID，并通过禁止修改或删除 ANSWER 保持该身份；
+客户端会拒绝属于其他 Issue 的返回 ID。
+JSON 输出中的 `id` 是服务端生成的实际 ID，调用方传入且与它不同的 `--id`
 会保留为 `requested_id`。GitHub profile 继续使用现有的 append-only typed comment
 行为，并将调用方提供的 `--id` 作为 ANSWER 身份。
 

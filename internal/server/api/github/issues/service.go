@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/preview"
-	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/emaildelivery"
@@ -589,8 +588,14 @@ func (s *Service) CreateAnswer(ctx context.Context, owner, repository string, is
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalidAnswerIntent, err)
 		}
+		answerID, err := repositoryStore.AllocateIssueScopedTypedCommentID(ctx, issueNumber, "ANSWER")
+		if err != nil {
+			return err
+		}
+		if err := model.ValidateIssueScopedTypedIdentity("ANSWER", answerID, issueNumber); err != nil {
+			return fmt.Errorf("allocate canonical ANSWER identity: %w", err)
+		}
 		commentID := uuid.New()
-		answerID := fmt.Sprintf("ANSWER-%d", codec.StableNumericID(commentID.String()))
 		body, err := templates.AnswerComment(templates.AnswerOptions{
 			ID: answerID, Agent: actor.User.Login, Scope: intent.QuestionID, Payload: payload,
 		})
@@ -684,6 +689,9 @@ func (s *Service) DeleteComment(ctx context.Context, owner, repository string, c
 		}
 		if !decision.Allowed {
 			return &DecisionError{Decision: decision}
+		}
+		if answerShapedBody(current.Comment.Body) {
+			return ErrAnswerImmutable
 		}
 		deleted, err = repositoryStore.DeleteComment(ctx, compatibilityID)
 		return err

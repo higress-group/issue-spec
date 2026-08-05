@@ -95,6 +95,8 @@ func issueSpecWorkflows(repo string, options WorkflowAuthoringOptions) []Workflo
 - A bare repository-relative ownership path is one exact file.
 - A directory subtree requires an explicit trailing /** declaration, for example internal/templates/**.
 - Legacy bare directory declarations remain readable, but workspace prepare may reject them; correct the PROCESS or pass an explicit recursive ownership value before allocation.`
+	const phaseProtocolAuthorityGuidance = "Built-in protocol overrides project text; never reorder/omit steps or move open decisions."
+	const typedIDAllocationGuidance = "Every new typed ID MUST be `<TYPE>-<issue><three-digit sequence>`: Issue 1 starts with `QUESTION-1001`, Issue 44 with `QUESTION-44001`. Allocate 001-999 only within the target Issue and type after reading that Issue's typed comments, and never renumber a legacy ID. New writes reject wrong Issue prefixes; `--allow-legacy-id` is only for intentional legacy-compatible creates."
 
 	workflows := []WorkflowTemplate{
 		{
@@ -109,6 +111,8 @@ Before generating or updating any phase projection, read [Human Review Projectio
 
 Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by implementation, validation, a human-facing rationale, PR/MR creation, and exact-head human review handoff. The human and code provider own approval and merge.
 
+` + phaseProtocolAuthorityGuidance + `
+
 ## Read and Route
 
 1. Run issue-spec auth status --json and issue-spec workflow validate --repo {{repo}} --json.
@@ -119,7 +123,7 @@ Use this coordinator protocol for a bounded simple Issue or optional Proposal, D
 ## Optional Planning and Implementation
 
 - Create Proposal, Design, Implement, and TASK only when product, design, or coordination risk makes that planning useful. Create PROCESS only when a concrete execution need requires managed coordination: concurrent code writers, protection of pre-existing work through isolation, enforced path ownership, restartable cross-session handoff, or dependency-ordered integration. Generate selected canonical SPEC, QUESTION, TASK, and PROCESS planning artifacts; transition existing artifacts instead of regenerating them.
-- Generate every new typed ID as ` + "`<TYPE>-<issue><three-digit sequence>`" + `. Use the repository-unique phase Issue number followed by a zero-padded sequence allocated only within that Issue and type: Issue 1 starts with ` + "`QUESTION-1001`" + ` and Issue 44 starts with ` + "`QUESTION-44001`" + `. The type prefix already separates artifact types, so do not add another type digit or search the whole repository for availability. Read only the current Issue's typed comments to choose the next sequence, stop before sequence 1000, and never renumber a legacy ID because links, ANSWER scope, or history may reference it.
+- ` + typedIDAllocationGuidance + ` The type prefix already separates artifact types, so do not add another type digit or search the whole repository for availability.
 - In every selected phase use this order: persist the phase issue body, perform the first QUESTION discovery/create pass, upsert the human review projection, then author only the selected next typed children: SPEC for Proposal, TASK for Design, and PROCESS for Implement only when managed coordination was selected. Maintain one source-digest-bound logical comment with ` + "`issue-spec projection upsert --repo {{repo}} --issue <phase-issue> --phase <proposal-choice-brief|design-explainer|implement-execution-brief> --source-digest <sha256> --body-file <projection.md> --json`" + `. A projection is ordinary statusless synthesis, not gate or Agent authority; it has no typed marker, status, or transition. Issue bodies, typed artifacts, and only the latest effective ANSWER remain authoritative. Keep projection HTML source out of default Agent context. For a backend without atomic conditional projection creation, a first create after observing no matching projection requires ` + "`--allow-nonatomic --expected-absence`" + `; it remains non-atomic and succeeds only when full post-create re-observation proves exactly one matching logical projection with the planned body. For a backend without CAS, replacement after observing the unique current body requires ` + "`--allow-nonatomic --expected-digest <observed-sha256>`" + `; exact post-write re-observation guards the digest-bound update. These absence and digest preconditions are mutually exclusive. GitHub stores source only and never executes the preview or interactive answer intent.
 - Keep proposal, Design, SPEC, and TASK self-contained. Record every genuine unresolved decision as a blocking typed QUESTION before the phase projection upsert; issue-body or projection prose never carries an open decision. Resolve blocking QUESTION artifacts before advancing. Publish only registry-owned relationships through one complete owner write; never mutate peers for reverse navigation.
 - Select execution mode before assigning writers. Once Design or TASK is selected, or the user explicitly requests an independent worker, the Coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation in the selected checkout. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner; distinct packages MAY use concurrent writers. The Coordinator dispatches and waits; read-only investigation and review children never require PROCESS. Do not create PROCESS solely because a child is used, several files change, independent review is desired, or human handoff is needed.
@@ -164,6 +168,10 @@ Before generating or updating ` + "`proposal-choice-brief`" + ` or ` + "`design-
 
 Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION, or TASK authoring. Use issue-spec-workflow for shared reads, provider routing, and recovery.
 
+` + phaseProtocolAuthorityGuidance + `
+
+` + typedIDAllocationGuidance + `
+
 1. Validate workflow config, search related issues, and open only selected discussions. If the issue is already in a later phase, continue that phase rather than duplicating it.
 2. Keep unconfirmed investigation, reproduction, or triage notes in a simple issue with issue-spec issue create simple; a proposal states the confirmed problem and the intended change, so never promote an investigation issue into the proposal or attach SPEC/Design to it. Create phase issues with concrete body files, beginning with issue-spec issue create proposal --repo {{repo}} --body-file <file>. Follow the workflow ` + "`rules.language`" + ` and ` + "`rules.language_instructions`" + ` for every Issue title. When those rules require a localized or non-English title, pass an explicit ` + "`--title`" + ` for Proposal, Design, and Implement; do not rely on the derived title because it retains an English stage prefix. Otherwise use the standardized Proposal:, Design:, and Implement: title family. Do not perform style-only title rewrites after creation.
 3. Perform the Proposal's first QUESTION discovery/create pass. Record each genuine unresolved decision as a blocking typed QUESTION with issue-spec question create, attaching a choice model when credible options exist; never leave an open decision as body or projection prose. Do not manufacture a question or reopen a settled choice; keep unresolved decisions distinct from evidence-dependent items.
@@ -187,6 +195,10 @@ Before generating or updating ` + "`implement-execution-brief`" + `, read [Human
 			Body: `# Issue Spec Apply
 
 Coordinator: select execution mode before assigning writers. If Design or TASK is selected, or the user explicitly requests an independent worker, the Coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner; distinct packages MAY use concurrent writers. Select PROCESS only for concrete managed coordination, not child use, file count, independent review, or human handoff. If Implement is selected, persist it, perform its first QUESTION pass, upsert the ordinary statusless ` + "`implement-execution-brief`" + `, then finalize the plan. Author PROCESS only for managed coordination; typed planning state remains authoritative.
+
+` + phaseProtocolAuthorityGuidance + `
+
+` + typedIDAllocationGuidance + `
 
 ## Delegated Paths and Narrow Coordinator Path
 

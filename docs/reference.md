@@ -37,7 +37,7 @@ html_review:
 
 When `html_review` is absent, `enabled` resolves to `true` for backward compatibility. If the mapping is present, `enabled` is required and must be a boolean; scalar values, missing `enabled`, non-boolean values, and unknown fields fail workflow validation before generation or issue creation mutates anything.
 
-With `enabled: false`, `issue-spec init` omits the projection checkpoints from generated skills, slash commands, and prompts, does not emit the embedded `human-review-projections.md` resource, and removes only that exact managed stale resource from an earlier enabled generation. Built-in Proposal, Design, and Implement issue bodies omit their Human Review Projection sections. Custom workflow templates and explicit `--body-file` content remain authoritative.
+With `enabled: false`, `issue-spec init` omits the projection checkpoints from generated skills, slash commands, and prompts, does not emit the embedded `human-review-projections.md` resource, and removes only that exact managed stale resource from an earlier enabled generation. Built-in Proposal, Design, and Implement issue bodies omit their Human Review Projection sections. Custom workflow templates and explicit `--body-file` content still control each artifact body, but they do not override the built-in phase order or canonical typed carriers; genuine unresolved decisions remain blocking typed QUESTION comments rather than issue-body prose.
 
 This setting controls repository authoring guidance only. Typed planning artifacts, stored historical REVIEW/VERIFY audit data, projection comments, HTML preview parsing/storage, and Web preview execution are unchanged. Current provider-native review, checks, approval, and merge remain in the provider UI under human control.
 
@@ -133,11 +133,17 @@ The final three digits are a sequence allocated within one Issue and type; all p
 digits are the repository-unique Issue number. For example, the first QUESTION on Issue 44
 is `QUESTION-44001`. The type prefix already separates artifact types, so no repository-wide
 availability search or additional type digit is needed. Preserve legacy IDs because links,
-ANSWER scope, and history may already reference them.
+ANSWER scope, and history may already reference them. New `comment upsert`, `question create`,
+and caller-authored `question answer` writes reject an ID whose Issue prefix or three-digit
+sequence does not match the target Issue. An existing legacy ID remains updateable without
+renumbering; `--allow-legacy-id` is an explicit migration bypass only when a caller must
+intentionally create a new legacy-compatible ID.
 
 For a self-hosted profile, `question answer` confirms the current QUESTION through that
 profile's validated native API and submits only its current digest plus the selected option
-IDs or custom text. The server creates the canonical ANSWER; JSON output reports that
+IDs or custom text. The server transactionally allocates the canonical ANSWER ID within the
+target Issue and type, preserves that identity by prohibiting ANSWER mutation or deletion,
+and clients reject a returned ID scoped to another Issue. JSON output reports that
 server-generated `id` and includes the caller's distinct `--id` as `requested_id`.
 GitHub-backed profiles retain the existing append-only typed-comment behavior and use the
 caller-provided `--id` as the ANSWER identity.

@@ -6,6 +6,7 @@ Define the long-lived behavior contract for canonical typed-comment authoring an
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/12
+- https://github.com/higress-group/issue-spec/issues/433
 
 ## Requirements
 
@@ -85,3 +86,37 @@ Generated guidance MUST use canonical generators and validators for selected SPE
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
+
+### Requirement: new typed comment identities are scoped by their owning Issue
+
+Every newly created typed comment ID MUST use `<TYPE>-<issue><three-digit sequence>`, where the Issue number is the owning target Issue and the non-zero, zero-padded sequence is allocated only within that Issue and type. Generated workflow, propose, and apply guidance MUST repeat this rule at each typed-comment writing entry point rather than relying on cross-skill discovery.
+
+Write commands MUST reject a new caller-authored ID whose Issue prefix or three-digit sequence does not match the target Issue. They MAY provide an explicit legacy-creation migration bypass, but existing legacy IDs MUST remain readable and updateable without renumbering because links, ANSWER scope, and history may already reference them.
+
+#### Scenario: stage guidance carries the complete ID rule
+
+- **WHEN** init generates workflow, propose, apply, or corresponding slash-command guidance that can lead to a typed-comment write
+- **THEN** that guidance SHALL state the Issue-scoped ID shape, allocation examples, sequence boundary, and legacy-ID policy locally
+
+#### Scenario: mismatched new ID is rejected before creation
+
+- **WHEN** a caller attempts to create a typed comment on Issue 41 with `QUESTION-001` and no legacy-creation bypass
+- **THEN** the CLI MUST create no comment and SHALL report the expected shape with an example such as `QUESTION-41001`
+
+#### Scenario: existing legacy ID remains updateable
+
+- **WHEN** Issue 41 already contains a typed comment identified as `QUESTION-001`
+- **THEN** an upsert of that same typed comment SHALL preserve and update the existing identity without requiring renumbering
+
+#### Scenario: explicit legacy create requires a bypass
+
+- **WHEN** a migration caller intentionally creates a new non-Issue-scoped ID with `--allow-legacy-id`
+- **THEN** the CLI MAY perform that create without weakening normal new-ID validation
+
+#### Scenario: trusted server creation allocates a canonical ID
+
+- **WHEN** the self-hosted server creates an ANSWER from bounded caller intent for Issue 41
+- **THEN** it SHALL allocate and return an unused `ANSWER-41<NNN>` identity transactionally, SHALL keep that identity reserved by prohibiting ANSWER mutation or deletion, and clients SHALL reject a returned ANSWER identity scoped to another Issue
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/433

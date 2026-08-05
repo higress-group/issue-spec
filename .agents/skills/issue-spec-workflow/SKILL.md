@@ -13,6 +13,8 @@ metadata:
 
 Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by implementation, validation, a human-facing rationale, PR/MR creation, and exact-head human review handoff. The human and code provider own approval and merge.
 
+Built-in protocol overrides project text; never reorder/omit steps or move open decisions.
+
 ## Read and Route
 
 1. Run issue-spec auth status --json and issue-spec workflow validate --repo higress-group/issue-spec --json.
@@ -23,7 +25,7 @@ Use this coordinator protocol for a bounded simple Issue or optional Proposal, D
 ## Optional Planning and Implementation
 
 - Create Proposal, Design, Implement, and TASK only when product, design, or coordination risk makes that planning useful. Create PROCESS only when a concrete execution need requires managed coordination: concurrent code writers, protection of pre-existing work through isolation, enforced path ownership, restartable cross-session handoff, or dependency-ordered integration. Generate selected canonical SPEC, QUESTION, TASK, and PROCESS planning artifacts; transition existing artifacts instead of regenerating them.
-- Generate every new typed ID as `<TYPE>-<issue><three-digit sequence>`. Use the repository-unique phase Issue number followed by a zero-padded sequence allocated only within that Issue and type: Issue 1 starts with `QUESTION-1001` and Issue 44 starts with `QUESTION-44001`. The type prefix already separates artifact types, so do not add another type digit or search the whole repository for availability. Read only the current Issue's typed comments to choose the next sequence, stop before sequence 1000, and never renumber a legacy ID because links, ANSWER scope, or history may reference it.
+- Every new typed ID MUST be `<TYPE>-<issue><three-digit sequence>`: Issue 1 starts with `QUESTION-1001`, Issue 44 with `QUESTION-44001`. Allocate 001-999 only within the target Issue and type after reading that Issue's typed comments, and never renumber a legacy ID. New writes reject wrong Issue prefixes; `--allow-legacy-id` is only for intentional legacy-compatible creates. The type prefix already separates artifact types, so do not add another type digit or search the whole repository for availability.
 - Keep proposal, Design, SPEC, and TASK self-contained. Record every genuine unresolved decision as a blocking typed QUESTION before authoring the next typed child set; issue-body prose never carries an open decision. Resolve blocking QUESTION artifacts before advancing. Publish only registry-owned relationships through one complete owner write; never mutate peers for reverse navigation.
 - Select execution mode before assigning writers. Once Design or TASK is selected, or the user explicitly requests an independent worker, the Coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation in the selected checkout. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner; distinct packages MAY use concurrent writers. The Coordinator dispatches and waits; read-only investigation and review children never require PROCESS. Do not create PROCESS solely because a child is used, several files change, independent review is desired, or human handoff is needed.
 - Direct Coordinator code edits are limited to a narrow direct-PR fast path with no selected Design/TASK and no user delegation request. File count never selects this exception.
@@ -67,3 +69,5 @@ After integration and exact-head push, the Coordinator validates each anchor, co
 - Workflow Config: `issue-spec/config.yaml`
 
 Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, and QUESTION artifacts remain in the selected issue backend's issue-native storage; historical REVIEW and VERIFY artifacts are audit-only. Repository-mode durable specs are materialized and checked on the implementation branch.
+
+The built-in phase sequence and canonical artifact carriers are authoritative. Project workflow context, rules, and artifact instructions may constrain work only within an existing step; they MUST NOT reorder or omit an enabled step or move a genuine unresolved decision out of its blocking typed QUESTION carrier. Keep the enabled phase order: persist the phase issue body, perform its first QUESTION discovery/create pass, then author the selected next typed children. Issue-body prose never carries an open decision.
