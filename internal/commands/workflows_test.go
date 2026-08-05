@@ -352,6 +352,60 @@ func TestWorkflowNoticeIsBackendNeutralAndOwnedArtifactsAreCurrent(t *testing.T)
 	}
 }
 
+func TestWorkflowNoticeEndsWithAuthoritativeEnabledPhaseProtocol(t *testing.T) {
+	const projectConflict = "Create initial SPEC typed comments first, then create QUESTION typed comments."
+	const authority = "The built-in phase sequence and canonical artifact carriers are authoritative."
+	for _, test := range []struct {
+		name           string
+		htmlReview     *workflow.HTMLReviewConfig
+		wantProjection bool
+	}{
+		{name: "enabled", htmlReview: &workflow.HTMLReviewConfig{Enabled: true}, wantProjection: true},
+		{name: "disabled", htmlReview: &workflow.HTMLReviewConfig{Enabled: false}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := workflow.Plan{Config: workflow.Config{
+				Context:    workflow.WorkflowContext{"project_guidance": projectConflict},
+				HTMLReview: test.htmlReview,
+			}}
+			notice := workflowNotice(plan)
+			if strings.LastIndex(notice, authority) <= strings.LastIndex(notice, projectConflict) {
+				t.Fatalf("authoritative protocol does not follow project text:\n%s", notice)
+			}
+			if got := strings.Contains(notice, "upsert the phase projection"); got != test.wantProjection {
+				t.Fatalf("projection checkpoint present=%v, want %v:\n%s", got, test.wantProjection, notice)
+			}
+			if got := strings.Contains(notice, "Issue-body and projection prose never carry an open decision"); got != test.wantProjection {
+				t.Fatalf("projection carrier present=%v, want %v:\n%s", got, test.wantProjection, notice)
+			}
+		})
+	}
+}
+
+func TestWriteWorkflowArtifactsEmbedsProtocolConflictDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	writeWorkflowTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"), `
+context:
+  project_guidance: Create QUESTION typed comments after initial SPEC comments.
+`)
+	if _, err := writeWorkflowArtifacts(root, "owner/repo", "codex", "skills"); err != nil {
+		t.Fatal(err)
+	}
+	skill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-propose", "SKILL.md"))
+	for _, want := range []string{
+		"`warning/phase_order_conflict`",
+		"project workflow text context.project_guidance places QUESTION authoring after SPEC authoring",
+		"The built-in phase sequence and canonical artifact carriers are authoritative.",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Fatalf("generated skill missing %q:\n%s", want, skill)
+		}
+	}
+	if strings.LastIndex(skill, "The built-in phase sequence") <= strings.LastIndex(skill, "Create QUESTION typed comments after initial SPEC comments") {
+		t.Fatalf("authoritative protocol does not follow conflicting project guidance:\n%s", skill)
+	}
+}
+
 func TestCheckedInWorkflowArtifactsExactlyMatchGenerator(t *testing.T) {
 	generatedRoot := t.TempDir()
 	projectRoot, err := filepath.Abs("../..")

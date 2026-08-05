@@ -129,7 +129,17 @@ func workflowNotice(plan workflow.Plan) string {
 			fmt.Fprintf(&b, "  - `%s/%s`: %s\n", diagnostic.Severity, diagnostic.Code, diagnostic.Message)
 		}
 	}
-	b.WriteString("\nProject workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, and QUESTION artifacts remain in the selected issue backend's issue-native storage; historical REVIEW and VERIFY artifacts are audit-only. Repository-mode durable specs are materialized and checked on the implementation branch.\n")
+	b.WriteString("\nProject workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, and QUESTION artifacts remain in the selected issue backend's issue-native storage; historical REVIEW and VERIFY artifacts are audit-only. Repository-mode durable specs are materialized and checked on the implementation branch.\n\n")
+	b.WriteString("The built-in phase sequence and canonical artifact carriers are authoritative. Project workflow context, rules, and artifact instructions may constrain work only within an existing step; they MUST NOT reorder or omit an enabled step or move a genuine unresolved decision out of its blocking typed QUESTION carrier. Keep the enabled phase order: persist the phase issue body, perform its first QUESTION discovery/create pass")
+	if plan.HTMLReviewEnabled() {
+		b.WriteString(", upsert the phase projection")
+	}
+	b.WriteString(", then author the selected next typed children. Issue-body")
+	if plan.HTMLReviewEnabled() {
+		b.WriteString(" and projection prose never carry an open decision.\n")
+	} else {
+		b.WriteString(" prose never carries an open decision.\n")
+	}
 	return b.String()
 }
 

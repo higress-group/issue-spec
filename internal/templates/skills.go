@@ -95,6 +95,7 @@ func issueSpecWorkflows(repo string, options WorkflowAuthoringOptions) []Workflo
 - A bare repository-relative ownership path is one exact file.
 - A directory subtree requires an explicit trailing /** declaration, for example internal/templates/**.
 - Legacy bare directory declarations remain readable, but workspace prepare may reject them; correct the PROCESS or pass an explicit recursive ownership value before allocation.`
+	const phaseProtocolAuthorityGuidance = "Built-in protocol overrides project text; never reorder/omit steps or move open decisions."
 
 	workflows := []WorkflowTemplate{
 		{
@@ -108,6 +109,8 @@ Before generating or updating any phase projection, read [Human Review Projectio
 			Body: `# Issue Spec Workflow
 
 Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by implementation, validation, a human-facing rationale, PR/MR creation, and exact-head human review handoff. The human and code provider own approval and merge.
+
+` + phaseProtocolAuthorityGuidance + `
 
 ## Read and Route
 
@@ -164,6 +167,8 @@ Before generating or updating ` + "`proposal-choice-brief`" + ` or ` + "`design-
 
 Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION, or TASK authoring. Use issue-spec-workflow for shared reads, provider routing, and recovery.
 
+` + phaseProtocolAuthorityGuidance + `
+
 1. Validate workflow config, search related issues, and open only selected discussions. If the issue is already in a later phase, continue that phase rather than duplicating it.
 2. Keep unconfirmed investigation, reproduction, or triage notes in a simple issue with issue-spec issue create simple; a proposal states the confirmed problem and the intended change, so never promote an investigation issue into the proposal or attach SPEC/Design to it. Create phase issues with concrete body files, beginning with issue-spec issue create proposal --repo {{repo}} --body-file <file>. Follow the workflow ` + "`rules.language`" + ` and ` + "`rules.language_instructions`" + ` for every Issue title. When those rules require a localized or non-English title, pass an explicit ` + "`--title`" + ` for Proposal, Design, and Implement; do not rely on the derived title because it retains an English stage prefix. Otherwise use the standardized Proposal:, Design:, and Implement: title family. Do not perform style-only title rewrites after creation.
 3. Perform the Proposal's first QUESTION discovery/create pass. Record each genuine unresolved decision as a blocking typed QUESTION with issue-spec question create, attaching a choice model when credible options exist; never leave an open decision as body or projection prose. Do not manufacture a question or reopen a settled choice; keep unresolved decisions distinct from evidence-dependent items.
@@ -187,6 +192,8 @@ Before generating or updating ` + "`implement-execution-brief`" + `, read [Human
 			Body: `# Issue Spec Apply
 
 Coordinator: select execution mode before assigning writers. If Design or TASK is selected, or the user explicitly requests an independent worker, the Coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner; distinct packages MAY use concurrent writers. Select PROCESS only for concrete managed coordination, not child use, file count, independent review, or human handoff. If Implement is selected, persist it, perform its first QUESTION pass, upsert the ordinary statusless ` + "`implement-execution-brief`" + `, then finalize the plan. Author PROCESS only for managed coordination; typed planning state remains authoritative.
+
+` + phaseProtocolAuthorityGuidance + `
 
 ## Delegated Paths and Narrow Coordinator Path
 

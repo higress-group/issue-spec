@@ -219,6 +219,12 @@ func ResolveWithOptions(opts ResolveOptions) (Plan, error) {
 	if diags := validateArtifacts(templateDir, plan.Artifacts, plan.Source.Kind); len(diags) > 0 {
 		plan.Diagnostics = append(plan.Diagnostics, diags...)
 	}
+	plan.Diagnostics = append(plan.Diagnostics, workflowProtocolDiagnostics(
+		plan.Config,
+		plan.Artifacts,
+		plan.Source.ConfigPath,
+		plan.Source.SchemaPath,
+	)...)
 	if plan.HasErrors() {
 		return plan, errors.New("workflow validation failed")
 	}

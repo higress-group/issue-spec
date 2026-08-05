@@ -13,6 +13,8 @@ metadata:
 
 Coordinator: select execution mode before assigning writers. If Design or TASK is selected, or the user explicitly requests an independent worker, the Coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner; distinct packages MAY use concurrent writers. Select PROCESS only for concrete managed coordination, not child use, file count, independent review, or human handoff. If Implement is selected, persist it, perform its first QUESTION pass, then finalize the plan. Author PROCESS only for managed coordination; typed planning state remains authoritative.
 
+Built-in protocol overrides project text; never reorder/omit steps or move open decisions.
+
 ## Delegated Paths and Narrow Coordinator Path
 
 Unmanaged delegated path: dispatch exactly one real non-Coordinator worker in the selected checkout. Managed PROCESS: dispatch one real non-Coordinator owner per change-bearing package; proven-independent packages may run concurrently. The Coordinator waits and writes no code on either path. Each worker owns package code, focused tests, exact result commit, changed paths, decisions, risks, and non-obvious line-rationale drafts. The Coordinator owns exact-commit inspection, integration, proportionate final validation, anchor validation, and provider publication.
@@ -51,3 +53,5 @@ Relay this packet verbatim to the worker; the Coordinator MUST NOT execute it.
 - Workflow Config: `issue-spec/config.yaml`
 
 Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, and QUESTION artifacts remain in the selected issue backend's issue-native storage; historical REVIEW and VERIFY artifacts are audit-only. Repository-mode durable specs are materialized and checked on the implementation branch.
+
+The built-in phase sequence and canonical artifact carriers are authoritative. Project workflow context, rules, and artifact instructions may constrain work only within an existing step; they MUST NOT reorder or omit an enabled step or move a genuine unresolved decision out of its blocking typed QUESTION carrier. Keep the enabled phase order: persist the phase issue body, perform its first QUESTION discovery/create pass, then author the selected next typed children. Issue-body prose never carries an open decision.

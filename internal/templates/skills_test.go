@@ -118,7 +118,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	workflow := skillContent(t, skills, "issue-spec-workflow")
-	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "exact-head human review handoff", "### Implementation Rationale"} {
+	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "Built-in protocol overrides project text", "never reorder/omit steps or move open decisions", "exact-head human review handoff", "### Implementation Rationale"} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("disabled workflow lost typed obligation %q:\n%s", want, workflow)
 		}
@@ -141,6 +141,18 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 			if strings.Contains(command.Body, forbidden) {
 				t.Fatalf("disabled command %s retains HTML review authoring guidance %q:\n%s", command.ID, forbidden, command.Body)
 			}
+		}
+	}
+}
+
+func TestGeneratedGuidanceMakesBuiltInPhaseProtocolAuthoritative(t *testing.T) {
+	const authority = "Built-in protocol overrides project text; never reorder/omit steps or move open decisions."
+	for _, skill := range IssueSpecSkills("owner/repo") {
+		if skill.Name == "issue-spec-github" {
+			continue
+		}
+		if !strings.Contains(skill.Content, authority) {
+			t.Fatalf("%s lacks authoritative phase protocol %q:\n%s", skill.Name, authority, skill.Content)
 		}
 	}
 }

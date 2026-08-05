@@ -13,6 +13,8 @@ metadata:
 
 Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by implementation, validation, a human-facing rationale, PR/MR creation, and exact-head human review handoff. The human and code provider own approval and merge.
 
+Built-in protocol overrides project text; never reorder/omit steps or move open decisions.
+
 ## Read and Route
 
 1. Run issue-spec auth status --json and issue-spec workflow validate --repo higress-group/issue-spec --json.
@@ -67,3 +69,5 @@ After integration and exact-head push, the Coordinator validates each anchor, co
 - Workflow Config: `issue-spec/config.yaml`
 
 Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, and QUESTION artifacts remain in the selected issue backend's issue-native storage; historical REVIEW and VERIFY artifacts are audit-only. Repository-mode durable specs are materialized and checked on the implementation branch.
+
+The built-in phase sequence and canonical artifact carriers are authoritative. Project workflow context, rules, and artifact instructions may constrain work only within an existing step; they MUST NOT reorder or omit an enabled step or move a genuine unresolved decision out of its blocking typed QUESTION carrier. Keep the enabled phase order: persist the phase issue body, perform its first QUESTION discovery/create pass, then author the selected next typed children. Issue-body prose never carries an open decision.
