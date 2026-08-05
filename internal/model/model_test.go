@@ -110,7 +110,7 @@ func TestValidateIssueScopedTypedIdentity(t *testing.T) {
 		name        string
 		commentType string
 		id          string
-		issue       int
+		issue       int64
 		wantError   string
 	}{
 		{name: "issue one", commentType: "QUESTION", id: "QUESTION-1001", issue: 1},

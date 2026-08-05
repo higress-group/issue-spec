@@ -251,6 +251,48 @@ func TestQuestionAnswerUsesNativeHostedAuthorityForSelectedAndCustomIntent(t *te
 	}
 }
 
+func TestQuestionAnswerRejectsNativeCanonicalIDForAnotherIssue(t *testing.T) {
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Setenv("ISSUE_SPEC_TOKEN", "native-question-token")
+	profile := auth.Profile{
+		Name: "native-question-invalid-answer", Kind: auth.ProfileKindHosted, Hostname: "issues.test",
+		APIURL: "https://issues.test/api/v3", NativeAPIURL: "https://issues.test/api/v1",
+		WebURL: "https://issues.test", ServerInstanceID: "native-question-invalid-answer-instance",
+	}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := model.QuestionSnapshot{
+		ID: "QUESTION-701", Question: "Which behavior?", IssueURL: "https://issues.test/o/r/issues/7",
+		SourceURL: "https://issues.test/o/r/issues/7#issuecomment-70",
+		ChoiceModel: model.ChoiceModel{
+			Version: model.ChoiceModelVersion, Mode: model.ChoiceModeSingle,
+			Options: []model.ChoiceOption{{ID: "keep", Label: "Keep"}},
+		},
+	}
+	provider := &fakeNativeQuestionAnswerProvider{
+		question: github.NativeQuestionAuthority{
+			Question: snapshot, RepresentationVersion: 3,
+			BodyDigest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		},
+		answerID: "ANSWER-8001",
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.profileName = profile.Name
+	app.newNativeQuestionAnswerProvider = func(auth.Profile, string) (github.NativeQuestionAnswerOperations, error) {
+		return provider, nil
+	}
+	code := app.runQuestionAnswer(t.Context(), []string{
+		"--repo", "o/r", "--issue", "7", "--id", "ANSWER-7001", "--question-id", "QUESTION-701",
+		"--select", "keep", "--json",
+	})
+	if code != 1 || out.Len() != 0 ||
+		!strings.Contains(errOut.String(), "server returned an invalid canonical ANSWER") {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+}
+
 func TestQuestionAnswerNativeErrorsDoNotExposeIntentOrToken(t *testing.T) {
 	t.Setenv(auth.ConfigDirEnv, t.TempDir())
 	t.Setenv("ISSUE_SPEC_TOKEN", "native-question-token")

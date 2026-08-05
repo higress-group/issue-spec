@@ -181,7 +181,7 @@ func (a *app) runQuestionAnswer(ctx context.Context, args []string) int {
 		a.errorf("%v\n", err)
 		return 2
 	}
-	if err := model.ValidateIssueScopedTypedIdentity("ANSWER", *id, issueNumber); err != nil && !*allowLegacyID {
+	if err := model.ValidateIssueScopedTypedIdentity("ANSWER", *id, int64(issueNumber)); err != nil && !*allowLegacyID {
 		a.errorf("%v\n", err)
 		a.errorf("pass --allow-legacy-id only for an intentional legacy-compatible create\n")
 		return 2
@@ -260,7 +260,9 @@ func (a *app) runNativeQuestionAnswer(ctx context.Context, profile auth.Profile,
 	}
 	canonical := model.ParseTypedComment(created.Comment.Body)
 	payload, payloadErr := model.ParseAnswerPayload(created.Comment.Body)
-	if payloadErr != nil || canonical.Type != "ANSWER" || canonical.ID == "" || payload.Question.ID != questionID {
+	identityErr := model.ValidateIssueScopedTypedIdentity("ANSWER", canonical.ID, int64(issueNumber))
+	if payloadErr != nil || len(canonical.Errors) > 0 || canonical.Type != "ANSWER" || identityErr != nil ||
+		payload.Question.ID != questionID {
 		a.errorf("append self-hosted ANSWER: server returned an invalid canonical ANSWER\n")
 		return 1
 	}

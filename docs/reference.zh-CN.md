@@ -139,7 +139,8 @@ ANSWER scope 和历史记录可能已经引用它。新建的 `comment upsert`�
 
 对于自托管 profile，`question answer` 会通过该 profile 已验证的原生 API 确认当前
 QUESTION，并且只提交当前摘要以及所选选项 ID 或自定义文本。规范 ANSWER 由服务端
-创建；JSON 输出中的 `id` 是服务端生成的实际 ID，调用方传入且与它不同的 `--id`
+在事务内按目标 Issue 和类型分配 ID；客户端会拒绝属于其他 Issue 的返回 ID。
+JSON 输出中的 `id` 是服务端生成的实际 ID，调用方传入且与它不同的 `--id`
 会保留为 `requested_id`。GitHub profile 继续使用现有的 append-only typed comment
 行为，并将调用方提供的 `--id` 作为 ANSWER 身份。
 

@@ -617,7 +617,7 @@ func upsertTypedComment(ctx context.Context, client github.Operations, repo stri
 			return "updated", updated, dropped, err
 		}
 	}
-	if err := model.ValidateIssueScopedTypedIdentity(commentType, id, issueNumber); err != nil && !allowLegacyID {
+	if err := model.ValidateIssueScopedTypedIdentity(commentType, id, int64(issueNumber)); err != nil && !allowLegacyID {
 		return "", github.Comment{}, nil, &newTypedIDPolicyError{cause: err}
 	}
 	created, err := client.CreateComment(ctx, repo, issueNumber, body)

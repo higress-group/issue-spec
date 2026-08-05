@@ -113,5 +113,10 @@ Write commands MUST reject a new caller-authored ID whose Issue prefix or three-
 - **WHEN** a migration caller intentionally creates a new non-Issue-scoped ID with `--allow-legacy-id`
 - **THEN** the CLI MAY perform that create without weakening normal new-ID validation
 
+#### Scenario: trusted server creation allocates a canonical ID
+
+- **WHEN** the self-hosted server creates an ANSWER from bounded caller intent for Issue 41
+- **THEN** it SHALL allocate and return an unused `ANSWER-41<NNN>` identity transactionally, and clients SHALL reject a returned ANSWER identity scoped to another Issue
+
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/433

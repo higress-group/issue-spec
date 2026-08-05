@@ -110,7 +110,7 @@ func (c *Client) CreateNativeAnswer(ctx context.Context, repo string, issue int,
 	if err := c.doJSON(ctx, http.MethodPost, path, intent, &result); err != nil {
 		return NativeAnswerResult{}, err
 	}
-	if err := validateNativeAnswerResult(result, intent); err != nil {
+	if err := validateNativeAnswerResult(result, intent, int64(issue)); err != nil {
 		return NativeAnswerResult{}, fmt.Errorf("invalid native ANSWER response: %w", err)
 	}
 	return result, nil
@@ -181,7 +181,7 @@ func validateNativeAnswerIntent(intent NativeAnswerIntent) error {
 	return nil
 }
 
-func validateNativeAnswerResult(result NativeAnswerResult, intent NativeAnswerIntent) error {
+func validateNativeAnswerResult(result NativeAnswerResult, intent NativeAnswerIntent, issue int64) error {
 	if result.Comment.ID <= 0 || strings.TrimSpace(result.Comment.Body) == "" ||
 		strings.TrimSpace(result.Comment.HTMLURL) == "" || strings.TrimSpace(result.Comment.URL) == "" {
 		return errors.New("canonical comment is incomplete")
@@ -195,6 +195,13 @@ func validateNativeAnswerResult(result NativeAnswerResult, intent NativeAnswerIn
 	}
 	if result.QuestionBodyDigest != intent.QuestionDigest {
 		return errors.New("created ANSWER does not report the submitted QUESTION digest")
+	}
+	answer := model.ParseTypedComment(result.Comment.Body)
+	if len(answer.Errors) > 0 || answer.Type != "ANSWER" {
+		return errors.New("canonical comment is not a valid ANSWER")
+	}
+	if err := model.ValidateIssueScopedTypedIdentity("ANSWER", answer.ID, issue); err != nil {
+		return err
 	}
 	return nil
 }

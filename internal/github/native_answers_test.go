@@ -133,3 +133,38 @@ func TestNativeQuestionAnswerOperationsRejectIncompleteCanonicalResponse(t *test
 		t.Fatalf("error=%v", err)
 	}
 }
+
+func TestNativeQuestionAnswerOperationsRejectAnswerForAnotherIssue(t *testing.T) {
+	const digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	question := nativeAnswerQuestionSnapshot()
+	payload, err := model.BuildAnswerPayload(question, nil, "Use the safe path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	answerBody, err := templates.AnswerComment(templates.AnswerOptions{ID: "ANSWER-8001", Payload: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(NativeAnswerResult{
+			Comment: Comment{
+				ID: 71, HTMLURL: "https://issues.test/owner/repo/issues/7#issuecomment-71",
+				URL: "https://issues.test/api/v3/repos/owner/repo/issues/comments/71", Body: answerBody,
+			},
+			Question: question, QuestionRepresentationVersion: 2, QuestionBodyDigest: digest,
+		})
+	}))
+	defer server.Close()
+	client, err := NewClientWithOptions(ClientOptions{
+		Host: "issues.test", BaseURL: server.URL, Token: "token", HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateNativeAnswer(t.Context(), "owner/repo", 7, NativeAnswerIntent{
+		QuestionID: "QUESTION-701", QuestionDigest: digest, Custom: "Use the safe path",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid id ANSWER-8001 for issue 7") {
+		t.Fatalf("error=%v", err)
+	}
+}
