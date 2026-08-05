@@ -157,6 +157,31 @@ func TestGeneratedGuidanceMakesBuiltInPhaseProtocolAuthoritative(t *testing.T) {
 	}
 }
 
+func TestTypedCommentWriterGuidanceRepeatsIssueScopedIDAllocation(t *testing.T) {
+	for _, skill := range IssueSpecSkillsWithOptions("owner/repo", WorkflowAuthoringOptions{HTMLReviewEnabled: false}) {
+		if skill.Name == "issue-spec-github" {
+			continue
+		}
+		for _, want := range []string{
+			"<TYPE>-<issue><three-digit sequence>",
+			"QUESTION-1001",
+			"QUESTION-44001",
+			"New writes reject wrong Issue prefixes",
+			"--allow-legacy-id",
+			"never renumber a legacy ID",
+		} {
+			if !strings.Contains(skill.Content, want) {
+				t.Fatalf("%s lacks typed ID allocation guidance %q:\n%s", skill.Name, want, skill.Content)
+			}
+		}
+	}
+	for _, command := range IssueSpecCommandContentsWithOptions("owner/repo", WorkflowAuthoringOptions{HTMLReviewEnabled: false}) {
+		if !strings.Contains(command.Body, "<TYPE>-<issue><three-digit sequence>") || !strings.Contains(command.Body, "--allow-legacy-id") {
+			t.Fatalf("%s command lacks typed ID allocation guidance:\n%s", command.ID, command.Body)
+		}
+	}
+}
+
 func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
 	workflow := skillContent(t, IssueSpecSkills("owner/repo"), "issue-spec-workflow")
 	wants := []string{
@@ -348,7 +373,7 @@ func TestGeneratedGuidanceDeterministicSizeBudgets(t *testing.T) {
 	budgets := map[string]budget{
 		"issue-spec-workflow": {maxBytes: 12400, maxHeadings: 8, maxItems: 40},
 		"issue-spec-propose":  {maxBytes: 5000, maxHeadings: 4, maxItems: 16},
-		"issue-spec-apply":    {maxBytes: 8500, maxHeadings: 5, maxItems: 12},
+		"issue-spec-apply":    {maxBytes: 8900, maxHeadings: 5, maxItems: 12},
 	}
 	for _, skill := range IssueSpecSkills("owner/repo") {
 		limit, ok := budgets[skill.Name]

@@ -132,7 +132,10 @@ issue-spec search issues --repo owner/repo --query "错误或代码符号" --sta
 当前 Issue、当前类型内分配的序号，前面的数字是仓库内唯一的 Issue 号。例如，
 Issue 44 的第一个 QUESTION 是 `QUESTION-44001`。类型前缀已经隔离不同产物类型，
 不需要扫描整个仓库，也不需要额外编码类型数字。旧 ID 必须保持不变，因为 links、
-ANSWER scope 和历史记录可能已经引用它。
+ANSWER scope 和历史记录可能已经引用它。新建的 `comment upsert`、`question create`
+以及由调用方提供 ID 的 `question answer` 会拒绝 Issue 前缀或三位序号与目标 Issue
+不匹配的 ID。既有 legacy ID 仍可原 ID 更新，无需重新编号；只有在迁移时确实需要
+刻意创建新的 legacy-compatible ID，才使用显式的 `--allow-legacy-id` 绕过参数。
 
 对于自托管 profile，`question answer` 会通过该 profile 已验证的原生 API 确认当前
 QUESTION，并且只提交当前摘要以及所选选项 ID 或自定义文本。规范 ANSWER 由服务端

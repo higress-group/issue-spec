@@ -105,6 +105,37 @@ func TestEnsureTypedBodyAddsMarkerAndHeader(t *testing.T) {
 	}
 }
 
+func TestValidateIssueScopedTypedIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		commentType string
+		id          string
+		issue       int
+		wantError   string
+	}{
+		{name: "issue one", commentType: "QUESTION", id: "QUESTION-1001", issue: 1},
+		{name: "larger issue", commentType: "SPEC", id: "SPEC-44001", issue: 44},
+		{name: "last sequence", commentType: "PROCESS", id: "PROCESS-999999", issue: 999},
+		{name: "legacy id", commentType: "QUESTION", id: "QUESTION-001", issue: 41, wantError: "expected QUESTION-41<NNN> (e.g. QUESTION-41001)"},
+		{name: "wrong issue", commentType: "TASK", id: "TASK-41001", issue: 42, wantError: "expected TASK-42<NNN>"},
+		{name: "zero sequence", commentType: "SPEC", id: "SPEC-44000", issue: 44, wantError: "expected SPEC-44<NNN>"},
+		{name: "four digit sequence", commentType: "SPEC", id: "SPEC-440001", issue: 44, wantError: "expected SPEC-44<NNN>"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateIssueScopedTypedIdentity(test.commentType, test.id, test.issue)
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatalf("ValidateIssueScopedTypedIdentity() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("ValidateIssueScopedTypedIdentity() error = %v, want containing %q", err, test.wantError)
+			}
+		})
+	}
+}
+
 func TestTypedCommentSessionMetadataRenderParseAndJSON(t *testing.T) {
 	body, err := EnsureTypedBody("PROCESS", "PROCESS-001", "## Process\n\nDo work.", BodyOptions{
 		Agent:              "Worker A",

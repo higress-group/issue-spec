@@ -10,6 +10,7 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/assignment"
@@ -60,6 +61,36 @@ func ValidateTypedIdentity(commentType, id string) error {
 		return fmt.Errorf("invalid %s id %s", commentType, id)
 	}
 	return nil
+}
+
+// ValidateIssueScopedTypedIdentity validates the repository-unique identity
+// assigned to a newly created typed comment. Existing legacy IDs remain
+// readable through ValidateTypedIdentity and must not be renumbered.
+func ValidateIssueScopedTypedIdentity(commentType, id string, issue int) error {
+	commentType = strings.ToUpper(strings.TrimSpace(commentType))
+	id = strings.TrimSpace(id)
+	if err := ValidateTypedIdentity(commentType, id); err != nil {
+		return err
+	}
+	if issue <= 0 {
+		return fmt.Errorf("invalid issue number %d for %s id %s", issue, commentType, id)
+	}
+	prefix := commentType + "-" + strconv.Itoa(issue)
+	sequence := strings.TrimPrefix(id, prefix)
+	if len(sequence) != 3 || sequence == "000" {
+		return issueScopedTypedIdentityError(commentType, id, issue)
+	}
+	for _, digit := range sequence {
+		if digit < '0' || digit > '9' {
+			return issueScopedTypedIdentityError(commentType, id, issue)
+		}
+	}
+	return nil
+}
+
+func issueScopedTypedIdentityError(commentType, id string, issue int) error {
+	return fmt.Errorf("invalid id %s for issue %d: expected %s-%d<NNN> (e.g. %s-%d001)",
+		id, issue, commentType, issue, commentType, issue)
 }
 
 type TypedComment struct {

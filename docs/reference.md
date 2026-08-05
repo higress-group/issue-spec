@@ -133,7 +133,11 @@ The final three digits are a sequence allocated within one Issue and type; all p
 digits are the repository-unique Issue number. For example, the first QUESTION on Issue 44
 is `QUESTION-44001`. The type prefix already separates artifact types, so no repository-wide
 availability search or additional type digit is needed. Preserve legacy IDs because links,
-ANSWER scope, and history may already reference them.
+ANSWER scope, and history may already reference them. New `comment upsert`, `question create`,
+and caller-authored `question answer` writes reject an ID whose Issue prefix or three-digit
+sequence does not match the target Issue. An existing legacy ID remains updateable without
+renumbering; `--allow-legacy-id` is an explicit migration bypass only when a caller must
+intentionally create a new legacy-compatible ID.
 
 For a self-hosted profile, `question answer` confirms the current QUESTION through that
 profile's validated native API and submits only its current digest plus the selected option

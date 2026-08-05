@@ -275,11 +275,19 @@ func runRequirementsAcceptanceJourney(t *testing.T, root, profile, request strin
 		"--repo", "owner/repo", "--change", "requirements-acceptance", "--json"))
 	proposalNumber := int(proposal["number"].(float64))
 	simpleNumber := int(simple["number"].(float64))
+	specID := fmt.Sprintf("SPEC-%d001", proposalNumber)
+	questionID := fmt.Sprintf("QUESTION-%d001", proposalNumber)
+	specDraft = runRequirementsAcceptanceCLI(t, profile, nil, "comment", "generate", "--type", "SPEC", "--id", specID,
+		"--status", "confirmed", "--scope", "requirements acceptance", "--input-file", specInput)
+	result.Drafts["spec"] = string(specDraft)
+	if err := os.WriteFile(specBody, specDraft, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	spec := decodeRequirementsAcceptanceResult(t, runRequirementsAcceptanceCLI(t, profile, nil, "comment", "upsert",
-		"--repo", "owner/repo", "--issue", strconv.Itoa(proposalNumber), "--type", "SPEC", "--id", "SPEC-001",
+		"--repo", "owner/repo", "--issue", strconv.Itoa(proposalNumber), "--type", "SPEC", "--id", specID,
 		"--body-file", specBody, "--status", "confirmed", "--scope", "requirements acceptance", "--agent", "Worker-P002", "--json"))
 	question := decodeRequirementsAcceptanceResult(t, runRequirementsAcceptanceCLI(t, profile, nil, "question", "create",
-		"--repo", "owner/repo", "--issue", strconv.Itoa(proposalNumber), "--id", "QUESTION-001",
+		"--repo", "owner/repo", "--issue", strconv.Itoa(proposalNumber), "--id", questionID,
 		"--question", result.Drafts["question"], "--scope", "requirements acceptance", "--json"))
 	update := decodeRequirementsAcceptanceResult(t, runRequirementsAcceptanceCLI(t, profile, nil, "issue", "update",
 		"--repo", "owner/repo", "--issue", strconv.Itoa(simpleNumber), "--title", "Smaller requirements workflow clarified",

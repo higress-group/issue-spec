@@ -15,6 +15,8 @@ Coordinator: select execution mode before assigning writers. If Design or TASK i
 
 Built-in protocol overrides project text; never reorder/omit steps or move open decisions.
 
+Every new typed ID MUST be `<TYPE>-<issue><three-digit sequence>`: Issue 1 starts with `QUESTION-1001`, Issue 44 with `QUESTION-44001`. Allocate 001-999 only within the target Issue and type after reading that Issue's typed comments, and never renumber a legacy ID. New writes reject wrong Issue prefixes; `--allow-legacy-id` is only for intentional legacy-compatible creates.
+
 ## Delegated Paths and Narrow Coordinator Path
 
 Unmanaged delegated path: dispatch exactly one real non-Coordinator worker in the selected checkout. Managed PROCESS: dispatch one real non-Coordinator owner per change-bearing package; proven-independent packages may run concurrently. The Coordinator waits and writes no code on either path. Each worker owns package code, focused tests, exact result commit, changed paths, decisions, risks, and non-obvious line-rationale drafts. The Coordinator owns exact-commit inspection, integration, proportionate final validation, anchor validation, and provider publication.

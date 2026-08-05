@@ -569,13 +569,33 @@ func findArtifactByIDIn(comments []github.Comment, issueNumber int, id string) (
 	return model.Artifact{}, "", fmt.Errorf("typed comment %s not found on issue %d", id, issueNumber)
 }
 
+type newTypedIDPolicyError struct {
+	cause error
+}
+
+func (e *newTypedIDPolicyError) Error() string {
+	return e.cause.Error() + "; pass --allow-legacy-id only for an intentional legacy-compatible create"
+}
+
+func (e *newTypedIDPolicyError) Unwrap() error {
+	return e.cause
+}
+
+func isNewTypedIDPolicyError(err error) bool {
+	var target *newTypedIDPolicyError
+	return errors.As(err, &target)
+}
+
 // upsertTypedComment creates or updates a typed comment. On update it preserves
 // every Related Comments link already on the existing comment by merging them into
 // the regenerated body (idempotent via AddRelatedCommentLink), so a content-only
 // regenerate never silently drops traceability links. The returned slice lists any
 // links that were on the existing comment but are still absent from the written
 // body; callers surface it as a link-drop warning.
-func upsertTypedComment(ctx context.Context, client github.Operations, repo string, issueNumber int, commentType, id, body string) (string, github.Comment, []string, error) {
+func upsertTypedComment(ctx context.Context, client github.Operations, repo string, issueNumber int, commentType, id, body string, allowLegacyID bool) (string, github.Comment, []string, error) {
+	if err := model.ValidateTypedIdentity(commentType, id); err != nil {
+		return "", github.Comment{}, nil, err
+	}
 	comments, err := client.ListIssueComments(ctx, repo, issueNumber)
 	if err != nil {
 		return "", github.Comment{}, nil, err
@@ -596,6 +616,9 @@ func upsertTypedComment(ctx context.Context, client github.Operations, repo stri
 			updated, err := client.UpdateComment(ctx, repo, comment.ID, merged)
 			return "updated", updated, dropped, err
 		}
+	}
+	if err := model.ValidateIssueScopedTypedIdentity(commentType, id, issueNumber); err != nil && !allowLegacyID {
+		return "", github.Comment{}, nil, &newTypedIDPolicyError{cause: err}
 	}
 	created, err := client.CreateComment(ctx, repo, issueNumber, body)
 	return "created", created, nil, err

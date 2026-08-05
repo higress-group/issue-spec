@@ -3,11 +3,11 @@
   "release": "development",
   "source_revision": "unknown",
   "requirements_skill_content_id": "sha256:35e55ba3b52b377acbd36ca4305cd958e3bd593008d576a7a82c9b06ab862ed1",
-  "content_digest": "sha256:d593120ba8a2136704c7e3f17a4a5e7ac34fc1a18c66536de8a76d88ae52c4fd",
+  "content_digest": "sha256:f42932bddfeefd072b3dc70f99679025084e1de5ae9db66ef3cbc3e63e654660",
   "files": [
     {
       "path": ".agents/skills/issue-spec-apply/SKILL.md",
-      "sha256": "0ba64eb3506dfb217954a34c8da0d8fef9e4c374ee7f25200f6be30dd55dd926"
+      "sha256": "c206c5143f440a5cc05407c17d265141364ead27c7985d9e7e229fcd11428473"
     },
     {
       "path": ".agents/skills/issue-spec-github/SKILL.md",
@@ -15,19 +15,19 @@
     },
     {
       "path": ".agents/skills/issue-spec-propose/SKILL.md",
-      "sha256": "d6bfdfdd017c80f9a0593872761a353891c2f6f40c651eced07de6993a626ce1"
+      "sha256": "d3851702c76a342ef3c26de44d73d17e16ba8105565790e4e580ec769fb2478c"
     },
     {
       "path": ".agents/skills/issue-spec-workflow/SKILL.md",
-      "sha256": "e2cfb754ca435ee3af3e76c1b3f45f76e0ef0938020c60125edd7a1bf991d93c"
+      "sha256": "0952e95f0d3727ed9f7baf62e7967b0dd5546a5c9e514c9068f2b3f6a44e7c38"
     },
     {
       "path": ".claude/commands/issue-spec/apply.md",
-      "sha256": "5be217263ef644e24b86ea3a17d3ffd148dd4a0532d4a593b0a1bdf6630d289c"
+      "sha256": "a2d6b25a5a792447188db3902aeb0a0b4eb4d2e14f18071c6ba4cbaef986ff4b"
     },
     {
       "path": ".claude/commands/issue-spec/propose.md",
-      "sha256": "4947577ccbff7a7662a2cce6e17ee07bea6ebd53b4aa1122c2c82bab57d60187"
+      "sha256": "568ee41b4f35f7beb462e61086e5f289c1a93498feed87a8d1b089480e7b23ef"
     }
   ]
 }

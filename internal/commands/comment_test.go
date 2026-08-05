@@ -202,6 +202,19 @@ func TestCommentCreateRejectsEmptyBodyBeforeBackendSelection(t *testing.T) {
 	}
 }
 
+func TestCommentCreateRejectsTypedBodiesBeforeBackendSelection(t *testing.T) {
+	body, err := model.EnsureTypedBody("SPEC", "SPEC-001", "## Requirement: Guard typed writes\n\nThe CLI MUST use canonical writers.\n\n### Scenario: reject generic create\n\n- **WHEN** typed Markdown is supplied\n- **THEN** ordinary comment creation is rejected\n", model.BodyOptions{Status: "draft"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runCommentCreate(t.Context(), []string{"--repo", "o/r", "--issue", "41", "--body-file", writeTempInput(t, body)})
+	if code != 2 || !strings.Contains(errOut.String(), "cannot use ordinary `comment create`") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
 func TestCommentEditAndDeleteUseBoundedSelectedBackendContracts(t *testing.T) {
 	const body = "Replacement body that must not appear in command output.\n"
 	var out, errOut bytes.Buffer
@@ -543,7 +556,7 @@ func TestCommentUpsertAcceptsCanonicalSpec(t *testing.T) {
 	inPath := writeTempInput(t, specInputJSON)
 	var genOut, errOut bytes.Buffer
 	gen := newApp(strings.NewReader(""), &genOut, &errOut)
-	if code := gen.runCommentGenerate(context.Background(), []string{"--type", "SPEC", "--id", "SPEC-001", "--status", "confirmed", "--input-file", inPath}); code != 0 {
+	if code := gen.runCommentGenerate(context.Background(), []string{"--type", "SPEC", "--id", "SPEC-5001", "--status", "confirmed", "--input-file", inPath}); code != 0 {
 		t.Fatalf("generate failed: %s", errOut.String())
 	}
 	bodyPath := writeTempInput(t, genOut.String())
@@ -559,7 +572,7 @@ func TestCommentUpsertAcceptsCanonicalSpec(t *testing.T) {
 			return github.Comment{ID: 1, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-1"}, nil
 		}
 	})
-	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "SPEC", "--id", "SPEC-001", "--body-file", bodyPath, "--json"})
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "SPEC", "--id", "SPEC-5001", "--body-file", bodyPath, "--json"})
 	if code != 0 {
 		t.Fatalf("canonical upsert failed exit=%d out=%q", code, out.String())
 	}
@@ -571,8 +584,73 @@ func TestCommentUpsertAcceptsCanonicalSpec(t *testing.T) {
 	}
 }
 
+func TestUpsertTypedCommentEnforcesNewIssueScopedIDsAndPreservesLegacyUpdates(t *testing.T) {
+	legacyBody, err := model.EnsureTypedBody("QUESTION", "QUESTION-001", "## Question\n\nKeep the legacy identity?\n", model.BodyOptions{Status: "draft"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("reject new legacy id", func(t *testing.T) {
+		creates := 0
+		backend := fakeGitHubBackend{
+			listIssueComments: func(context.Context, string, int) ([]github.Comment, error) { return nil, nil },
+			createComment: func(context.Context, string, int, string) (github.Comment, error) {
+				creates++
+				return github.Comment{}, nil
+			},
+		}
+		_, _, _, err := upsertTypedComment(t.Context(), backend, "o/r", 41, "QUESTION", "QUESTION-001", legacyBody, false)
+		if !isNewTypedIDPolicyError(err) || !strings.Contains(err.Error(), "expected QUESTION-41<NNN> (e.g. QUESTION-41001)") {
+			t.Fatalf("upsertTypedComment() error = %v", err)
+		}
+		if creates != 0 {
+			t.Fatalf("invalid new ID created %d comments", creates)
+		}
+	})
+
+	t.Run("explicit legacy create bypass", func(t *testing.T) {
+		creates := 0
+		backend := fakeGitHubBackend{
+			listIssueComments: func(context.Context, string, int) ([]github.Comment, error) { return nil, nil },
+			createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+				creates++
+				return github.Comment{ID: 1, Body: body}, nil
+			},
+		}
+		action, _, _, err := upsertTypedComment(t.Context(), backend, "o/r", 41, "QUESTION", "QUESTION-001", legacyBody, true)
+		if err != nil || action != "created" || creates != 1 {
+			t.Fatalf("action=%q creates=%d err=%v", action, creates, err)
+		}
+	})
+
+	t.Run("legacy bypass cannot change the type prefix", func(t *testing.T) {
+		backend := fakeGitHubBackend{}
+		_, _, _, err := upsertTypedComment(t.Context(), backend, "o/r", 41, "SPEC", "QUESTION-001", legacyBody, true)
+		if err == nil || !strings.Contains(err.Error(), "invalid SPEC id QUESTION-001") {
+			t.Fatalf("upsertTypedComment() error = %v", err)
+		}
+	})
+
+	t.Run("existing legacy id remains updateable", func(t *testing.T) {
+		updates := 0
+		backend := fakeGitHubBackend{
+			listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+				return []github.Comment{{ID: 7, Body: legacyBody}}, nil
+			},
+			updateComment: func(_ context.Context, _ string, id int64, body string) (github.Comment, error) {
+				updates++
+				return github.Comment{ID: id, Body: body}, nil
+			},
+		}
+		action, _, _, err := upsertTypedComment(t.Context(), backend, "o/r", 41, "QUESTION", "QUESTION-001", legacyBody, false)
+		if err != nil || action != "updated" || updates != 1 {
+			t.Fatalf("action=%q updates=%d err=%v", action, updates, err)
+		}
+	})
+}
+
 func TestCommentUpsertAllowNoncanonicalWritesButMarksState(t *testing.T) {
-	bodyPath := writeTempInput(t, "# SPEC-001\n\nLegacy non-canonical spec.")
+	bodyPath := writeTempInput(t, "# SPEC-5001\n\nLegacy non-canonical spec.")
 	var created string
 	var out bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
@@ -584,7 +662,7 @@ func TestCommentUpsertAllowNoncanonicalWritesButMarksState(t *testing.T) {
 			return github.Comment{ID: 2, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-2"}, nil
 		}
 	})
-	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "SPEC", "--id", "SPEC-001", "--body-file", bodyPath, "--allow-noncanonical", "--json"})
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "SPEC", "--id", "SPEC-5001", "--body-file", bodyPath, "--allow-noncanonical", "--json"})
 	if code != 0 {
 		t.Fatalf("allow-noncanonical upsert failed exit=%d out=%q", code, out.String())
 	}
@@ -601,7 +679,7 @@ func TestCommentUpsertAllowNoncanonicalWritesButMarksState(t *testing.T) {
 		t.Fatalf("noncanonical bypass must be marked in output: %s", out.String())
 	}
 	// The written body remains detectable as malformed via the shared validator.
-	if diags := model.ValidateCanonicalBody("SPEC", "SPEC-001", "", created); len(diags) == 0 {
+	if diags := model.ValidateCanonicalBody("SPEC", "SPEC-5001", "", created); len(diags) == 0 {
 		t.Fatal("bypassed body should still be detectably noncanonical")
 	}
 }
@@ -1244,7 +1322,7 @@ func TestParseCoversSectionIDs(t *testing.T) {
 }
 
 func TestCommentUpsertCoversIssueWritesOnlyTaskOwnedForwardLinks(t *testing.T) {
-	taskBody := generateTaskBody(t, "TASK-001", taskCoversInput(`"SPEC-001"`))
+	taskBody := generateTaskBody(t, "TASK-5001", taskCoversInput(`"SPEC-001"`))
 	bodyPath := writeTempInput(t, taskBody)
 	specBody := generateCanonicalSpecBody(t)
 	specURL := "https://github.com/o/r/issues/100#issuecomment-501"
@@ -1273,7 +1351,7 @@ func TestCommentUpsertCoversIssueWritesOnlyTaskOwnedForwardLinks(t *testing.T) {
 			return github.Comment{ID: id}, nil
 		}
 	})
-	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "TASK", "--id", "TASK-001", "--body-file", bodyPath, "--covers-issue", "100", "--json"})
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "TASK", "--id", "TASK-5001", "--body-file", bodyPath, "--covers-issue", "100", "--json"})
 	if code != 0 {
 		t.Fatalf("covers upsert failed exit=%d out=%q", code, out.String())
 	}
@@ -1332,7 +1410,7 @@ func TestCommentUpsertCoversIssueUnknownIDFailsBeforeOwnerWrite(t *testing.T) {
 }
 
 func TestCommentUpsertProcessPublishesParentAndDependenciesOnOwnerOnce(t *testing.T) {
-	ownerBody := generateProcessBody(t, "PROCESS-002", `{"title":"owner links","parent_task":"TASK-001","dependencies":["PROCESS-001"],"execution_class":"external","covers":["SPEC-001"],"handoff":"ready"}`)
+	ownerBody := generateProcessBody(t, "PROCESS-6002", `{"title":"owner links","parent_task":"TASK-001","dependencies":["PROCESS-001"],"execution_class":"external","covers":["SPEC-001"],"handoff":"ready"}`)
 	dependencyBody := generateProcessBody(t, "PROCESS-001", `{"title":"dependency","parent_task":"TASK-001","execution_class":"external","covers":["SPEC-001"],"handoff":"ready"}`)
 	taskBody := generateTaskBody(t, "TASK-001", taskCoversInput(`"SPEC-001"`))
 	bodyPath := writeTempInput(t, ownerBody)
@@ -1373,7 +1451,7 @@ func TestCommentUpsertProcessPublishesParentAndDependenciesOnOwnerOnce(t *testin
 		}
 	})
 	code := app.runCommentUpsert(t.Context(), []string{"--repo", "o/r", "--issue", "6", "--type", "PROCESS",
-		"--id", "PROCESS-002", "--body-file", bodyPath, "--json"})
+		"--id", "PROCESS-6002", "--body-file", bodyPath, "--json"})
 	if code != 0 || creates != 1 || updates != 0 || !strings.Contains(createdBody, taskURL) ||
 		!strings.Contains(createdBody, dependencyURL) {
 		t.Fatalf("exit=%d creates=%d updates=%d stdout=%q stderr=%q body=%q", code, creates, updates,
