@@ -518,6 +518,13 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 		codec.StableNumericID(answers[0].Comment.ID.String()), subject, "rewritten"); !errors.Is(err, issueapi.ErrAnswerImmutable) {
 		t.Fatalf("ANSWER patch error=%v", err)
 	}
+	beforeAnswerDelete := countRows(t, environment.pool, "comments")
+	if _, _, err := environment.service.DeleteComment(t.Context(), "acme", "widgets",
+		codec.StableNumericID(answers[0].Comment.ID.String()), subject); !errors.Is(err, issueapi.ErrAnswerImmutable) ||
+		countRows(t, environment.pool, "comments") != beforeAnswerDelete {
+		t.Fatalf("ANSWER delete error=%v comments=%d/%d", err,
+			beforeAnswerDelete, countRows(t, environment.pool, "comments"))
+	}
 
 	changedQuestion := trustedQuestionBody(t, "QUESTION-007", "Choose again?",
 		[]model.ChoiceOption{{ID: "fast", Label: "Fast"}})

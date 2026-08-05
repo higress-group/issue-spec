@@ -142,7 +142,8 @@ intentionally create a new legacy-compatible ID.
 For a self-hosted profile, `question answer` confirms the current QUESTION through that
 profile's validated native API and submits only its current digest plus the selected option
 IDs or custom text. The server transactionally allocates the canonical ANSWER ID within the
-target Issue and type, and clients reject a returned ID scoped to another Issue. JSON output reports that
+target Issue and type, preserves that identity by prohibiting ANSWER mutation or deletion,
+and clients reject a returned ID scoped to another Issue. JSON output reports that
 server-generated `id` and includes the caller's distinct `--id` as `requested_id`.
 GitHub-backed profiles retain the existing append-only typed-comment behavior and use the
 caller-provided `--id` as the ANSWER identity.

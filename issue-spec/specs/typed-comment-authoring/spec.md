@@ -116,7 +116,7 @@ Write commands MUST reject a new caller-authored ID whose Issue prefix or three-
 #### Scenario: trusted server creation allocates a canonical ID
 
 - **WHEN** the self-hosted server creates an ANSWER from bounded caller intent for Issue 41
-- **THEN** it SHALL allocate and return an unused `ANSWER-41<NNN>` identity transactionally, and clients SHALL reject a returned ANSWER identity scoped to another Issue
+- **THEN** it SHALL allocate and return an unused `ANSWER-41<NNN>` identity transactionally, SHALL keep that identity reserved by prohibiting ANSWER mutation or deletion, and clients SHALL reject a returned ANSWER identity scoped to another Issue
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/433

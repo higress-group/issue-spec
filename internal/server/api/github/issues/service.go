@@ -690,6 +690,9 @@ func (s *Service) DeleteComment(ctx context.Context, owner, repository string, c
 		if !decision.Allowed {
 			return &DecisionError{Decision: decision}
 		}
+		if answerShapedBody(current.Comment.Body) {
+			return ErrAnswerImmutable
+		}
 		deleted, err = repositoryStore.DeleteComment(ctx, compatibilityID)
 		return err
 	})
