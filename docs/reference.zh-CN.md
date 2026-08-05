@@ -37,7 +37,7 @@ html_review:
 
 缺少 `html_review` 时，`enabled` 会解析为 `true`，以保持向后兼容。若映射存在，`enabled` 必须存在且必须是布尔值；标量、缺少 `enabled`、非布尔值及未知字段都会让工作流校验失败，并且失败发生在生成或 issue 创建产生任何变更之前。
 
-使用 `enabled: false` 时，`issue-spec init` 会从生成的 skills、slash commands 与 prompts 中省略 projection 检查点，不生成内嵌的 `human-review-projections.md` 资源，并且只移除先前启用生成所留下的这个精确托管资源。内置 Proposal、Design 与 Implement issue 正文也会省略 Human Review Projection 章节。自定义工作流模板和显式 `--body-file` 内容仍具有权威性。
+使用 `enabled: false` 时，`issue-spec init` 会从生成的 skills、slash commands 与 prompts 中省略 projection 检查点，不生成内嵌的 `human-review-projections.md` 资源，并且只移除先前启用生成所留下的这个精确托管资源。内置 Proposal、Design 与 Implement issue 正文也会省略 Human Review Projection 章节。自定义工作流模板和显式 `--body-file` 仍决定各制品的正文内容，但不能覆盖内置阶段顺序或 canonical typed carrier；真正未决的决策仍必须写入 blocking typed QUESTION comment，而不是 issue body prose。
 
 该设置只控制仓库的创作指引。类型化规划制品、已存储的历史 REVIEW/VERIFY 审计数据、projection 评论、HTML preview 解析与存储以及 Web preview 执行均保持不变。当前 provider 原生评审、检查、批准和合并仍留在原生界面由人控制。
 

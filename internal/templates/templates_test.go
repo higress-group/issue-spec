@@ -31,6 +31,26 @@ func TestDesignTemplateUsesSentinelNotBareTBD(t *testing.T) {
 	}
 }
 
+func TestPlanningIssueTemplatesKeepOpenDecisionsInTypedQuestions(t *testing.T) {
+	_, proposal, _ := ProposalIssue("demo-change")
+	_, design, _ := DesignIssue("demo-change", "21")
+
+	if strings.Contains(proposal, "## Open Questions") {
+		t.Fatalf("proposal body still invites open decisions into issue prose:\n%s", proposal)
+	}
+	for name, body := range map[string]string{"proposal": proposal, "design": design} {
+		section := sectionOf(t, body, "## Question Convergence Check")
+		for _, want := range []string{"blocking typed QUESTION", "not this issue body"} {
+			if !strings.Contains(section, want) {
+				t.Errorf("%s question convergence guidance missing %q:\n%s", name, want, section)
+			}
+		}
+	}
+	if checklist := sectionOf(t, design, "## Confirmation Checklist"); !strings.Contains(checklist, "Proposal and Design blocking QUESTION comments") {
+		t.Fatalf("design checklist does not cover phase-local QUESTION convergence:\n%s", checklist)
+	}
+}
+
 func TestIssueTemplatesScaffoldProjectionTimingAndAuthority(t *testing.T) {
 	_, proposal, _ := ProposalIssue("demo-change")
 	_, design, _ := DesignIssue("demo-change", "21")
@@ -85,7 +105,7 @@ func TestIssueTemplatesOmitHTMLReviewSectionsWhenDisabled(t *testing.T) {
 		body     string
 		required []string
 	}{
-		{name: "proposal", body: proposal, required: []string{"## Open Questions", "## Capabilities"}},
+		{name: "proposal", body: proposal, required: []string{"## Question Convergence Check", "## Capabilities"}},
 		{name: "design", body: design, required: []string{"## Question Convergence Check", "## Current Implementation Locations", "## Confirmation Checklist"}},
 		{name: "implement", body: implement, required: []string{"## Delivery Path Decision", "## Work Packages and Dependencies", "## Provider Checks / Review Status"}},
 	} {

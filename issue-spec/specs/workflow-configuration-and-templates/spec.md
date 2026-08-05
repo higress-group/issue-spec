@@ -106,6 +106,12 @@ The built-in phase sequence and canonical artifact carriers MUST remain authorit
 - **THEN** workflow validation SHALL warn that blocking typed QUESTION is the canonical carrier
 - **THEN** generated guidance SHALL keep issue-body and enabled projection prose free of open decisions
 
+#### Scenario: built-in issue scaffolds do not invite body-carried decisions
+
+- **WHEN** the CLI scaffolds a built-in Proposal or Design issue body
+- **THEN** its question-convergence sections SHALL describe typed QUESTION carrier and convergence status only
+- **THEN** the scaffold SHALL NOT ask the author to record open or remaining decisions in issue-body prose
+
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704607
 - https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861705034
