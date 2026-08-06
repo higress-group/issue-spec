@@ -3,10 +3,12 @@ package issues
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	apierrors "github.com/higress-group/issue-spec/internal/server/api/github/errors"
 	"github.com/higress-group/issue-spec/internal/server/auth"
@@ -95,6 +97,31 @@ func ValidateRawBody(resource, body string) []codec.Violation {
 		return []codec.Violation{{Resource: resource, Field: "body", Code: "invalid", Message: "must not contain NUL"}}
 	}
 	return nil
+}
+
+// ValidateTypedCommentMarker rejects comment bodies that the typed-comment
+// projection pipeline would drop (marker version other than 1, or any
+// ParseTypedComment error such as a missing visible header), so the writer
+// receives an actionable validation error instead of a silently broken Web UI
+// panel. The marker version is the representation schema version and must
+// stay 1; content revisions are recorded in the body, not the marker.
+// Mirroring the projector exactly is intentional: it parses the same semantic
+// view, so a marker quoted in an ordinary code fence counts as a typed marker
+// here just as it does for projection.
+func ValidateTypedCommentMarker(resource, body string) []codec.Violation {
+	parsed := model.ParseTypedComment(body)
+	if parsed.Marker.Type == "" && parsed.Marker.ID == "" && len(parsed.Errors) == 0 {
+		return nil
+	}
+	if parsed.Marker.Version > 1 {
+		return []codec.Violation{{Resource: resource, Field: "body", Code: "invalid_marker_version",
+			Message: fmt.Sprintf("issue-spec marker version must stay 1; found version=%d. Record content revisions in the body (for example a Resolution Log), not the marker", parsed.Marker.Version)}}
+	}
+	if parsed.Marker.Version == 1 && len(parsed.Errors) == 0 {
+		return nil
+	}
+	return []codec.Violation{{Resource: resource, Field: "body", Code: "invalid",
+		Message: "typed comment would not be projected: " + strings.Join(parsed.Errors, "; ")}}
 }
 
 func PresentIssue(presenter codec.Presenter, resource models.RepositoryResource, snapshot models.IssueSnapshot) codec.Issue {

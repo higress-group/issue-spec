@@ -169,6 +169,7 @@ func (h handlers) create(w http.ResponseWriter, r *http.Request) {
 	violations := input.Validate()
 	if input.Body != nil {
 		violations = append(violations, issues.ValidateRawBody("IssueComment", *input.Body)...)
+		violations = append(violations, issues.ValidateTypedCommentMarker("IssueComment", *input.Body)...)
 	}
 	if len(violations) > 0 {
 		apierrors.WriteGitHub(w, apierrors.Validation(issues.RequestID(r), violations))
@@ -197,6 +198,7 @@ func (h handlers) update(w http.ResponseWriter, r *http.Request) {
 	violations := input.Validate()
 	if input.Body != nil {
 		violations = append(violations, issues.ValidateRawBody("IssueComment", *input.Body)...)
+		violations = append(violations, issues.ValidateTypedCommentMarker("IssueComment", *input.Body)...)
 	}
 	if len(violations) > 0 {
 		apierrors.WriteGitHub(w, apierrors.Validation(issues.RequestID(r), violations))
