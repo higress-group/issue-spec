@@ -432,6 +432,51 @@ func TestEvictRuntimeCaches(t *testing.T) {
 	}
 }
 
+// TestEvictRuntimeCachesRemovesReadOnlyGoModuleCache is the non-root-runner
+// regression for the CI failure mode: the Go module cache materializes
+// directories 0555 and files 0444, and unlink requires a writable parent, so
+// a plain removal fails for the service user with permission denied.
+// Eviction must relax the validated tree through the opened root capability
+// and still reclaim every byte. As root the removal would succeed either
+// way, so the relaxation pass itself is pinned euid-independently by
+// TestMakeOpenedTreeWritableRelaxesReadOnlyTree.
+func TestEvictRuntimeCachesRemovesReadOnlyGoModuleCache(t *testing.T) {
+	svc, root := newRuntimeService(t, state.NewState())
+	// If eviction regresses, the read-only fixture must not break t.TempDir
+	// removal as a non-root user and mask the primary failure.
+	t.Cleanup(func() { relaxTreeForCleanup(t, root) })
+	scope := testScope()
+	paths, err := PrepareRuntimeHome(root, scope)
+	if err != nil {
+		t.Fatalf("PrepareRuntimeHome: %v", err)
+	}
+	if err := svc.RecordRuntimeHome(context.Background(), scope, paths); err != nil {
+		t.Fatalf("RecordRuntimeHome: %v", err)
+	}
+	modCache := filepath.Join(paths.Home, "go", "pkg", "mod")
+	writeFile(t, filepath.Join(modCache, "example.com", "dep@v1.0.0", "dep.go"), 48)
+	writeFile(t, filepath.Join(modCache, "cache", "download", "example.com", "dep", "@v", "v1.0.0.zip"), 16)
+	// Leave the cache exactly the way the go tool does: read-only.
+	makeTreeReadOnly(t, modCache)
+
+	report, err := svc.EvictRuntimeCaches(context.Background(), true)
+	if err != nil {
+		t.Fatalf("EvictRuntimeCaches: %v", err)
+	}
+	if !contains(report.CacheEvicted, modCache) {
+		t.Fatalf("read-only module cache must be evicted: %+v", report)
+	}
+	if report.ReclaimedBytes != 64 {
+		t.Fatalf("reclaimed = %d, want 64", report.ReclaimedBytes)
+	}
+	if _, err := os.Lstat(modCache); !os.IsNotExist(err) {
+		t.Fatalf("read-only module cache must be gone, err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(paths.Root, "scope.json")); err != nil {
+		t.Fatalf("protected scope binding must survive eviction: %v", err)
+	}
+}
+
 func TestEvictRuntimeCachesNeverFollowsSymlinks(t *testing.T) {
 	svc, root := newRuntimeService(t, state.NewState())
 	scope := testScope()

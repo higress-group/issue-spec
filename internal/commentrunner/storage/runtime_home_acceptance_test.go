@@ -29,6 +29,13 @@ func TestSharedRuntimeHomeReusesGoCachesAcrossJobs(t *testing.T) {
 	}
 
 	root := t.TempDir()
+	// The real go tool leaves the module cache below the shared home
+	// read-only (directories 0555, files 0444) and unlink requires a
+	// writable parent, so a non-root runner fails t.TempDir removal with
+	// permission denied. Relax the fixture tree first: cleanups run LIFO
+	// and root's TempDir cleanup was registered above, so this runs before
+	// it.
+	t.Cleanup(func() { relaxTreeForCleanup(t, root) })
 	scope := RuntimeScope{Hostname: "github.com", Repo: "o/r", Runner: "acceptance"}
 	home, err := PrepareRuntimeHome(root, scope)
 	if err != nil {
@@ -268,6 +275,42 @@ func countRegularFiles(t *testing.T, root string) int {
 		t.Fatal(err)
 	}
 	return count
+}
+
+// relaxTreeForCleanup makes every entry below root owner-writable — 0700 for
+// directories, 0600 for files — so t.TempDir removal cannot fail on
+// read-only tool-managed trees (the Go module cache materializes directories
+// 0555 and files 0444, and unlink requires a writable parent) when the test
+// runs as a non-root user. Symlinks are skipped: their removal only needs
+// the relaxed parent. The walk is top-down, so a directory is relaxed before
+// it is descended into. Individual failures are logged, not fatal: a
+// leftover read-only entry still surfaces as the t.TempDir cleanup error.
+func relaxTreeForCleanup(t *testing.T, root string) {
+	t.Helper()
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			t.Logf("relax %s: %v", path, err)
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		mode := os.FileMode(0o600)
+		if entry.IsDir() {
+			mode = 0o700
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			t.Logf("relax %s: %v", path, infoErr)
+			return nil
+		}
+		if info.Mode().Perm()&0o200 == 0 {
+			if chmodErr := os.Chmod(path, mode); chmodErr != nil {
+				t.Logf("relax %s: %v", path, chmodErr)
+			}
+		}
+		return nil
+	})
 }
 
 // TestPrepareRuntimeHomeAndScratchNeverTouchForeignRoots is the fast unit-level
