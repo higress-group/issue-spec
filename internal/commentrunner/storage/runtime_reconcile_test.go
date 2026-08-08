@@ -42,6 +42,16 @@ func prepareScratchWithFile(t *testing.T, root, jobID string, size int) JobScrat
 	return paths
 }
 
+func scratchRecordID(repo, jobID string) string {
+	return ResourceID(ResourceKindJobScratch, repo, "", jobID)
+}
+
+func scratchRecord(t *testing.T, svc *Service, repo, jobID string) (PhysicalResource, bool) {
+	t.Helper()
+	record, ok := svc.Store().State().Resources[scratchRecordID(repo, jobID)]
+	return record, ok
+}
+
 func contains(values []string, needle string) bool {
 	for _, value := range values {
 		if value == needle {
@@ -56,7 +66,7 @@ func TestReconcileJobScratchKeepsActiveJob(t *testing.T) {
 	st.Jobs[scratchJobActive] = state.Job{ID: scratchJobActive, Repo: "o/r", Status: state.StatusRunning}
 	svc, root := newRuntimeService(t, st)
 	paths := prepareScratchWithFile(t, root, scratchJobActive, 128)
-	if err := svc.RecordJobScratch(context.Background(), scratchJobActive, paths.Root); err != nil {
+	if err := svc.RecordJobScratch(context.Background(), "o/r", scratchJobActive, paths.Root); err != nil {
 		t.Fatalf("RecordJobScratch: %v", err)
 	}
 	report, err := svc.ReconcileJobScratch(context.Background(), true)
@@ -72,12 +82,9 @@ func TestReconcileJobScratchKeepsActiveJob(t *testing.T) {
 	if _, err := os.Lstat(paths.Root); err != nil {
 		t.Fatalf("active job scratch dir removed: %v", err)
 	}
-	store, err := svc.RuntimeStore()
-	if err != nil {
-		t.Fatalf("RuntimeStore: %v", err)
-	}
-	if record := store.State().Scratch[scratchJobActive]; record.CleanupState != CleanupManaged {
-		t.Fatalf("record cleanup state = %q, want managed", record.CleanupState)
+	record, ok := scratchRecord(t, svc, "o/r", scratchJobActive)
+	if !ok || record.CleanupState != CleanupManaged {
+		t.Fatalf("record = %+v ok=%v, want managed", record, ok)
 	}
 	// Interrupted jobs are still active for scratch purposes.
 	st.Jobs[scratchJobActive] = state.Job{ID: scratchJobActive, Repo: "o/r", Status: state.StatusInterrupted}
@@ -97,7 +104,7 @@ func TestReconcileJobScratchRemovesTerminalAndUnknown(t *testing.T) {
 	donePaths := prepareScratchWithFile(t, root, scratchJobDone, 100)
 	orphanPaths := prepareScratchWithFile(t, root, scratchJobOrphan, 50)
 	for jobID, paths := range map[string]JobScratchPaths{scratchJobDone: donePaths, scratchJobOrphan: orphanPaths} {
-		if err := svc.RecordJobScratch(context.Background(), jobID, paths.Root); err != nil {
+		if err := svc.RecordJobScratch(context.Background(), "o/r", jobID, paths.Root); err != nil {
 			t.Fatalf("RecordJobScratch %s: %v", jobID, err)
 		}
 	}
@@ -116,12 +123,10 @@ func TestReconcileJobScratchRemovesTerminalAndUnknown(t *testing.T) {
 			t.Fatalf("scratch dir %q must be gone, err=%v", paths.Root, err)
 		}
 	}
-	store, err := svc.RuntimeStore()
-	if err != nil {
-		t.Fatalf("RuntimeStore: %v", err)
-	}
-	if len(store.State().Scratch) != 0 {
-		t.Fatalf("scratch records must be garbage-collected: %+v", store.State().Scratch)
+	for id, resource := range svc.Store().State().Resources {
+		if resource.Kind == ResourceKindJobScratch {
+			t.Fatalf("scratch records must be garbage-collected: %q = %+v", id, resource)
+		}
 	}
 	// Second apply is a no-op.
 	second, err := svc.ReconcileJobScratch(context.Background(), true)
@@ -135,7 +140,7 @@ func TestReconcileJobScratchRemovesTerminalAndUnknown(t *testing.T) {
 
 func TestReconcileJobScratchRemovesUnrecordedOnDiskEntry(t *testing.T) {
 	svc, root := newRuntimeService(t, state.NewState())
-	// A crashed runner left scratch behind without a metadata record.
+	// A crashed runner left scratch behind without a sidecar record.
 	paths := prepareScratchWithFile(t, root, scratchJobOrphan, 64)
 	report, err := svc.ReconcileJobScratch(context.Background(), true)
 	if err != nil {
@@ -178,7 +183,7 @@ func TestReconcileJobScratchDryRunDoesNotMutate(t *testing.T) {
 	st.Jobs[scratchJobDryRun] = state.Job{ID: scratchJobDryRun, Repo: "o/r", Status: state.StatusFailed}
 	svc, root := newRuntimeService(t, st)
 	paths := prepareScratchWithFile(t, root, scratchJobDryRun, 32)
-	if err := svc.RecordJobScratch(context.Background(), scratchJobDryRun, paths.Root); err != nil {
+	if err := svc.RecordJobScratch(context.Background(), "o/r", scratchJobDryRun, paths.Root); err != nil {
 		t.Fatalf("RecordJobScratch: %v", err)
 	}
 	report, err := svc.ReconcileJobScratch(context.Background(), false)
@@ -194,53 +199,76 @@ func TestReconcileJobScratchDryRunDoesNotMutate(t *testing.T) {
 	if _, err := os.Lstat(paths.Root); err != nil {
 		t.Fatalf("dry-run must not delete: %v", err)
 	}
-	store, err := svc.RuntimeStore()
-	if err != nil {
-		t.Fatalf("RuntimeStore: %v", err)
-	}
-	if record := store.State().Scratch[scratchJobDryRun]; record.CleanupState != CleanupManaged {
-		t.Fatalf("dry-run must not mutate records, state = %q", record.CleanupState)
+	record, ok := scratchRecord(t, svc, "o/r", scratchJobDryRun)
+	if !ok || record.CleanupState != CleanupManaged {
+		t.Fatalf("dry-run must not mutate records, record = %+v ok=%v", record, ok)
 	}
 }
 
 func TestCompleteJobScratch(t *testing.T) {
 	svc, root := newRuntimeService(t, state.NewState())
 	paths := prepareScratchWithFile(t, root, scratchJobDone, 16)
-	if err := svc.RecordJobScratch(context.Background(), scratchJobDone, paths.Root); err != nil {
+	if err := svc.RecordJobScratch(context.Background(), "o/r", scratchJobDone, paths.Root); err != nil {
 		t.Fatalf("RecordJobScratch: %v", err)
 	}
-	if err := svc.CompleteJobScratch(context.Background(), scratchJobDone); err != nil {
+	if err := svc.CompleteJobScratch(context.Background(), "o/r", scratchJobDone); err != nil {
 		t.Fatalf("CompleteJobScratch: %v", err)
 	}
 	if _, err := os.Lstat(paths.Root); !os.IsNotExist(err) {
 		t.Fatalf("scratch dir must be gone, err=%v", err)
 	}
-	store, err := svc.RuntimeStore()
-	if err != nil {
-		t.Fatalf("RuntimeStore: %v", err)
-	}
-	if len(store.State().Scratch) != 0 {
-		t.Fatalf("record must be garbage-collected: %+v", store.State().Scratch)
+	if _, ok := scratchRecord(t, svc, "o/r", scratchJobDone); ok {
+		t.Fatalf("record must be garbage-collected")
 	}
 	// Idempotent and tolerant of unknown jobs.
-	if err := svc.CompleteJobScratch(context.Background(), scratchJobDone); err != nil {
+	if err := svc.CompleteJobScratch(context.Background(), "o/r", scratchJobDone); err != nil {
 		t.Fatalf("second CompleteJobScratch: %v", err)
 	}
-	if err := svc.CompleteJobScratch(context.Background(), scratchJobOrphan); err != nil {
+	if err := svc.CompleteJobScratch(context.Background(), "o/r", scratchJobOrphan); err != nil {
 		t.Fatalf("unknown job must be a no-op: %v", err)
 	}
-	if err := svc.CompleteJobScratch(context.Background(), "job-1"); err == nil {
+	if err := svc.CompleteJobScratch(context.Background(), "o/r", "job-1"); err == nil {
 		t.Fatalf("invalid job id must be rejected")
 	}
 }
 
 func TestRecordJobScratchRejectsForeignPath(t *testing.T) {
 	svc, root := newRuntimeService(t, state.NewState())
-	if err := svc.RecordJobScratch(context.Background(), scratchJobDone, filepath.Join(root, "elsewhere", scratchJobDone)); err == nil {
+	if err := svc.RecordJobScratch(context.Background(), "o/r", scratchJobDone, filepath.Join(root, "elsewhere", scratchJobDone)); err == nil {
 		t.Fatalf("recording a scratch path outside .job-scratch must fail closed")
 	}
-	if err := svc.RecordJobScratch(context.Background(), "job-1", filepath.Join(root, JobScratchDirName, "job-1")); err == nil {
+	if err := svc.RecordJobScratch(context.Background(), "o/r", "job-1", filepath.Join(root, JobScratchDirName, "job-1")); err == nil {
 		t.Fatalf("invalid job id must be rejected")
+	}
+	if err := svc.RecordJobScratch(context.Background(), "", scratchJobDone, filepath.Join(root, JobScratchDirName, scratchJobDone)); err == nil {
+		t.Fatalf("empty repo must be rejected")
+	}
+}
+
+func TestRecordJobScratchUpsertIdempotent(t *testing.T) {
+	svc, root := newRuntimeService(t, state.NewState())
+	paths := prepareScratchWithFile(t, root, scratchJobDone, 8)
+	if err := svc.RecordJobScratch(context.Background(), "o/r", scratchJobDone, paths.Root); err != nil {
+		t.Fatalf("RecordJobScratch: %v", err)
+	}
+	first, ok := scratchRecord(t, svc, "o/r", scratchJobDone)
+	if !ok {
+		t.Fatalf("scratch record missing")
+	}
+	if first.Kind != ResourceKindJobScratch || first.Repo != "o/r" || first.PublicSessionID != "" ||
+		first.PhysicalHash != scratchJobDone || first.Path != paths.Root || first.CleanupState != CleanupManaged {
+		t.Fatalf("scratch record = %+v", first)
+	}
+	if first.FirstObservedAt.IsZero() {
+		t.Fatalf("scratch record must carry first observation proof")
+	}
+	// A steady-state re-record preserves the observation proof and the record.
+	if err := svc.RecordJobScratch(context.Background(), "o/r", scratchJobDone, paths.Root); err != nil {
+		t.Fatalf("re-record: %v", err)
+	}
+	second, ok := scratchRecord(t, svc, "o/r", scratchJobDone)
+	if !ok || second != first {
+		t.Fatalf("idempotent re-record changed the record: first=%+v second=%+v", first, second)
 	}
 }
 
@@ -358,18 +386,15 @@ func TestEvictRuntimeCachesRejectsForeignHomePath(t *testing.T) {
 		t.Fatalf("RecordRuntimeHome: %v", err)
 	}
 	// Tamper: repoint the recorded home outside the root.
-	store, err := svc.RuntimeStore()
-	if err != nil {
-		t.Fatalf("RuntimeStore: %v", err)
-	}
 	hash, err := RuntimeScopeHash(scope)
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
-	if err := store.Update(func(st *RuntimeState) error {
-		record := st.Homes[hash]
+	id := ResourceID(ResourceKindRunnerHome, scope.Repo, "", hash)
+	if err := svc.Store().Update(func(st *StorageState) error {
+		record := st.Resources[id]
 		record.Path = filepath.Join(root, ".sessions", strings.Repeat("de", 16))
-		st.Homes[hash] = record
+		st.Resources[id] = record
 		return nil
 	}); err != nil {
 		t.Fatalf("tamper update: %v", err)

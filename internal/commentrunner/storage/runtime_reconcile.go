@@ -108,44 +108,46 @@ func (s *Service) ReconcileJobScratch(ctx context.Context, apply bool) (RuntimeR
 			active[job.ID] = true
 		}
 	}
-	store, err := s.RuntimeStore()
-	if err != nil {
-		return RuntimeReconcileReport{}, err
-	}
-	if err := store.Reload(); err != nil {
-		return RuntimeReconcileReport{}, fmt.Errorf("reload runtime metadata: %w", err)
+	if err := s.store.Reload(); err != nil {
+		return RuntimeReconcileReport{}, fmt.Errorf("reload storage sidecar: %w", err)
 	}
 	report := RuntimeReconcileReport{}
 	mutate := apply
-	if store.Status() == SidecarReportOnly {
+	if s.store.Status() == SidecarReportOnly {
 		mutate = false
-		report.Diagnostics = append(report.Diagnostics, "runtime metadata is report-only: foreign root identity or newer schema; inventory only, no mutations")
+		report.Diagnostics = append(report.Diagnostics, "storage sidecar is report-only: foreign root identity or newer schema; inventory only, no mutations")
 	}
-	if cause := store.LoadCause(); cause != nil {
-		report.Diagnostics = append(report.Diagnostics, safeDiagnostic("runtime metadata rebuilt after corruption ("+cause.Err.Error()+")"))
+	if cause := s.store.LoadCause(); cause != nil {
+		report.Diagnostics = append(report.Diagnostics, safeDiagnostic("storage sidecar rebuilt after corruption ("+cause.Err.Error()+")"))
 	}
 	if !apply {
 		report.Diagnostics = append(report.Diagnostics, "dry-run: no mutations performed")
 	}
 
-	recorded := store.State().Scratch
+	recorded := map[string]PhysicalResource{}
+	for id, resource := range s.store.State().Resources {
+		if resource.Kind == ResourceKindJobScratch {
+			recorded[id] = resource
+		}
+	}
 	recordedIDs := make([]string, 0, len(recorded))
-	for jobID := range recorded {
-		recordedIDs = append(recordedIDs, jobID)
+	for id := range recorded {
+		recordedIDs = append(recordedIDs, id)
 	}
 	sort.Strings(recordedIDs)
-	for _, jobID := range recordedIDs {
-		record := recorded[jobID]
+	for _, id := range recordedIDs {
+		record := recorded[id]
+		jobID := record.PhysicalHash
 		if active[jobID] {
 			report.ScratchKept = append(report.ScratchKept, jobID)
 			if mutate && record.CleanupState != CleanupManaged {
 				// A crash-interrupted completion raced a still-active job:
 				// heal the record instead of deleting live scratch.
-				if err := store.Update(func(st *RuntimeState) error {
-					current, ok := st.Scratch[jobID]
+				if err := s.store.Update(func(st *StorageState) error {
+					current, ok := st.Resources[id]
 					if ok {
 						current.CleanupState = CleanupManaged
-						st.Scratch[jobID] = current
+						st.Resources[id] = current
 					}
 					return nil
 				}); err != nil {
@@ -157,8 +159,8 @@ func (s *Service) ReconcileJobScratch(ctx context.Context, apply bool) (RuntimeR
 		if _, statErr := os.Lstat(record.Path); errors.Is(statErr, os.ErrNotExist) {
 			// Directory already gone: garbage-collect the record.
 			if mutate {
-				if err := store.Update(func(st *RuntimeState) error {
-					delete(st.Scratch, jobID)
+				if err := s.store.Update(func(st *StorageState) error {
+					delete(st.Resources, id)
 					return nil
 				}); err != nil {
 					report.Diagnostics = append(report.Diagnostics, safeDiagnostic("job scratch "+jobID+" record GC failed: "+err.Error()))
@@ -174,16 +176,20 @@ func (s *Service) ReconcileJobScratch(ctx context.Context, apply bool) (RuntimeR
 			report.Diagnostics = append(report.Diagnostics, "would remove job scratch "+jobID)
 			continue
 		}
-		if err := s.removeJobScratch(store, record, &report); err != nil {
+		if err := s.removeJobScratch(record, &report); err != nil {
 			report.Diagnostics = append(report.Diagnostics, safeDiagnostic("job scratch "+jobID+" removal failed: "+err.Error()))
 		}
 	}
 
-	// On-disk entries with no metadata record.
+	// On-disk entries with no sidecar record.
+	recordedJobs := map[string]bool{}
+	for _, record := range recorded {
+		recordedJobs[record.PhysicalHash] = true
+	}
 	names, err := readDirNames(filepath.Join(s.root, JobScratchDirName))
 	if err == nil {
 		for _, name := range names {
-			if _, ok := recorded[name]; ok {
+			if recordedJobs[name] {
 				continue
 			}
 			if !jobScratchIDPattern.MatchString(name) {
@@ -221,14 +227,14 @@ func (s *Service) ReconcileJobScratch(ctx context.Context, apply bool) (RuntimeR
 
 // removeJobScratch runs the recorded-entry lifecycle: mark deleting, remove
 // the directory capability scoped, then garbage-collect the record.
-func (s *Service) removeJobScratch(store *RuntimeStore, record JobScratchRecord, report *RuntimeReconcileReport) error {
-	if err := store.Update(func(st *RuntimeState) error {
-		current, ok := st.Scratch[record.JobID]
+func (s *Service) removeJobScratch(record PhysicalResource, report *RuntimeReconcileReport) error {
+	if err := s.store.Update(func(st *StorageState) error {
+		current, ok := st.Resources[record.ID]
 		if !ok {
 			return nil
 		}
 		current.CleanupState = CleanupDeleting
-		st.Scratch[record.JobID] = current
+		st.Resources[record.ID] = current
 		return nil
 	}); err != nil {
 		return err
@@ -237,13 +243,13 @@ func (s *Service) removeJobScratch(store *RuntimeStore, record JobScratchRecord,
 	if err := removeOpenedTree(record.Path, nil); err != nil {
 		return err
 	}
-	if err := store.Update(func(st *RuntimeState) error {
-		delete(st.Scratch, record.JobID)
+	if err := s.store.Update(func(st *StorageState) error {
+		delete(st.Resources, record.ID)
 		return nil
 	}); err != nil {
 		return err
 	}
-	report.ScratchRemoved = append(report.ScratchRemoved, record.JobID)
+	report.ScratchRemoved = append(report.ScratchRemoved, record.PhysicalHash)
 	report.ReclaimedBytes += measured
 	return nil
 }
@@ -257,29 +263,30 @@ func (s *Service) EvictRuntimeCaches(ctx context.Context, apply bool) (RuntimeRe
 		return RuntimeReconcileReport{}, fmt.Errorf("runtime cache eviction owner: %w", err)
 	}
 	defer release()
-	store, err := s.RuntimeStore()
-	if err != nil {
-		return RuntimeReconcileReport{}, err
-	}
-	if err := store.Reload(); err != nil {
-		return RuntimeReconcileReport{}, fmt.Errorf("reload runtime metadata: %w", err)
+	if err := s.store.Reload(); err != nil {
+		return RuntimeReconcileReport{}, fmt.Errorf("reload storage sidecar: %w", err)
 	}
 	report := RuntimeReconcileReport{}
 	mutate := apply
-	if store.Status() == SidecarReportOnly {
+	if s.store.Status() == SidecarReportOnly {
 		mutate = false
-		report.Diagnostics = append(report.Diagnostics, "runtime metadata is report-only: foreign root identity or newer schema; inventory only, no mutations")
+		report.Diagnostics = append(report.Diagnostics, "storage sidecar is report-only: foreign root identity or newer schema; inventory only, no mutations")
 	}
-	homes := store.State().Homes
-	hashes := make([]string, 0, len(homes))
-	for hash := range homes {
-		hashes = append(hashes, hash)
+	homes := map[string]PhysicalResource{}
+	for id, resource := range s.store.State().Resources {
+		if resource.Kind == ResourceKindRunnerHome {
+			homes[id] = resource
+		}
 	}
-	sort.Strings(hashes)
-	for _, hash := range hashes {
-		home := homes[hash]
+	ids := make([]string, 0, len(homes))
+	for id := range homes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		home := homes[id]
 		if err := s.validateRuntimeHomeRecord(home); err != nil {
-			report.Diagnostics = append(report.Diagnostics, safeDiagnostic("runtime home "+hash+" record fails validation: "+err.Error()))
+			report.Diagnostics = append(report.Diagnostics, safeDiagnostic("runtime home "+home.PhysicalHash+" record fails validation: "+err.Error()))
 			continue
 		}
 		homeDir := RuntimeHomePathsFor(home.Path).Home
@@ -315,11 +322,11 @@ func (s *Service) EvictRuntimeCaches(ctx context.Context, apply bool) (RuntimeRe
 
 // validateRuntimeHomeRecord proves a recorded home still names the canonical
 // scoped path below this root before any of its subtrees are touched.
-func (s *Service) validateRuntimeHomeRecord(home RuntimeHomeRecord) error {
-	if !ValidHashName(home.Hash) {
-		return fmt.Errorf("home hash %q is invalid", home.Hash)
+func (s *Service) validateRuntimeHomeRecord(home PhysicalResource) error {
+	if !ValidHashName(home.PhysicalHash) {
+		return fmt.Errorf("home hash %q is invalid", home.PhysicalHash)
 	}
-	expected := filepath.Join(s.root, RunnerHomesDirName, home.Hash)
+	expected := filepath.Join(s.root, RunnerHomesDirName, home.PhysicalHash)
 	if filepath.Clean(home.Path) != expected {
 		return fmt.Errorf("home path %q does not match the scoped home %q for this root", home.Path, expected)
 	}
