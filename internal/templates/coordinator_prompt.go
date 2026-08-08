@@ -56,6 +56,12 @@ func CoordinatorPrompt(bundle runnercontext.Bundle, opts CoordinatorPromptOption
 	b.WriteString("- Use typed generate/upsert/transition commands only for selected SPEC, QUESTION, TASK, and PROCESS planning. QUESTION is reserved for a real blocking human decision with no safe default.\n")
 	b.WriteString("- Coordinator-authored issue comments use the issue-spec powered-by quote; phase/handoff bodies use the managed-by quote. Follow-ups must use /resume <public-session-id> <answer or next instruction>.\n\n")
 
+	b.WriteString("## Synchronous Turn Completion\n\n")
+	b.WriteString("- This dispatch is one synchronous Coordinator turn. Background completion does not trigger another turn automatically.\n")
+	b.WriteString("- Do not end the turn while any bounded test, build, child, or background process is still running. Wait or poll it to completion, and never return a progress-only terminal response.\n")
+	b.WriteString("- End the turn only after all requested work and final verification are complete, or further progress is genuinely impossible in this turn. In the latter case, report status partial or failed with the unfinished work, blocking reason, and evidence needed to resume safely.\n")
+	b.WriteString("- Immediately before ending the turn, emit exactly one valid issue_spec_coordinator_summary block.\n\n")
+
 	b.WriteString("## Context Bundle\n\n```json\n")
 	b.Write(bundleJSON)
 	b.WriteString("\n```\n\n## Required Coordinator Summary\n\nReturn one JSON object in a fenced issue_spec_coordinator_summary block. The opening fence is alone; JSON begins on the next line. diagnostics items are strings or objects containing required message and optional code/severity only.\n\n")

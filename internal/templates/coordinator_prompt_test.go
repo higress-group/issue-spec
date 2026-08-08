@@ -51,6 +51,10 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 		"never place projection HTML source in default Agent context",
 		"same mutation plan/checkpoint", "Cleanup is explicit", "destructive", "retain dirty, linked, uncertain, or unintegrated work",
 		"report tests, risks, rationale, exact head, and change link", "human reviews current provider-native CI",
+		"one synchronous Coordinator turn", "Background completion does not trigger another turn automatically",
+		"bounded test, build, child, or background process is still running", "never return a progress-only terminal response",
+		"further progress is genuinely impossible", "unfinished work, blocking reason, and evidence needed to resume safely",
+		"Immediately before ending the turn, emit exactly one valid issue_spec_coordinator_summary block",
 		"issue_spec_coordinator_summary", `"diagnostics": []`, `"source_label": "authorized_command"`,
 	} {
 		if !strings.Contains(prompt, want) {
