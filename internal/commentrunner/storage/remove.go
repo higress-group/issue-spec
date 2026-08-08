@@ -92,7 +92,9 @@ func removeOpenedTree(target string, beforeRemove func()) error {
 
 // makeOpenedTreeWritable relaxes every entry below an opened root so the
 // removal pass can unlink it as a non-root owner: directories gain owner rwx
-// (0700) and files owner rw (0600), but only where owner write is missing.
+// (0700) whenever any owner bit is missing — write+execute unlink children,
+// read lists the directory, so a 0300 directory is writable yet undescendable
+// — and files gain owner rw (0600), but only where owner write is missing.
 // Every access goes through the root capability, so the walk stays bound to
 // the proven object even if the target pathname is replaced mid-pass.
 // Symlinks are never followed or chmodded; the removal pass unlinks them
@@ -108,9 +110,10 @@ func makeOpenedTreeWritable(root *os.Root) {
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		if info.Mode().Perm()&0o300 != 0o300 {
-			// Owner write+execute are needed to unlink children and to list
-			// the directory, so relax it before descending.
+		if info.Mode().Perm()&0o700 != 0o700 {
+			// Owner write+execute are needed to unlink children and owner read
+			// to list the directory, so relax on any missing owner bit before
+			// descending.
 			_ = root.Chmod(dir, 0o700)
 		}
 		entries, err := readOpenedRootDir(root, dir)
@@ -118,21 +121,60 @@ func makeOpenedTreeWritable(root *os.Root) {
 			continue
 		}
 		for _, entry := range entries {
-			switch {
-			case entry.Type()&os.ModeSymlink != 0:
-				// Never followed: removal unlinks the entry itself.
-			case entry.IsDir():
-				pending = append(pending, filepath.Join(dir, entry.Name()))
-			default:
-				entryInfo, err := entry.Info()
-				if err != nil {
-					continue
-				}
-				if entryInfo.Mode().Perm()&0o200 == 0 {
-					_ = root.Chmod(filepath.Join(dir, entry.Name()), 0o600)
-				}
-			}
+			pending = relaxOpenedTreeEntry(root, dir, entry, pending)
 		}
+	}
+}
+
+// relaxOpenedTreeEntry classifies one directory entry below the opened root
+// and returns the updated descent queue: subdirectories are queued so their
+// own pop relaxes them before they are listed, plain files missing owner
+// write are relaxed in place, and symlinks are never followed or chmodded.
+// An entry whose dirent carries no type (DT_UNKNOWN on some FUSE/NFS/CIFS
+// mounts) lstat's through the same root capability instead of trusting the
+// file fallback: a subdirectory misclassified as a file would be chmodded
+// 0600 and strand its children behind an undescendable directory.
+func relaxOpenedTreeEntry(root *os.Root, dir string, entry os.DirEntry, pending []string) []string {
+	child := filepath.Join(dir, entry.Name())
+	entryType := entry.Type()
+	if entryType&os.ModeSymlink != 0 {
+		// Never followed: removal unlinks the entry itself.
+		return pending
+	}
+	if entryType.IsDir() {
+		return append(pending, child)
+	}
+	if entryType != 0 {
+		// Known non-directory type: relax the entry when owner write is missing.
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return pending
+		}
+		relaxOpenedFile(root, child, entryInfo.Mode())
+		return pending
+	}
+	// The dirent type is unknown: classify through the capability.
+	entryInfo, err := root.Lstat(child)
+	if err != nil {
+		return pending
+	}
+	mode := entryInfo.Mode()
+	if mode&os.ModeSymlink != 0 {
+		// A symlink behind an unknown dirent type is left alone.
+		return pending
+	}
+	if mode.IsDir() {
+		return append(pending, child)
+	}
+	relaxOpenedFile(root, child, mode)
+	return pending
+}
+
+// relaxOpenedFile relaxes one non-directory entry below the opened root when
+// owner write is missing, so the removal pass can unlink it.
+func relaxOpenedFile(root *os.Root, path string, mode os.FileMode) {
+	if mode.Perm()&0o200 == 0 {
+		_ = root.Chmod(path, 0o600)
 	}
 }
 

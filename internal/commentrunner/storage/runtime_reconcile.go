@@ -267,6 +267,26 @@ func (s *Service) revalidateScratchDeletion(ctx context.Context, jobID string, w
 	}
 }
 
+// revalidateHomeEviction reloads runner state immediately before a home's
+// first cache removal, mirroring revalidateScratchDeletion's deletion-time
+// discipline: a repo with any job that turned active since the pass snapshot
+// aborts the home's eviction this pass. A reload failure aborts the eviction
+// fail-safe: the caches survive and are retried on a later pass.
+func (s *Service) revalidateHomeEviction(ctx context.Context, repo string) (bool, error) {
+	fresh, err := s.stateLoader(ctx)
+	if err != nil {
+		return true, fmt.Errorf("deletion-time state reload: %w", err)
+	}
+	fresh.Normalize()
+	repo = strings.TrimSpace(repo)
+	for _, job := range fresh.Jobs {
+		if jobRuntimeActive(job.Status) && strings.TrimSpace(job.Repo) == repo {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // healScratchRecord returns a live job's scratch record to managed state: a
 // crash-interrupted completion raced a still-active job, so the record is
 // healed instead of deleting live scratch.
@@ -319,6 +339,10 @@ func (s *Service) removeJobScratch(record PhysicalResource, report *RuntimeRecon
 // pressured eviction must not break in-flight builds. When every recorded
 // home is skipped for that reason the pass reports the deferral so an
 // operator (or the pressured-admission path) can tell eviction did run.
+// Every home's first cache removal revalidates its repo against freshly
+// loaded runner state, mirroring the scratch pass's deletion-time discipline:
+// a repo that turned active since the pass snapshot — or a reload failure —
+// skips the home fail-safe.
 func (s *Service) EvictRuntimeCaches(ctx context.Context, apply bool) (RuntimeReconcileReport, error) {
 	_, release, err := EnsureOwner(ctx, s.root)
 	if err != nil {
@@ -368,6 +392,7 @@ func (s *Service) EvictRuntimeCaches(ctx context.Context, apply bool) (RuntimeRe
 			continue
 		}
 		homeDir := RuntimeHomePathsFor(home.Path).Home
+		homeRevalidated := false
 		for _, cacheDir := range RuntimeCacheDirs(homeDir) {
 			info, statErr := os.Lstat(cacheDir)
 			if errors.Is(statErr, os.ErrNotExist) {
@@ -385,6 +410,22 @@ func (s *Service) EvictRuntimeCaches(ctx context.Context, apply bool) (RuntimeRe
 			if !mutate {
 				report.Diagnostics = append(report.Diagnostics, fmt.Sprintf("would evict runtime cache %s (%d bytes)", cacheDir, measured))
 				continue
+			}
+			if !homeRevalidated {
+				// Deletion-time revalidation, once per home immediately before
+				// its first cache removal (mirroring revalidateScratchDeletion):
+				// a repo that turned active since the pass snapshot — or a
+				// reload failure — skips the home fail-safe.
+				homeRevalidated = true
+				abort, revalidateErr := s.revalidateHomeEviction(ctx, home.Repo)
+				if revalidateErr != nil {
+					report.Diagnostics = append(report.Diagnostics, safeDiagnostic("runtime home "+home.PhysicalHash+" cache eviction skipped: "+revalidateErr.Error()))
+					break
+				}
+				if abort {
+					report.Diagnostics = append(report.Diagnostics, safeDiagnostic("runtime home "+home.PhysicalHash+" cache eviction skipped: repo "+strings.TrimSpace(home.Repo)+" turned active during the pass"))
+					break
+				}
 			}
 			if err := removeOpenedTree(cacheDir, nil); err != nil {
 				report.Diagnostics = append(report.Diagnostics, safeDiagnostic("runtime cache "+cacheDir+" removal failed: "+err.Error()))

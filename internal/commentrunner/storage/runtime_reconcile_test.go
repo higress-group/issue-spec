@@ -674,3 +674,107 @@ func TestEvictRuntimeCachesRefusesIntermediateSymlink(t *testing.T) {
 		t.Fatalf("the foreign scope cache must survive: %v", err)
 	}
 }
+
+// TestEvictRuntimeCachesRevalidatesBeforeFirstRemoval mirrors the scratch
+// pass's deletion-time revalidation with the engine's flip-loader pattern:
+// the pass snapshot classifies both homes as eviction-eligible, but the
+// deletion-time reload sees one home's repo running again, so that home is
+// skipped whole — no cache of its is removed — while the still-idle home is
+// evicted.
+func TestEvictRuntimeCachesRevalidatesBeforeFirstRemoval(t *testing.T) {
+	before := state.NewState()
+	after := state.NewState()
+	after.Jobs[scratchJobActive] = state.Job{ID: scratchJobActive, Repo: "o/r", Status: state.StatusRunning}
+	svc, root := newRuntimeServiceWithLoader(t, flipLoader(before, after))
+	idleScope := RuntimeScope{Hostname: "host-1", Repo: "o/r2", Runner: "runner-1"}
+	homes := map[string]RuntimeHomePaths{}
+	for _, scope := range []RuntimeScope{testScope(), idleScope} {
+		paths, err := PrepareRuntimeHome(root, scope)
+		if err != nil {
+			t.Fatalf("PrepareRuntimeHome %s: %v", scope.Repo, err)
+		}
+		if err := svc.RecordRuntimeHome(context.Background(), scope, paths); err != nil {
+			t.Fatalf("RecordRuntimeHome %s: %v", scope.Repo, err)
+		}
+		writeFile(t, filepath.Join(paths.Home, ".cache", "blob"), 40)
+		writeFile(t, filepath.Join(paths.Home, "go", "pkg", "mod", "m.zip"), 24)
+		homes[scope.Repo] = paths
+	}
+
+	report, err := svc.EvictRuntimeCaches(context.Background(), true)
+	if err != nil {
+		t.Fatalf("EvictRuntimeCaches: %v", err)
+	}
+	busyHome := homes["o/r"].Home
+	idleHome := homes["o/r2"].Home
+	for _, rel := range []string{filepath.Join(".cache", "blob"), filepath.Join("go", "pkg", "mod", "m.zip")} {
+		if _, err := os.Lstat(filepath.Join(busyHome, rel)); err != nil {
+			t.Fatalf("reactivated repo cache %q must survive eviction: %v", rel, err)
+		}
+		if _, err := os.Lstat(filepath.Join(idleHome, rel)); !os.IsNotExist(err) {
+			t.Fatalf("idle repo cache %q must be evicted, err=%v", rel, err)
+		}
+	}
+	for _, evicted := range report.CacheEvicted {
+		if strings.HasPrefix(evicted, busyHome+string(os.PathSeparator)) {
+			t.Fatalf("reactivated repo home must not appear in CacheEvicted: %+v", report)
+		}
+	}
+	if !contains(report.CacheEvicted, filepath.Join(idleHome, ".cache")) ||
+		!contains(report.CacheEvicted, filepath.Join(idleHome, "go", "pkg", "mod")) {
+		t.Fatalf("idle home caches must be evicted: %+v", report)
+	}
+	skipDiag := false
+	for _, diagnostic := range report.Diagnostics {
+		if strings.Contains(diagnostic, "cache eviction skipped") && strings.Contains(diagnostic, "repo o/r turned active") {
+			skipDiag = true
+		}
+	}
+	if !skipDiag {
+		t.Fatalf("revalidation abort must produce a skip diagnostic: %+v", report.Diagnostics)
+	}
+}
+
+// TestEvictRuntimeCachesDeletionReloadFailureKeepsCaches proves the
+// deletion-time reload fails safe: a state read error immediately before a
+// home's first cache removal skips the home with a bounded diagnostic
+// instead of evicting on a stale snapshot.
+func TestEvictRuntimeCachesDeletionReloadFailureKeepsCaches(t *testing.T) {
+	calls := 0
+	loader := func(context.Context) (state.RunnerState, error) {
+		calls++
+		if calls == 1 {
+			return state.NewState(), nil
+		}
+		return state.RunnerState{}, errors.New("state store unavailable")
+	}
+	svc, root := newRuntimeServiceWithLoader(t, loader)
+	paths, err := PrepareRuntimeHome(root, testScope())
+	if err != nil {
+		t.Fatalf("PrepareRuntimeHome: %v", err)
+	}
+	if err := svc.RecordRuntimeHome(context.Background(), testScope(), paths); err != nil {
+		t.Fatalf("RecordRuntimeHome: %v", err)
+	}
+	writeFile(t, filepath.Join(paths.Home, ".cache", "blob"), 40)
+
+	report, err := svc.EvictRuntimeCaches(context.Background(), true)
+	if err != nil {
+		t.Fatalf("EvictRuntimeCaches: %v", err)
+	}
+	if len(report.CacheEvicted) != 0 || report.ReclaimedBytes != 0 {
+		t.Fatalf("a reload failure must skip the home fail-safe: %+v", report)
+	}
+	reloadDiag := false
+	for _, diagnostic := range report.Diagnostics {
+		if strings.Contains(diagnostic, "deletion-time state reload") {
+			reloadDiag = true
+		}
+	}
+	if !reloadDiag {
+		t.Fatalf("missing deletion-time reload diagnostic: %+v", report.Diagnostics)
+	}
+	if _, err := os.Lstat(filepath.Join(paths.Home, ".cache", "blob")); err != nil {
+		t.Fatalf("caches must survive a deletion-time reload failure: %v", err)
+	}
+}
