@@ -38,7 +38,7 @@ Source SPEC comments:
 
 ### Requirement: Runner mirrors host qoder configuration into the sandbox
 
-The runner MUST mirror the host ~/.qoder/settings.json and the regular files directly inside ~/.qoder/.auth into the sandbox temporary HOME. The .auth mirror MUST be one level only, MUST preserve restrictive source permission bits (defaulting to 0600), MUST remove stale mirrored files, and MUST NOT follow destination symlinks or mirror cache, log, session-state, symlink, directory, or device entries.
+The runner MUST mirror the host ~/.qoder/settings.json and the regular files directly inside ~/.qoder/.auth into the sandbox runtime HOME (the persistent runner-scoped isolated HOME exposed to the sandbox as $HOME, referred to below as $TempHome). The .auth mirror MUST be one level only, MUST preserve restrictive source permission bits (defaulting to 0600), MUST remove stale mirrored files, and MUST NOT follow destination symlinks or mirror cache, log, session-state, symlink, directory, or device entries. Because the runtime HOME is shared by concurrent jobs of one runner scope, each mirrored file refresh MUST be atomic and idempotent so a concurrent job never observes a partially written configuration or credential file.
 
 #### Scenario: settings.json is mirrored into sandbox TempHome
 
@@ -65,8 +65,13 @@ The runner MUST mirror the host ~/.qoder/settings.json and the regular files dir
 - **WHEN** the host qoder config contains symlinks, subdirectories, devices, cache, logs, or session state
 - **THEN** the mirror MUST skip those entries, MUST NOT recurse, and MUST NOT expose them inside the sandbox
 
+#### Scenario: concurrent dispatches refresh the shared mirror safely
+
+- **WHEN** two jobs of the same runner scope dispatch concurrently and both refresh the qoder mirror in the shared runtime HOME
+- **THEN** each mirrored file MUST be replaced atomically so a running agent observes either the previous or the new complete file, never a partial write
+
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/323#issuecomment-5035087599
+- https://github.com/higress-group/issue-spec/issues/439#issuecomment-5226066355
 
 ### Requirement: Runner derives qoder-specific acpx configuration for job dispatch
 
