@@ -431,11 +431,20 @@ NO_PROXY=127.0.0.1,localhost,issues.example.test,code.example.test
 
 ### 存储生命周期与单一 owner
 
-Runner 的存储以 `--workspace-root` 为锚点：私有的 `.storage` 目录保存 session runtime 根与
-PROCESS workspace pool 的 sidecar 清单、owner 锁以及首次迁移备份。一个规范化 root 只有一个
-具备破坏性的 owner，因此同一 state/workspace 对只能运行一个 systemd unit。在同一 root 上启动
-第二个 `runner serve`（或 `runner poll`）会在启动时失败并提示「stop the old runner before
-starting a new one」；更换实例前务必先停止旧 unit。
+Runner 的存储以 `--workspace-root` 为锚点：私有的 `.storage` 目录保存覆盖所有受管物理资源的
+sidecar 清单——runner 作用域共享 runtime home（`.runner-home/<scope-hash>/`）、按 job 划分的
+scratch 目录（`.job-scratch/<job-id>/`）与 PROCESS workspace pool，以及旧版本二进制创建的 root
+上的 per-session runtime 根（`.sessions/<hash>/`）——外加 owner 锁与首次迁移备份。一个规范化
+root 只有一个具备破坏性的 owner，因此同一 state/workspace 对只能运行一个 systemd unit。在同一
+root 上启动第二个 `runner serve`（或 `runner poll`）会在启动时失败并提示「stop the old runner
+before starting a new one」；更换实例前务必先停止旧 unit。
+
+每个被分发的 job 共享其 runtime 作用域（hostname、profile realm、仓库与 runner 身份）的持久
+runtime HOME：`.runner-home/<scope-hash>/`——agent 的 `home/`、`gh/`、`xdg/`、`codex/` 与
+`acpx-runtime/` 目录，外加一个对外来作用域 fail-closed 的 `scope.json` 绑定——因此包与构建缓存
+能让同作用域的后续 job 保持温热。每个 job 还会获得一次性 `.job-scratch/<job-id>/`（`TMPDIR`、
+`GOTMPDIR`、`XDG_DATA_HOME`、`XDG_STATE_HOME`），在 job 进入终态时被移除。home 中的 agent
+identity 与配置始终受保护；只有可重建的 cache（`~/.cache`、`~/.npm`、`~/go/pkg/mod`）才可被驱逐。
 
 `runner serve` 上有两个可选的存储参数：
 
@@ -454,10 +463,24 @@ sudo -u issue-spec-runner issue-spec --profile team runner storage reconcile \
 ```
 
 `--dry-run` 只报告分类与 `would_delete` 动作；`--apply` 在对照重新加载的 runner 状态重新校验
-每一项之后删除符合条件的资源。两种模式都会获取 owner 锁，因此请在停止 unit 后运行该命令。如果
-命令报告 sidecar 处于 report-only 状态（root 身份不同或 schema 更新），它只读清点并以非零码
-退出；除非同时接受丢失所有权与孤儿观察证明，否则不要手工删除 `.storage`。已退役的 PROCESS
-pool 仅在被证明为空时才会删除；不确定的 pool 会被保留并给出处置诊断，绝不会被强制放弃。
+每一项之后删除符合条件的资源。当存在共享 runtime home 时，报告会增加 `runtime:` 小节，给出每个
+home 的受保护/cache/未知字节数以及 job scratch 总字节数；`--apply --evict-caches` 还会 reconcile
+过期 job scratch 并驱逐每个已记录 home 中可重建的 cache 目录，打印回收的字节数。两种模式都会获取
+owner 锁，因此请在停止 unit 后运行该命令。如果命令报告 sidecar 处于 report-only 状态（root 身份
+不同或 schema 更新），它只读清点并以非零码退出；除非同时接受丢失所有权与孤儿观察证明，否则不要
+手工删除 `.storage`。已退役的 PROCESS pool 仅在被证明为空时才会删除；不确定的 pool 会被保留并
+给出处置诊断，绝不会被强制放弃。
+
+把一个 unit 升级到共享 runtime 布局是一次破坏性切换，不是原地升级：新二进制绝不会读取导入、修改
+或删除旧 root；切换前的 session 不可恢复，因为它们的 acpx 记录保存在旧 root 的 per-session
+runtime 中。请使用全新的 runner root 完成切换：
+
+1. 停止旧 unit（`systemctl stop issue-spec-runner`），让在途 job 跑完或先取消它们。
+2. 如需审计，可先行归档旧的 state/workspace root。
+3. 把 unit 指向全新的空 `--state`/`--workspace-root` 对（或先把旧 root 移走），再启动新二进制。
+4. 用 `runner preflight --verify-agent-runtime` 和一条 `/new` 命令验证；切换前 session 的后续
+   对话请开新 session。
+5. 新 root 验证通过后，再单独归档或删除旧 root。
 
 ## 8. 通过评论触发 Agent
 

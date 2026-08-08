@@ -53,7 +53,7 @@ is `1.1.2`:
 
 Save this as `~/.acpx/config.json` for the Runner service user and keep the
 version under operator configuration management. The runner copies only the
-selected Codex override into each job's isolated ACPX home, so this pin applies
+selected Codex override into the runner-scoped shared ACPX home, so this pin applies
 inside bubblewrap without copying unrelated ACPX configuration. Hosts without
 npm registry access should pre-cache the exact pinned package, for example
 `npm cache add @agentclientprotocol/codex-acp@1.1.2`.
@@ -169,7 +169,7 @@ Useful runner options:
 - `--gh-config-dir <path>` selects the host GitHub CLI config directory mirrored into the sandbox. By default the runner derives it from the host GitHub CLI environment.
 - `--allow-cancel=false` disables `/cancel` intake.
 
-Runner storage is anchored at the workspace root. The runner keeps a private `.storage` directory beside the managed clones: a sidecar inventory of session runtime roots (`.sessions/<hash>`) and PROCESS workspace pools (`.process-workspaces/<hash>`), an owner lock, and first-migration backups. One canonical root has exactly one destructive owner: `runner poll` and `runner serve` hold the owner lock for the process lifetime, and a second runner started against the same root fails with "stop the old runner before starting a new one". Always stop the old runner before starting a new one against the same state and workspace pair. `runner storage reconcile` also acquires the owner lock in both modes — `--dry-run` mutates nothing but is still exclusive with a live runner; only `runner preflight` is lock-free.
+Runner storage is anchored at the workspace root. The runner keeps a private `.storage` directory beside the managed clones: a sidecar inventory of every managed physical resource — runner-scoped shared runtime homes (`.runner-home/<scope-hash>/`), per-job scratch directories (`.job-scratch/<job-id>/`), and PROCESS workspace pools (`.process-workspaces/<hash>/`), plus per-session runtime roots (`.sessions/<hash>/`) on roots created by older binaries — an owner lock, and first-migration backups. One canonical root has exactly one destructive owner: `runner poll` and `runner serve` hold the owner lock for the process lifetime, and a second runner started against the same root fails with "stop the old runner before starting a new one". Always stop the old runner before starting a new one against the same state and workspace pair. `runner storage reconcile` also acquires the owner lock in both modes — `--dry-run` mutates nothing but is still exclusive with a live runner; only `runner preflight` is lock-free.
 
 Inspect or reclaim storage explicitly through the same engine the runner uses internally:
 
@@ -178,9 +178,24 @@ issue-spec runner storage reconcile --state <state.json> --workspace-root <path>
 issue-spec runner storage reconcile --state <state.json> --workspace-root <path> --apply
 ```
 
-`--dry-run` classifies every inventoried resource (`protected`, `retired_known`, `orphan_observed`, `rejected`) and reports `would_delete` actions without mutating anything. `--apply` deletes only eligible resources, and re-validates each one against freshly reloaded runner state immediately before removal. Before the first destructive pass on a root, the raw pre-migration runner state is preserved under `.storage/backups/state-first.json`; when that backup cannot be written, deletions are skipped for the pass. The command exits non-zero when the sidecar is report-only: a sidecar bound to a different canonical root identity, or written by a newer schema version, is inventoried read-only and is never mutated or deleted.
+`--dry-run` classifies every inventoried resource (`protected`, `retired_known`, `orphan_observed`, `rejected`) and reports `would_delete` actions without mutating anything. `--apply` deletes only eligible resources, and re-validates each one against freshly reloaded runner state immediately before removal. Before the first destructive pass on a root, the raw pre-migration runner state is preserved under `.storage/backups/state-first.json`; when that backup cannot be written, deletions are skipped for the pass. The command exits non-zero when the sidecar is report-only: a sidecar bound to a different canonical root identity, or written by a newer schema version, is inventoried read-only and is never mutated or deleted. When shared runtime homes exist, the report adds a `runtime:` section with one line per home — protected identity/configuration bytes, rebuildable cache bytes, and unknown bytes — plus total job-scratch bytes. `--apply --evict-caches` additionally reconciles stale job scratch and evicts only the rebuildable cache directories of each recorded home, printing the reclaimed bytes.
 
 PROCESS pool deletion is deliberately conservative. A retired pool is removed only when its owning clone is present and inspection proves the pool empty: no active leases, ownership markers, registered worktrees, or stray files. Uncertain pools are preserved with an operator remediation diagnostic and are never force-abandoned; inspect or recover them through the owning PROCESS (for example `issue-spec workflow workspace reconcile`) before removing anything manually. Runtime and pool deletion failures defer the owning workspace from grouped workspace cleanup for that pass so remediation evidence is not destroyed.
+
+Every dispatched job runs with two runner-owned anchors below the workspace root:
+
+- `.runner-home/<scope-hash>/` is the persistent runtime HOME shared by all jobs of one runtime scope (hostname, issue-backend profile realm, repository, and runner identity). It holds the agent-visible `home/`, `gh/`, `xdg/`, `codex/`, and `acpx-runtime/` directories plus a `scope.json` binding that fails closed if a different scope ever resolves to the same path. Sharing one HOME keeps package and build caches (the Go module and build caches, npm caches) warm across jobs of the same scope instead of rebuilding them per session, while host credential mirrors are refreshed atomically per dispatch so concurrent jobs never observe partial files.
+- `.job-scratch/<job-id>/` is the job's disposable scratch: `TMPDIR`, `GOTMPDIR`, `XDG_DATA_HOME`, and `XDG_STATE_HOME` bind to fixed paths below `/tmp/issue-spec-scratch` inside bubblewrap (explicit unsafe mode exports the host paths directly). Scratch is removed when the job reaches a terminal state — completion, failure, or cancellation — and stale scratch is reclaimed by `runner storage reconcile --apply --evict-caches`.
+
+Storage accounting treats a home's agent identity and configuration (including `~/.ssh`, `~/.gitconfig`, and the mirrored `gh`/`codex` configuration) as protected, never as eviction targets; only rebuildable caches (`~/.cache`, `~/.npm`, `~/go/pkg/mod`) are evicted, most rebuildable first.
+
+Upgrading to the shared runtime layout is a breaking cutover, not an in-place upgrade. A binary with the shared layout never reads for import, modifies, or deletes a root created by an older binary, and sessions created before the cutover are not resumable afterwards — their acpx records live in the old root's per-session runtimes, which the new binary does not consult. Cut over with a fresh runner root:
+
+1. Stop the old runner and let in-flight jobs finish or cancel them.
+2. Optionally archive the old root (state file, `workspaces/`, and `.storage/`) for audit.
+3. Start the new binary against a fresh, empty `--state`/`--workspace-root` pair — either new paths or the same paths after the old root has been moved away.
+4. Verify with `runner preflight` and one `/new` command; pre-cutover sessions do not carry over, so follow-ups start new sessions.
+5. Archive or delete the old root separately once the new root is proven.
 
 On Linux, runner dispatch uses bubblewrap by default to keep coordinator filesystem writes inside the managed session clone and that session's PROCESS workspace pool while still allowing network access for GitHub, model, and package operations. Native children share that outer boundary; bubblewrap does not create a separate sandbox per child. Install bubblewrap or set `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path` when it is not on `PATH`. If bubblewrap is unavailable or unsupported, the runner fails preflight instead of silently running without isolation.
 
