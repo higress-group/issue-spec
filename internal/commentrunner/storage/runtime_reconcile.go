@@ -25,10 +25,11 @@ type RuntimeReconcileReport struct {
 	Diagnostics     []string `json:"diagnostics,omitempty"`
 }
 
-// jobScratchActive mirrors buildProtectionView's active job statuses: an
+// jobRuntimeActive mirrors buildProtectionView's active job statuses: an
 // interrupted job still counts as active because its sandbox may be reaped
-// asynchronously, so its scratch is never reclaimed underneath it.
-func jobScratchActive(status state.LifecycleStatus) bool {
+// asynchronously, so its scratch is never reclaimed underneath it and its
+// scope's runtime home caches are never evicted mid-build.
+func jobRuntimeActive(status state.LifecycleStatus) bool {
 	switch status {
 	case state.StatusQueued, state.StatusDispatched, state.StatusRunning, state.StatusInterrupted:
 		return true
@@ -89,8 +90,11 @@ func validateScratchDeletionTarget(workspaceRoot, target, jobID string) error {
 // ReconcileJobScratch removes scratch of terminal or unknown jobs and keeps
 // scratch of active jobs, both for recorded entries and for on-disk leftovers
 // a crashed runner never recorded. Foreign names below `.job-scratch` are
-// rejected and never deleted. The pass is idempotent: a second apply is a
-// no-op.
+// rejected and never deleted. Every deletion revalidates its job against
+// freshly loaded runner state immediately before removal (the engine's D8
+// deletion-time discipline): a job that turned active or newly known since
+// the pass snapshot aborts its deletion. The pass is idempotent: a second
+// apply is a no-op.
 func (s *Service) ReconcileJobScratch(ctx context.Context, apply bool) (RuntimeReconcileReport, error) {
 	_, release, err := EnsureOwner(ctx, s.root)
 	if err != nil {
@@ -103,8 +107,10 @@ func (s *Service) ReconcileJobScratch(ctx context.Context, apply bool) (RuntimeR
 	}
 	st.Normalize()
 	active := map[string]bool{}
+	known := map[string]bool{}
 	for _, job := range st.Jobs {
-		if jobScratchActive(job.Status) {
+		known[job.ID] = true
+		if jobRuntimeActive(job.Status) {
 			active[job.ID] = true
 		}
 	}
@@ -141,18 +147,7 @@ func (s *Service) ReconcileJobScratch(ctx context.Context, apply bool) (RuntimeR
 		if active[jobID] {
 			report.ScratchKept = append(report.ScratchKept, jobID)
 			if mutate && record.CleanupState != CleanupManaged {
-				// A crash-interrupted completion raced a still-active job:
-				// heal the record instead of deleting live scratch.
-				if err := s.store.Update(func(st *StorageState) error {
-					current, ok := st.Resources[id]
-					if ok {
-						current.CleanupState = CleanupManaged
-						st.Resources[id] = current
-					}
-					return nil
-				}); err != nil {
-					report.Diagnostics = append(report.Diagnostics, safeDiagnostic("job scratch "+jobID+" heal failed: "+err.Error()))
-				}
+				s.healScratchRecord(id, jobID, &report)
 			}
 			continue
 		}
@@ -174,6 +169,20 @@ func (s *Service) ReconcileJobScratch(ctx context.Context, apply bool) (RuntimeR
 		}
 		if !mutate {
 			report.Diagnostics = append(report.Diagnostics, "would remove job scratch "+jobID)
+			continue
+		}
+		abort, revalidateErr := s.revalidateScratchDeletion(ctx, jobID, known[jobID])
+		if revalidateErr != nil {
+			report.Diagnostics = append(report.Diagnostics, safeDiagnostic("job scratch "+jobID+" deletion skipped: "+revalidateErr.Error()))
+			continue
+		}
+		if abort {
+			// The job turned active or newly known after the pass snapshot:
+			// keep its scratch and heal the record like the active path.
+			report.ScratchKept = append(report.ScratchKept, jobID)
+			if record.CleanupState != CleanupManaged {
+				s.healScratchRecord(id, jobID, &report)
+			}
 			continue
 		}
 		if err := s.removeJobScratch(record, &report); err != nil {
@@ -210,6 +219,15 @@ func (s *Service) ReconcileJobScratch(ctx context.Context, apply bool) (RuntimeR
 				report.Diagnostics = append(report.Diagnostics, "would remove unrecorded job scratch "+name)
 				continue
 			}
+			abort, revalidateErr := s.revalidateScratchDeletion(ctx, name, known[name])
+			if revalidateErr != nil {
+				report.Diagnostics = append(report.Diagnostics, safeDiagnostic("job scratch entry "+name+" deletion skipped: "+revalidateErr.Error()))
+				continue
+			}
+			if abort {
+				report.ScratchKept = append(report.ScratchKept, name)
+				continue
+			}
 			measured := measureTreeBytes(path)
 			if err := removeOpenedTree(path, nil); err != nil {
 				report.Diagnostics = append(report.Diagnostics, safeDiagnostic("job scratch entry "+name+" removal failed: "+err.Error()))
@@ -223,6 +241,46 @@ func (s *Service) ReconcileJobScratch(ctx context.Context, apply bool) (RuntimeR
 	sort.Strings(report.ScratchKept)
 	sort.Strings(report.ScratchRejected)
 	return report, nil
+}
+
+// revalidateScratchDeletion reloads runner state immediately before one
+// scratch deletion, mirroring the engine's D8 deletion-time revalidation: a
+// job that became active — or became known at all after the pass snapshot
+// classified it unknown — aborts its deletion this pass. wasKnown reports
+// whether the pass snapshot held the job in state. A reload failure aborts
+// the deletion fail-safe: the scratch survives and is retried on a later
+// pass.
+func (s *Service) revalidateScratchDeletion(ctx context.Context, jobID string, wasKnown bool) (bool, error) {
+	fresh, err := s.stateLoader(ctx)
+	if err != nil {
+		return true, fmt.Errorf("deletion-time state reload: %w", err)
+	}
+	fresh.Normalize()
+	job, knownNow := fresh.Jobs[jobID]
+	switch {
+	case knownNow && jobRuntimeActive(job.Status):
+		return true, nil
+	case knownNow && !wasKnown:
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+// healScratchRecord returns a live job's scratch record to managed state: a
+// crash-interrupted completion raced a still-active job, so the record is
+// healed instead of deleting live scratch.
+func (s *Service) healScratchRecord(id, jobID string, report *RuntimeReconcileReport) {
+	if err := s.store.Update(func(st *StorageState) error {
+		current, ok := st.Resources[id]
+		if ok {
+			current.CleanupState = CleanupManaged
+			st.Resources[id] = current
+		}
+		return nil
+	}); err != nil {
+		report.Diagnostics = append(report.Diagnostics, safeDiagnostic("job scratch "+jobID+" heal failed: "+err.Error()))
+	}
 }
 
 // removeJobScratch runs the recorded-entry lifecycle: mark deleting, remove
@@ -256,13 +314,28 @@ func (s *Service) removeJobScratch(record PhysicalResource, report *RuntimeRecon
 
 // EvictRuntimeCaches removes only the rebuildable cache subtrees of every
 // recorded runtime home, in eviction priority order. Protected identity and
-// configuration paths are never deletion targets.
+// configuration paths are never deletion targets. A home whose scope has any
+// active (queued/dispatched/running/interrupted) job is skipped whole:
+// pressured eviction must not break in-flight builds. When every recorded
+// home is skipped for that reason the pass reports the deferral so an
+// operator (or the pressured-admission path) can tell eviction did run.
 func (s *Service) EvictRuntimeCaches(ctx context.Context, apply bool) (RuntimeReconcileReport, error) {
 	_, release, err := EnsureOwner(ctx, s.root)
 	if err != nil {
 		return RuntimeReconcileReport{}, fmt.Errorf("runtime cache eviction owner: %w", err)
 	}
 	defer release()
+	st, err := s.stateLoader(ctx)
+	if err != nil {
+		return RuntimeReconcileReport{}, fmt.Errorf("load runner state for runtime cache eviction: %w", err)
+	}
+	st.Normalize()
+	activeRepos := map[string]bool{}
+	for _, job := range st.Jobs {
+		if jobRuntimeActive(job.Status) {
+			activeRepos[strings.TrimSpace(job.Repo)] = true
+		}
+	}
 	if err := s.store.Reload(); err != nil {
 		return RuntimeReconcileReport{}, fmt.Errorf("reload storage sidecar: %w", err)
 	}
@@ -283,8 +356,13 @@ func (s *Service) EvictRuntimeCaches(ctx context.Context, apply bool) (RuntimeRe
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	deferredActive := 0
 	for _, id := range ids {
 		home := homes[id]
+		if activeRepos[strings.TrimSpace(home.Repo)] {
+			deferredActive++
+			continue
+		}
 		if err := s.validateRuntimeHomeRecord(home); err != nil {
 			report.Diagnostics = append(report.Diagnostics, safeDiagnostic("runtime home "+home.PhysicalHash+" record fails validation: "+err.Error()))
 			continue
@@ -315,6 +393,9 @@ func (s *Service) EvictRuntimeCaches(ctx context.Context, apply bool) (RuntimeRe
 			report.CacheEvicted = append(report.CacheEvicted, cacheDir)
 			report.ReclaimedBytes += measured
 		}
+	}
+	if deferredActive > 0 && deferredActive == len(ids) {
+		report.Diagnostics = append(report.Diagnostics, safeDiagnostic(fmt.Sprintf("runtime cache eviction deferred: all %d recorded runner home(s) have active jobs; sessions are active", deferredActive)))
 	}
 	sort.Strings(report.CacheEvicted)
 	return report, nil

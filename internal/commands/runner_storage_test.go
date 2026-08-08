@@ -118,10 +118,27 @@ func TestRunnerStorageReconcileJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
 	}
-	var report storage.Report
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
-		t.Fatalf("decode report: %v\n%s", err, out.String())
+	// The JSON schema is stable: the report is always wrapped, even on a
+	// legacy root with no runtime homes or eviction results.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(out.Bytes(), &top); err != nil {
+		t.Fatalf("decode top-level report: %v\n%s", err, out.String())
 	}
+	if _, ok := top["report"]; !ok {
+		t.Fatalf("JSON must always wrap the report under \"report\": %s", out.String())
+	}
+	for _, absent := range []string{"runtime", "eviction"} {
+		if _, ok := top[absent]; ok {
+			t.Fatalf("legacy root must omit the %q section: %s", absent, out.String())
+		}
+	}
+	var wrapped struct {
+		Report storage.Report `json:"report"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &wrapped); err != nil {
+		t.Fatalf("decode wrapped report: %v\n%s", err, out.String())
+	}
+	report := wrapped.Report
 	if !report.DryRun {
 		t.Fatalf("report not marked dry-run")
 	}

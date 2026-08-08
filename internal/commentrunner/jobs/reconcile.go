@@ -152,7 +152,11 @@ func (d *Dispatcher) CleanupWorkspaces(ctx context.Context) (ReconcileResult, er
 // reconcileStoragePass runs the shared storage reconciliation before workspace
 // cleanup so runtime deletion precedes grouped workspace deletion. Runtime
 // deletion failures defer their grouped workspace IDs this pass. A storage
-// failure is diagnosed, never fatal to control-plane reconciliation.
+// failure is diagnosed, never fatal to control-plane reconciliation. On the
+// shared runtime layout the pass also recovers crash-leftover job scratch on
+// every cycle — not only under disk pressure or through the operator CLI —
+// best-effort: a scratch failure is a bounded diagnostic, never a failed
+// pass.
 func (d *Dispatcher) reconcileStoragePass(ctx context.Context) (*storage.Report, map[string]bool) {
 	if d.Storage == nil {
 		return nil, nil
@@ -160,6 +164,14 @@ func (d *Dispatcher) reconcileStoragePass(ctx context.Context) (*storage.Report,
 	report, err := d.Storage.ReconcileStorage(ctx, true, false)
 	if err != nil {
 		return &storage.Report{Diagnostics: []string{"storage reconciliation: " + safeError(err)}}, nil
+	}
+	if d.RuntimeIdentity.enabled() {
+		scratch, scratchErr := d.Storage.ReconcileJobScratch(ctx, true)
+		if scratchErr != nil {
+			report.Diagnostics = append(report.Diagnostics, "job scratch reconciliation: "+safeError(scratchErr))
+		} else {
+			report.Diagnostics = append(report.Diagnostics, scratch.Diagnostics...)
+		}
 	}
 	var deferred map[string]bool
 	for _, id := range report.DeferredWorkspaceIDs {

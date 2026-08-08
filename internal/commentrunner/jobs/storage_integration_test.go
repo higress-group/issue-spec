@@ -37,22 +37,26 @@ type recordedScratchCompletion struct {
 }
 
 type fakeStorage struct {
-	admitErr        error
-	recordErr       error
-	recordCalls     []recordedSessionResource
-	poolErr         error
-	poolCalls       []recordedSessionResource
-	homeErr         error
-	homeCalls       []recordedRuntimeHome
-	scratchErr      error
-	scratchCalls    []recordedJobScratch
-	completeErr     error
-	completeCalls   []recordedScratchCompletion
-	admitCalls      int
-	reconcileCalls  int
-	reconcileApply  []bool
-	reconcileReport storage.Report
-	reconcileErr    error
+	admitErr               error
+	recordErr              error
+	recordCalls            []recordedSessionResource
+	poolErr                error
+	poolCalls              []recordedSessionResource
+	homeErr                error
+	homeCalls              []recordedRuntimeHome
+	scratchErr             error
+	scratchCalls           []recordedJobScratch
+	completeErr            error
+	completeCalls          []recordedScratchCompletion
+	admitCalls             int
+	reconcileCalls         int
+	reconcileApply         []bool
+	reconcileReport        storage.Report
+	reconcileErr           error
+	scratchReconcileCalls  int
+	scratchReconcileApply  []bool
+	scratchReconcileReport storage.RuntimeReconcileReport
+	scratchReconcileErr    error
 }
 
 func (f *fakeStorage) AdmitDispatch(context.Context) error {
@@ -89,6 +93,12 @@ func (f *fakeStorage) ReconcileStorage(_ context.Context, apply, _ bool) (storag
 	f.reconcileCalls++
 	f.reconcileApply = append(f.reconcileApply, apply)
 	return f.reconcileReport, f.reconcileErr
+}
+
+func (f *fakeStorage) ReconcileJobScratch(_ context.Context, apply bool) (storage.RuntimeReconcileReport, error) {
+	f.scratchReconcileCalls++
+	f.scratchReconcileApply = append(f.scratchReconcileApply, apply)
+	return f.scratchReconcileReport, f.scratchReconcileErr
 }
 
 func TestRunJobStoragePressureDelaysWithoutFailing(t *testing.T) {
@@ -236,6 +246,108 @@ func TestReconcileStorageFailureIsNonFatal(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected storage diagnostic, got %+v", result.Diagnostics)
+	}
+}
+
+func TestReconcileInvokesJobScratchReconcileOnSharedLayout(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 13, 0, 0, 0, time.UTC)
+	dispatcher := testDispatcher(store, &fakeWorkspaces{binding: testBinding("ws-1")}, &fakeCoordinator{}, &fakeWriteback{}, now)
+	fake := &fakeStorage{}
+	dispatcher.Storage = fake
+	dispatcher.RuntimeIdentity = sharedLayoutIdentity()
+
+	if _, err := dispatcher.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if fake.scratchReconcileCalls != 1 || len(fake.scratchReconcileApply) != 1 || !fake.scratchReconcileApply[0] {
+		t.Fatalf("shared-layout reconcile must run one applied scratch pass, calls=%d apply=%v",
+			fake.scratchReconcileCalls, fake.scratchReconcileApply)
+	}
+}
+
+func TestReconcileSkipsJobScratchReconcileOnLegacyLayout(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 13, 0, 0, 0, time.UTC)
+	dispatcher := testDispatcher(store, &fakeWorkspaces{binding: testBinding("ws-1")}, &fakeCoordinator{}, &fakeWriteback{}, now)
+	fake := &fakeStorage{}
+	dispatcher.Storage = fake
+
+	if _, err := dispatcher.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if fake.scratchReconcileCalls != 0 {
+		t.Fatalf("legacy layout has no job scratch to recover, calls=%d", fake.scratchReconcileCalls)
+	}
+}
+
+func TestReconcileJobScratchFailureIsNonFatal(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 13, 0, 0, 0, time.UTC)
+	dispatcher := testDispatcher(store, &fakeWorkspaces{binding: testBinding("ws-1")}, &fakeCoordinator{}, &fakeWriteback{}, now)
+	dispatcher.Storage = &fakeStorage{scratchReconcileErr: errors.New("scratch sweep failed")}
+	dispatcher.RuntimeIdentity = sharedLayoutIdentity()
+
+	result, err := dispatcher.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("job scratch failure must not fail job reconcile: %v", err)
+	}
+	found := false
+	for _, d := range result.Diagnostics {
+		if strings.Contains(d, "job scratch reconciliation") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected bounded job scratch diagnostic, got %+v", result.Diagnostics)
+	}
+}
+
+// TestReconcileStoragePassRecoversStaleJobScratch runs the periodic storage
+// pass against a real storage service: crash-leftover scratch of a terminal
+// job is reclaimed automatically while an active job's scratch survives.
+func TestReconcileStoragePassRecoversStaleJobScratch(t *testing.T) {
+	store := newMemoryStore()
+	root := t.TempDir()
+	seedState(t, store, func(st *state.RunnerState) error {
+		st.Jobs["job-aaaaaaaaaaaaaaaa"] = state.Job{ID: "job-aaaaaaaaaaaaaaaa", Repo: "o/r", Status: state.StatusRunning}
+		st.Jobs["job-bbbbbbbbbbbbbbbb"] = state.Job{ID: "job-bbbbbbbbbbbbbbbb", Repo: "o/r", Status: state.StatusCompleted}
+		return nil
+	})
+	svc, err := storage.NewService(storage.ServiceConfig{
+		WorkspaceRoot: root,
+		StateLoader:   store.Load,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer svc.Close()
+	activeScratch, err := storage.PrepareJobScratch(root, "job-aaaaaaaaaaaaaaaa")
+	if err != nil {
+		t.Fatalf("prepare active scratch: %v", err)
+	}
+	terminalScratch, err := storage.PrepareJobScratch(root, "job-bbbbbbbbbbbbbbbb")
+	if err != nil {
+		t.Fatalf("prepare terminal scratch: %v", err)
+	}
+	for jobID, paths := range map[string]storage.JobScratchPaths{
+		"job-aaaaaaaaaaaaaaaa": activeScratch,
+		"job-bbbbbbbbbbbbbbbb": terminalScratch,
+	} {
+		if err := svc.RecordJobScratch(context.Background(), "o/r", jobID, paths.Root); err != nil {
+			t.Fatalf("RecordJobScratch %s: %v", jobID, err)
+		}
+	}
+	dispatcher := &Dispatcher{Storage: svc, RuntimeIdentity: sharedLayoutIdentity()}
+	report, _ := dispatcher.reconcileStoragePass(context.Background())
+	if report == nil {
+		t.Fatalf("storage report is required")
+	}
+	if _, err := os.Lstat(terminalScratch.Root); !os.IsNotExist(err) {
+		t.Fatalf("periodic pass must reclaim terminal-job scratch, err=%v", err)
+	}
+	if _, err := os.Lstat(activeScratch.Root); err != nil {
+		t.Fatalf("periodic pass must keep active-job scratch: %v", err)
 	}
 }
 

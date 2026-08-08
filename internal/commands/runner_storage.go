@@ -79,6 +79,9 @@ func (f failingStorageLifecycle) CompleteJobScratch(context.Context, string, str
 func (f failingStorageLifecycle) ReconcileStorage(context.Context, bool, bool) (storage.Report, error) {
 	return storage.Report{}, f.err
 }
+func (f failingStorageLifecycle) ReconcileJobScratch(context.Context, bool) (storage.RuntimeReconcileReport, error) {
+	return storage.RuntimeReconcileReport{}, f.err
+}
 
 func (a *app) runRunnerStorage(ctx context.Context, args []string) int {
 	if len(args) == 0 {
@@ -120,7 +123,10 @@ Options:
   --apply                  apply recoverable deletions
   --evict-caches           with --apply: also reconcile stale job scratch and
                            evict rebuildable runtime caches, printing reclaimed bytes
-  --json                   write the JSON report`)
+  --json                   write the JSON report; the schema is stable: the
+                           reconcile report is always nested under "report",
+                           with "runtime" and "eviction" sections present only
+                           when runtime data or --evict-caches results exist`)
 }
 
 func (a *app) runRunnerStorageReconcile(ctx context.Context, args []string) int {
@@ -135,7 +141,7 @@ func (a *app) runRunnerStorageReconcile(ctx context.Context, args []string) int 
 	dryRun := fs.Bool("dry-run", false, "report only, no mutations")
 	apply := fs.Bool("apply", false, "apply recoverable deletions")
 	evictCaches := fs.Bool("evict-caches", false, "with --apply: reconcile stale job scratch and evict rebuildable runtime caches")
-	jsonOut := fs.Bool("json", false, "write JSON output")
+	jsonOut := fs.Bool("json", false, "write JSON output (stable schema: report nested under \"report\", optional runtime/eviction sections)")
 	fs.Var(&repoValues, "repo", "repository owner/name for scoped defaults; repeat or comma-separate")
 	if argsContainHelp(args) {
 		fs.SetOutput(a.out)
@@ -273,10 +279,7 @@ func (a *app) runRunnerStorageReconcile(ctx context.Context, args []string) int 
 	}
 	runtimeUsage := collectRuntimeUsage(service)
 	if *jsonOut {
-		if runtimeUsage != nil || eviction != nil {
-			return a.outputJSON(runnerStorageReconcileOutput{Report: report, Runtime: runtimeUsage, Eviction: eviction})
-		}
-		return a.outputJSON(report)
+		return a.outputJSON(runnerStorageReconcileOutput{Report: report, Runtime: runtimeUsage, Eviction: eviction})
 	}
 	printStorageReport(a.out, report, runtimeUsage, eviction)
 	if report.ReportOnly {
@@ -285,8 +288,11 @@ func (a *app) runRunnerStorageReconcile(ctx context.Context, args []string) int 
 	return 0
 }
 
-// runnerStorageReconcileOutput is the JSON shape when the runtime usage
-// section or the --evict-caches passes accompany the main reconcile report.
+// runnerStorageReconcileOutput is the stable --json schema of runner storage
+// reconcile: the main report is always nested under "report", and the
+// "runtime"/"eviction" sections appear only when runtime home measurements or
+// an --evict-caches pass exist. Consumers always decode the same top-level
+// shape regardless of which sections a given run produced.
 type runnerStorageReconcileOutput struct {
 	Report   storage.Report         `json:"report"`
 	Runtime  *runtimeUsageSection   `json:"runtime,omitempty"`
@@ -319,9 +325,9 @@ type runtimeEvictionReport struct {
 
 // collectRuntimeUsage measures every recorded runner home and the job scratch
 // base. It returns nil when no runner home records exist, so legacy-layout
-// roots keep the previous report shape. Measurement failures degrade to
-// diagnostics: the reconcile pass already succeeded and its report stays
-// valid.
+// roots keep their previous human output and simply omit the JSON runtime
+// section. Measurement failures degrade to diagnostics: the reconcile pass
+// already succeeded and its report stays valid.
 func collectRuntimeUsage(service *storage.Service) *runtimeUsageSection {
 	records := make([]storage.PhysicalResource, 0)
 	for _, resource := range service.Store().State().Resources {

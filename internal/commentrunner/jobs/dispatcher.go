@@ -146,6 +146,9 @@ type StorageLifecycle interface {
 	RecordJobScratch(ctx context.Context, repo, jobID, path string) error
 	CompleteJobScratch(ctx context.Context, repo, jobID string) error
 	ReconcileStorage(ctx context.Context, apply, measureAll bool) (storage.Report, error)
+	// ReconcileJobScratch reclaims crash-leftover disposable scratch of
+	// terminal or unknown jobs while keeping active-job scratch.
+	ReconcileJobScratch(ctx context.Context, apply bool) (storage.RuntimeReconcileReport, error)
 }
 
 // RuntimeIdentity pins the dispatcher to one runner scope: every job of a
@@ -175,7 +178,10 @@ func (r RuntimeIdentity) scope(repo string) storage.RuntimeScope {
 // RuntimeIdentityFor derives the dispatcher runtime identity from the runner
 // configuration: the named profile is resolved exactly as the runner scope
 // path derivation resolves it, then RuntimeIdentityFromProfile computes the
-// identity.
+// identity. It inherits the profile-resolution stability requirements of the
+// runner scope paths: restart the runner from a consistent working directory
+// (or pin an explicit profile) so the same scope — and therefore the same
+// shared runtime home — is resolved every time.
 func RuntimeIdentityFor(hostname, profileName, runner string) (RuntimeIdentity, error) {
 	profile, _, err := clientauth.ResolveProfile(profileName, hostname)
 	if err != nil {
@@ -1928,8 +1934,11 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 		}
 		// A self-hosted child has no reason to observe hosts.yml or shared gh
 		// state, even if the operator process uses it for legacy GitHub mode.
-		// Content-aware: on the shared runtime home this dir is already empty
-		// in steady state, and wiping it anyway would race concurrent jobs.
+		// Invariant: in child-profile mode mirrorHostGHAuth never runs, so the
+		// shared gh dir is always empty and the wipe below is a steady-state
+		// no-op. Content-aware: on the shared runtime home this dir is already
+		// empty in steady state, and wiping it anyway would race concurrent
+		// jobs.
 		empty, err := dirEmpty(cfg.TempGHConfigDir)
 		if err != nil {
 			return sandbox.Config{}, "", ghAuthMirror, err
@@ -2065,7 +2074,12 @@ func dirEmpty(dir string) (bool, error) {
 // directory plus rename, so a concurrent reader of the shared runtime home
 // never observes a partial mirror. An existing identical regular file is left
 // untouched (mode enforced): steady-state refreshes must not churn the shared
-// home.
+// home. A crash between temp creation and rename may strand a bounded
+// `.issue-spec-mirror-*` temp file in the destination directory — at most one
+// per crashed refresh, mirror-payload sized, dot-prefixed so it is never a
+// read target. The mirror state is self-healing: the next refresh of the same
+// path completes the interrupted install with a fresh atomic rename, so no
+// operator cleanup is ever required.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
 		if existing, readErr := os.ReadFile(path); readErr == nil && bytes.Equal(existing, data) {

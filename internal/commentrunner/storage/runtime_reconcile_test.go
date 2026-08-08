@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,10 +20,15 @@ const (
 
 func newRuntimeService(t *testing.T, st state.RunnerState) (*Service, string) {
 	t.Helper()
+	return newRuntimeServiceWithLoader(t, func(context.Context) (state.RunnerState, error) { return st, nil })
+}
+
+func newRuntimeServiceWithLoader(t *testing.T, loader StateLoader) (*Service, string) {
+	t.Helper()
 	root := testRoot(t)
 	svc, err := NewService(ServiceConfig{
 		WorkspaceRoot: root,
-		StateLoader:   func(context.Context) (state.RunnerState, error) { return st, nil },
+		StateLoader:   loader,
 		OrphanGrace:   DefaultOrphanGrace,
 	})
 	if err != nil {
@@ -202,6 +208,91 @@ func TestReconcileJobScratchDryRunDoesNotMutate(t *testing.T) {
 	record, ok := scratchRecord(t, svc, "o/r", scratchJobDryRun)
 	if !ok || record.CleanupState != CleanupManaged {
 		t.Fatalf("dry-run must not mutate records, record = %+v ok=%v", record, ok)
+	}
+}
+
+// TestReconcileJobScratchRevalidatesBeforeDeletion simulates jobs turning
+// active between the pass snapshot and the deletion, using the engine test's
+// flip-loader pattern: the snapshot load classifies one recorded terminal job
+// and one unrecorded unknown leftover as deletion-eligible, and every
+// deletion-time reload sees them running again, so both scratch trees must
+// survive.
+func TestReconcileJobScratchRevalidatesBeforeDeletion(t *testing.T) {
+	before := state.NewState()
+	before.Jobs[scratchJobDone] = state.Job{ID: scratchJobDone, Repo: "o/r", Status: state.StatusCompleted}
+	after := state.NewState()
+	after.Jobs[scratchJobDone] = state.Job{ID: scratchJobDone, Repo: "o/r", Status: state.StatusRunning}
+	after.Jobs[scratchJobOrphan] = state.Job{ID: scratchJobOrphan, Repo: "o/r", Status: state.StatusDispatched}
+	svc, root := newRuntimeServiceWithLoader(t, flipLoader(before, after))
+	donePaths := prepareScratchWithFile(t, root, scratchJobDone, 100)
+	orphanPaths := prepareScratchWithFile(t, root, scratchJobOrphan, 50)
+	if err := svc.RecordJobScratch(context.Background(), "o/r", scratchJobDone, donePaths.Root); err != nil {
+		t.Fatalf("RecordJobScratch: %v", err)
+	}
+	// Simulate a crash-interrupted completion: the record is mid-lifecycle and
+	// must be healed back to managed when the deletion aborts.
+	if err := svc.Store().Update(func(st *StorageState) error {
+		record := st.Resources[scratchRecordID("o/r", scratchJobDone)]
+		record.CleanupState = CleanupDeleting
+		st.Resources[scratchRecordID("o/r", scratchJobDone)] = record
+		return nil
+	}); err != nil {
+		t.Fatalf("seed deleting state: %v", err)
+	}
+	// The orphan scratch is a crash-leftover directory with no sidecar record.
+	report, err := svc.ReconcileJobScratch(context.Background(), true)
+	if err != nil {
+		t.Fatalf("ReconcileJobScratch: %v", err)
+	}
+	if len(report.ScratchRemoved) != 0 || report.ReclaimedBytes != 0 {
+		t.Fatalf("revalidated deletions must be aborted: %+v", report)
+	}
+	if !contains(report.ScratchKept, scratchJobDone) || !contains(report.ScratchKept, scratchJobOrphan) {
+		t.Fatalf("reactivated job scratch must be kept: %+v", report)
+	}
+	for _, paths := range []JobScratchPaths{donePaths, orphanPaths} {
+		if _, err := os.Lstat(paths.Root); err != nil {
+			t.Fatalf("scratch dir %q must survive the revalidation abort: %v", paths.Root, err)
+		}
+	}
+	record, ok := scratchRecord(t, svc, "o/r", scratchJobDone)
+	if !ok || record.CleanupState != CleanupManaged {
+		t.Fatalf("record = %+v ok=%v, want healed to managed after the abort", record, ok)
+	}
+}
+
+// TestReconcileJobScratchDeletionReloadFailureKeepsScratch proves the
+// deletion-time reload fails safe: a state read error aborts every deletion
+// with a bounded diagnostic instead of deleting on a stale snapshot.
+func TestReconcileJobScratchDeletionReloadFailureKeepsScratch(t *testing.T) {
+	calls := 0
+	loader := func(context.Context) (state.RunnerState, error) {
+		calls++
+		if calls == 1 {
+			return state.NewState(), nil
+		}
+		return state.RunnerState{}, errors.New("state store unavailable")
+	}
+	svc, root := newRuntimeServiceWithLoader(t, loader)
+	orphanPaths := prepareScratchWithFile(t, root, scratchJobOrphan, 64)
+	report, err := svc.ReconcileJobScratch(context.Background(), true)
+	if err != nil {
+		t.Fatalf("ReconcileJobScratch: %v", err)
+	}
+	if len(report.ScratchRemoved) != 0 || report.ReclaimedBytes != 0 {
+		t.Fatalf("a reload failure must abort every deletion fail-safe: %+v", report)
+	}
+	reloadDiag := false
+	for _, diagnostic := range report.Diagnostics {
+		if strings.Contains(diagnostic, "deletion-time state reload") {
+			reloadDiag = true
+		}
+	}
+	if !reloadDiag {
+		t.Fatalf("missing deletion-time reload diagnostic: %+v", report.Diagnostics)
+	}
+	if _, err := os.Lstat(orphanPaths.Root); err != nil {
+		t.Fatalf("scratch must survive a deletion-time reload failure: %v", err)
 	}
 }
 
@@ -408,5 +499,133 @@ func TestEvictRuntimeCachesRejectsForeignHomePath(t *testing.T) {
 	}
 	if len(report.Diagnostics) == 0 {
 		t.Fatalf("tampered home record must produce a diagnostic")
+	}
+}
+
+// TestEvictRuntimeCachesSkipsHomesWithActiveJobs proves the in-use guard: a
+// home whose repo has any active job keeps its caches (pressured eviction
+// must not break in-flight builds), a home with terminal-only jobs is still
+// evicted, and when every home is in use the pass reports the deferral.
+func TestEvictRuntimeCachesSkipsHomesWithActiveJobs(t *testing.T) {
+	current := state.NewState()
+	current.Jobs[scratchJobActive] = state.Job{ID: scratchJobActive, Repo: "o/r", Status: state.StatusRunning}
+	current.Jobs[scratchJobDone] = state.Job{ID: scratchJobDone, Repo: "o/r2", Status: state.StatusCompleted}
+	svc, root := newRuntimeServiceWithLoader(t, func(context.Context) (state.RunnerState, error) { return current, nil })
+	busyScope := testScope()
+	idleScope := RuntimeScope{Hostname: "host-1", Repo: "o/r2", Runner: "runner-1"}
+	homes := map[string]RuntimeHomePaths{}
+	for _, scope := range []RuntimeScope{busyScope, idleScope} {
+		paths, err := PrepareRuntimeHome(root, scope)
+		if err != nil {
+			t.Fatalf("PrepareRuntimeHome %s: %v", scope.Repo, err)
+		}
+		if err := svc.RecordRuntimeHome(context.Background(), scope, paths); err != nil {
+			t.Fatalf("RecordRuntimeHome %s: %v", scope.Repo, err)
+		}
+		writeFile(t, filepath.Join(paths.Home, ".cache", "blob"), 40)
+		homes[scope.Repo] = paths
+	}
+
+	report, err := svc.EvictRuntimeCaches(context.Background(), true)
+	if err != nil {
+		t.Fatalf("EvictRuntimeCaches: %v", err)
+	}
+	busyCache := filepath.Join(homes["o/r"].Home, ".cache")
+	idleCache := filepath.Join(homes["o/r2"].Home, ".cache")
+	if contains(report.CacheEvicted, busyCache) {
+		t.Fatalf("in-use home caches must be preserved: %+v", report)
+	}
+	if !contains(report.CacheEvicted, idleCache) {
+		t.Fatalf("terminal-only home caches must be evicted: %+v", report)
+	}
+	if _, err := os.Lstat(filepath.Join(busyCache, "blob")); err != nil {
+		t.Fatalf("active repo cache must survive eviction: %v", err)
+	}
+	if _, err := os.Lstat(idleCache); !os.IsNotExist(err) {
+		t.Fatalf("idle repo cache must be evicted, err=%v", err)
+	}
+	for _, diagnostic := range report.Diagnostics {
+		if strings.Contains(diagnostic, "sessions are active") {
+			t.Fatalf("partial skip must not claim full deferral: %+v", report.Diagnostics)
+		}
+	}
+
+	// When every recorded home serves an active job the pass defers whole and
+	// says so. Recreate the evicted idle cache so both homes have content.
+	writeFile(t, filepath.Join(idleCache, "blob"), 40)
+	current.Jobs[scratchJobDone] = state.Job{ID: scratchJobDone, Repo: "o/r2", Status: state.StatusRunning}
+	deferred, err := svc.EvictRuntimeCaches(context.Background(), true)
+	if err != nil {
+		t.Fatalf("EvictRuntimeCaches all-active: %v", err)
+	}
+	if len(deferred.CacheEvicted) != 0 || deferred.ReclaimedBytes != 0 {
+		t.Fatalf("all-active eviction must defer every home: %+v", deferred)
+	}
+	deferralDiag := false
+	for _, diagnostic := range deferred.Diagnostics {
+		if strings.Contains(diagnostic, "eviction deferred") && strings.Contains(diagnostic, "sessions are active") {
+			deferralDiag = true
+		}
+	}
+	if !deferralDiag {
+		t.Fatalf("all-active eviction must report the deferral: %+v", deferred.Diagnostics)
+	}
+	for repo, paths := range homes {
+		if _, err := os.Lstat(filepath.Join(paths.Home, ".cache", "blob")); err != nil {
+			t.Fatalf("all-active eviction must preserve %s caches: %v", repo, err)
+		}
+	}
+}
+
+// TestEvictRuntimeCachesRefusesIntermediateSymlink redirects one home's go/
+// subtree at another scope's cache through an intermediate symlink: the
+// eviction target itself lstat's as a real directory, so only the
+// confinement revalidation can catch the redirection. Eviction must refuse
+// and the foreign tree must survive.
+func TestEvictRuntimeCachesRefusesIntermediateSymlink(t *testing.T) {
+	svc, root := newRuntimeService(t, state.NewState())
+	scope := testScope()
+	paths, err := PrepareRuntimeHome(root, scope)
+	if err != nil {
+		t.Fatalf("PrepareRuntimeHome: %v", err)
+	}
+	if err := svc.RecordRuntimeHome(context.Background(), scope, paths); err != nil {
+		t.Fatalf("RecordRuntimeHome: %v", err)
+	}
+	// A second scope owns a real module cache below the same root. It is never
+	// recorded, so the eviction pass only reaches it through the symlink.
+	foreignScope := RuntimeScope{Hostname: "host-1", Repo: "o/r2", Runner: "runner-1"}
+	foreignPaths, err := PrepareRuntimeHome(root, foreignScope)
+	if err != nil {
+		t.Fatalf("PrepareRuntimeHome foreign: %v", err)
+	}
+	foreignPayload := filepath.Join(foreignPaths.Home, "go", "pkg", "mod", "m.zip")
+	writeFile(t, foreignPayload, 40)
+	if err := os.Symlink(filepath.Join(foreignPaths.Home, "go"), filepath.Join(paths.Home, "go")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	report, err := svc.EvictRuntimeCaches(context.Background(), true)
+	if err != nil {
+		t.Fatalf("EvictRuntimeCaches: %v", err)
+	}
+	target := filepath.Join(paths.Home, "go", "pkg", "mod")
+	if contains(report.CacheEvicted, target) {
+		t.Fatalf("eviction must refuse an intermediate symlink redirection: %+v", report)
+	}
+	redirectionDiag := false
+	for _, diagnostic := range report.Diagnostics {
+		if strings.Contains(diagnostic, target) {
+			redirectionDiag = true
+		}
+	}
+	if !redirectionDiag {
+		t.Fatalf("redirection must produce a diagnostic naming the target: %+v", report.Diagnostics)
+	}
+	info, err := os.Lstat(filepath.Join(paths.Home, "go"))
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the intermediate symlink itself must remain, info=%v err=%v", info, err)
+	}
+	if _, err := os.Lstat(foreignPayload); err != nil {
+		t.Fatalf("the foreign scope cache must survive: %v", err)
 	}
 }
