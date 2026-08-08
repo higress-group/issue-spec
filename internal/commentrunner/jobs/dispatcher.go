@@ -3022,11 +3022,11 @@ var errNoWaitDispatchSummary = errors.New("acpx no-wait dispatch did not produce
 
 func isRecoverableOutputSummaryError(err error) bool {
 	var summaryErr *acpx.OutputSummaryError
-	return errors.As(err, &summaryErr)
+	return errors.As(err, &summaryErr) && !errors.Is(err, acpx.ErrSummaryNotFound)
 }
 
 func isRecoverableDispatchSummaryValidationError(err error) bool {
-	return err != nil && !errors.Is(err, errNoWaitDispatchSummary)
+	return err != nil && !errors.Is(err, errNoWaitDispatchSummary) && !errors.Is(err, acpx.ErrSummaryNotFound)
 }
 
 func withoutCoordinatorSummary(dispatch acpx.DispatchResult) acpx.DispatchResult {
@@ -3037,7 +3037,7 @@ func withoutCoordinatorSummary(dispatch acpx.DispatchResult) acpx.DispatchResult
 }
 
 func coordinatorSummaryWarning(cause error) string {
-	msg := "coordinator-summary: coordinator summary was missing or malformed; completed lifecycle without structured coordinator provenance"
+	msg := "coordinator-summary: coordinator summary was malformed; completed lifecycle without structured coordinator provenance"
 	if cause != nil {
 		msg += ": " + safeError(cause)
 	}

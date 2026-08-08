@@ -956,13 +956,12 @@ func TestRunNextPassesConfiguredAcpxBinaryToSandbox(t *testing.T) {
 	}
 }
 
-func TestRunNextSummaryFailureCompletesWithDiagnostic(t *testing.T) {
+func TestRunNextMalformedSummaryCompletesWithDiagnostic(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		err            error
 		wantDiagnostic string
 	}{
-		{name: "missing", err: acpx.ErrSummaryNotFound, wantDiagnostic: "coordinator summary not found"},
 		{name: "malformed", err: errors.New("invalid character ']' looking for beginning of value"), wantDiagnostic: "invalid character"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1015,7 +1014,7 @@ func TestRunNextSummaryFailureCompletesWithDiagnostic(t *testing.T) {
 			if job.Status != state.StatusCompleted || job.PublicSessionID != publicID || job.AcpxRecordID != recordID {
 				t.Fatalf("completed job did not retain dispatch metadata: %+v", job)
 			}
-			if len(job.Diagnostics) != 1 || !strings.Contains(job.Diagnostics[0], "coordinator summary was missing or malformed") || !strings.Contains(job.Diagnostics[0], tc.wantDiagnostic) {
+			if len(job.Diagnostics) != 1 || !strings.Contains(job.Diagnostics[0], "coordinator summary was malformed") || !strings.Contains(job.Diagnostics[0], tc.wantDiagnostic) {
 				t.Fatalf("summary warning diagnostic missing: %+v", job.Diagnostics)
 			}
 			if job.CoordinatorSummary != "" || len(job.CLIDirect) != 0 {
@@ -1026,7 +1025,7 @@ func TestRunNextSummaryFailureCompletesWithDiagnostic(t *testing.T) {
 				t.Fatalf("public session mapping missing after summary failure: %+v ok=%v", session, ok)
 			}
 			lastWriteback := writebacks.requests[len(writebacks.requests)-1]
-			if lastWriteback.Err != nil || len(lastWriteback.Diagnostics) != 1 || !strings.Contains(lastWriteback.Diagnostics[0], "coordinator summary was missing or malformed") || lastWriteback.CoordinatorSummary != nil {
+			if lastWriteback.Err != nil || len(lastWriteback.Diagnostics) != 1 || !strings.Contains(lastWriteback.Diagnostics[0], "coordinator summary was malformed") || lastWriteback.CoordinatorSummary != nil {
 				t.Fatalf("summary warning writeback incorrect: %+v", lastWriteback)
 			}
 			if _, ok := st.GetWorkspace(workspaceID); !ok {
@@ -1045,6 +1044,29 @@ func TestRunNextSummaryFailureDoesNotMaskDispatchFailures(t *testing.T) {
 		coordinator    func(publicID string) *fakeCoordinator
 		wantDiagnostic string
 	}{
+		{
+			name: "missing-summary",
+			coordinator: func(publicID string) *fakeCoordinator {
+				partial := dispatchResult(publicID, "rec-missing-summary", "turn-missing-summary", runnercontext.CoordinatorSummary{})
+				partial.Output = acpx.TurnOutput{RawStdout: "Tests are still running; I will finish when they complete."}
+				return &fakeCoordinator{
+					newErr: &acpx.PartialDispatchError{
+						Result: partial,
+						Err:    &acpx.OutputSummaryError{Err: acpx.ErrSummaryNotFound},
+					},
+				}
+			},
+			wantDiagnostic: "coordinator summary not found",
+		},
+		{
+			name: "missing-summary-validation",
+			coordinator: func(publicID string) *fakeCoordinator {
+				dispatch := dispatchResult(publicID, "rec-missing-summary-validation", "turn-missing-summary-validation", runnercontext.CoordinatorSummary{})
+				dispatch.Output = acpx.TurnOutput{RawStdout: "apparently complete reply without coordinator summary"}
+				return &fakeCoordinator{newResult: dispatch}
+			},
+			wantDiagnostic: "coordinator summary not found",
+		},
 		{
 			name: "non-summary-error",
 			coordinator: func(publicID string) *fakeCoordinator {
