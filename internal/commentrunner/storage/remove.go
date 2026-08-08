@@ -14,6 +14,14 @@ func RemoveManagedTree(workspaceRoot, target, expectedHash string, beforeRemove 
 	if err := ValidateDeletionTarget(workspaceRoot, target, expectedHash); err != nil {
 		return err
 	}
+	return removeOpenedTree(target, beforeRemove)
+}
+
+// removeOpenedTree removes an already validated target directory through an
+// opened root capability. Callers must prove the target's identity and
+// confinement first; this helper only guarantees the opened object — not a
+// replaced pathname — is what gets removed.
+func removeOpenedTree(target string, beforeRemove func()) error {
 	info, err := os.Lstat(target)
 	if os.IsNotExist(err) {
 		return nil
