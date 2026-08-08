@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/commentrunner"
@@ -101,8 +102,9 @@ func (a *app) printRunnerStorageUsage(out io.Writer) {
 	fmt.Fprintln(out, `Usage:
   issue-spec runner storage reconcile [options] --dry-run|--apply
 
-Reconcile runner-managed storage (.sessions runtimes and .process-workspaces
-pools) against current state using the shared classification and deletion
+Reconcile runner-managed storage (.sessions runtimes, .process-workspaces
+pools, .runner-home shared runtime homes, and .job-scratch directories)
+against current state using the shared classification and deletion
 engine. Performs no issue polling. Defaults resolve through the same runner
 scope path logic as runner poll.
 
@@ -116,6 +118,8 @@ Options:
   --storage-orphan-grace <dur>  orphan observation window (default 168h)
   --dry-run                report classifications and would-delete actions only
   --apply                  apply recoverable deletions
+  --evict-caches           with --apply: also reconcile stale job scratch and
+                           evict rebuildable runtime caches, printing reclaimed bytes
   --json                   write the JSON report`)
 }
 
@@ -130,6 +134,7 @@ func (a *app) runRunnerStorageReconcile(ctx context.Context, args []string) int 
 	orphanGrace := fs.Duration("storage-orphan-grace", storage.DefaultOrphanGrace, "orphan observation window before unmatched runtime deletion")
 	dryRun := fs.Bool("dry-run", false, "report only, no mutations")
 	apply := fs.Bool("apply", false, "apply recoverable deletions")
+	evictCaches := fs.Bool("evict-caches", false, "with --apply: reconcile stale job scratch and evict rebuildable runtime caches")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	fs.Var(&repoValues, "repo", "repository owner/name for scoped defaults; repeat or comma-separate")
 	if argsContainHelp(args) {
@@ -142,6 +147,10 @@ func (a *app) runRunnerStorageReconcile(ctx context.Context, args []string) int 
 	}
 	if *dryRun == *apply {
 		a.errorf("runner storage reconcile requires exactly one of --dry-run or --apply\n")
+		return 2
+	}
+	if *evictCaches && !*apply {
+		a.errorf("runner storage reconcile --evict-caches requires --apply\n")
 		return 2
 	}
 	if *orphanGrace < 0 {
@@ -246,17 +255,109 @@ func (a *app) runRunnerStorageReconcile(ctx context.Context, args []string) int 
 		a.errorf("runner storage reconcile: %v\n", err)
 		return 1
 	}
+	var eviction *runtimeEvictionReport
+	if *evictCaches {
+		eviction = &runtimeEvictionReport{}
+		scratchReport, err := service.ReconcileJobScratch(ctx, true)
+		if err != nil {
+			a.errorf("runner storage reconcile job scratch: %v\n", err)
+			return 1
+		}
+		eviction.Scratch = scratchReport
+		cacheReport, err := service.EvictRuntimeCaches(ctx, true)
+		if err != nil {
+			a.errorf("runner storage reconcile cache eviction: %v\n", err)
+			return 1
+		}
+		eviction.Caches = cacheReport
+	}
+	runtimeUsage := collectRuntimeUsage(service)
 	if *jsonOut {
+		if runtimeUsage != nil || eviction != nil {
+			return a.outputJSON(runnerStorageReconcileOutput{Report: report, Runtime: runtimeUsage, Eviction: eviction})
+		}
 		return a.outputJSON(report)
 	}
-	printStorageReport(a.out, report)
+	printStorageReport(a.out, report, runtimeUsage, eviction)
 	if report.ReportOnly {
 		return 1
 	}
 	return 0
 }
 
-func printStorageReport(out io.Writer, report storage.Report) {
+// runnerStorageReconcileOutput is the JSON shape when the runtime usage
+// section or the --evict-caches passes accompany the main reconcile report.
+type runnerStorageReconcileOutput struct {
+	Report   storage.Report         `json:"report"`
+	Runtime  *runtimeUsageSection   `json:"runtime,omitempty"`
+	Eviction *runtimeEvictionReport `json:"eviction,omitempty"`
+}
+
+// runtimeUsageSection is the measured runtime view: one line per recorded
+// runner-scoped shared home plus total job-scratch bytes. It carries byte
+// counts only, never file contents.
+type runtimeUsageSection struct {
+	Homes        []runtimeHomeUsageLine `json:"homes,omitempty"`
+	ScratchBytes int64                  `json:"scratch_bytes"`
+	Diagnostics  []string               `json:"diagnostics,omitempty"`
+}
+
+type runtimeHomeUsageLine struct {
+	Hash           string `json:"hash"`
+	Repo           string `json:"repo"`
+	ProtectedBytes int64  `json:"protected_bytes"`
+	CacheBytes     int64  `json:"cache_bytes"`
+	UnknownBytes   int64  `json:"unknown_bytes"`
+}
+
+// runtimeEvictionReport carries the --evict-caches pass results: stale job
+// scratch reconciliation plus runtime cache eviction.
+type runtimeEvictionReport struct {
+	Scratch storage.RuntimeReconcileReport `json:"job_scratch"`
+	Caches  storage.RuntimeReconcileReport `json:"caches"`
+}
+
+// collectRuntimeUsage measures every recorded runner home and the job scratch
+// base. It returns nil when no runner home records exist, so legacy-layout
+// roots keep the previous report shape. Measurement failures degrade to
+// diagnostics: the reconcile pass already succeeded and its report stays
+// valid.
+func collectRuntimeUsage(service *storage.Service) *runtimeUsageSection {
+	records := make([]storage.PhysicalResource, 0)
+	for _, resource := range service.Store().State().Resources {
+		if resource.Kind == storage.ResourceKindRunnerHome {
+			records = append(records, resource)
+		}
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
+	section := &runtimeUsageSection{}
+	for _, record := range records {
+		usage, err := storage.MeasureRuntimeHome(record.Path)
+		if err != nil {
+			section.Diagnostics = append(section.Diagnostics, fmt.Sprintf("runtime home %s measurement: %v", record.PhysicalHash, err))
+			continue
+		}
+		section.Homes = append(section.Homes, runtimeHomeUsageLine{
+			Hash:           record.PhysicalHash,
+			Repo:           record.Repo,
+			ProtectedBytes: usage.ProtectedBytes,
+			CacheBytes:     usage.CacheBytes,
+			UnknownBytes:   usage.UnknownBytes,
+		})
+	}
+	scratch, err := storage.MeasureJobScratch(service.Root())
+	if err != nil {
+		section.Diagnostics = append(section.Diagnostics, fmt.Sprintf("job scratch measurement: %v", err))
+	} else {
+		section.ScratchBytes = scratch
+	}
+	return section
+}
+
+func printStorageReport(out io.Writer, report storage.Report, runtimeUsage *runtimeUsageSection, eviction *runtimeEvictionReport) {
 	mode := "apply"
 	if report.DryRun {
 		mode = "dry-run"
@@ -283,5 +384,26 @@ func printStorageReport(out io.Writer, report storage.Report) {
 	}
 	for _, diagnostic := range report.Diagnostics {
 		fmt.Fprintf(out, "diagnostic: %s\n", diagnostic)
+	}
+	if runtimeUsage != nil {
+		fmt.Fprintf(out, "runtime: runner_homes=%d job_scratch=%d bytes\n", len(runtimeUsage.Homes), runtimeUsage.ScratchBytes)
+		for _, home := range runtimeUsage.Homes {
+			fmt.Fprintf(out, "- runner_home %s repo=%s protected=%d cache=%d unknown=%d\n",
+				home.Hash, home.Repo, home.ProtectedBytes, home.CacheBytes, home.UnknownBytes)
+		}
+		for _, diagnostic := range runtimeUsage.Diagnostics {
+			fmt.Fprintf(out, "diagnostic: %s\n", diagnostic)
+		}
+	}
+	if eviction != nil {
+		reclaimed := eviction.Scratch.ReclaimedBytes + eviction.Caches.ReclaimedBytes
+		fmt.Fprintf(out, "evict-caches: reclaimed=%d bytes scratch_removed=%d caches_evicted=%d\n",
+			reclaimed, len(eviction.Scratch.ScratchRemoved), len(eviction.Caches.CacheEvicted))
+		for _, diagnostic := range eviction.Scratch.Diagnostics {
+			fmt.Fprintf(out, "diagnostic: %s\n", diagnostic)
+		}
+		for _, diagnostic := range eviction.Caches.Diagnostics {
+			fmt.Fprintf(out, "diagnostic: %s\n", diagnostic)
+		}
 	}
 }
