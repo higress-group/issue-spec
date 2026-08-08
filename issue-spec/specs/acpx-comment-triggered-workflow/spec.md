@@ -124,7 +124,7 @@ The runner MUST invoke acpx as an external coordinator backend using argv arrays
 #### Scenario: default sandbox
 
 - **WHEN** a runner job dispatches on Linux without `--unsafe-no-sandbox`
-- **THEN** acpx SHALL run through bubblewrap with workspace filesystem isolation, the persistent runner-scoped isolated runtime `HOME` shared by that runner scope's public sessions (never the operator's real HOME) with managed `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `CODEX_HOME` when needed, unique disposable per-job scratch directories for `TMPDIR`, `GOTMPDIR`, `XDG_DATA_HOME`, and `XDG_STATE_HOME`, inherited proxy settings, broad token environment variables scrubbed, required system paths read-only, and the managed workspace mounted for writes.
+- **THEN** acpx SHALL run through bubblewrap with workspace filesystem isolation, temporary `HOME`, `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `CODEX_HOME` when needed, inherited proxy settings, broad token environment variables scrubbed, required system paths read-only, and the managed workspace mounted for writes.
 
 #### Scenario: unsafe mode
 
@@ -152,7 +152,7 @@ The runner MUST invoke acpx as an external coordinator backend using argv arrays
 - **THEN** the runner SHALL treat acpx as the top-level headless coordinator transport and persist bounded child provenance reported by the coordinator without needing direct access to the native worker runtime.
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/439#issuecomment-5226066261
+- https://github.com/higress-group/issue-spec/issues/343#issuecomment-5099614411
 
 ### Requirement: durable job state and recovery
 
