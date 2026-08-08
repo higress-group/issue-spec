@@ -1,8 +1,10 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -73,6 +75,12 @@ type SandboxRequest struct {
 	RuntimeXDGConfigHome string
 	RuntimeCodexHome     string
 	RuntimeAcpxDir       string
+	// JobTmpDir/JobGoTmpDir/JobXDGDataHome/JobXDGStateHome are the job's
+	// disposable scratch dirs; set only on the runner-scoped shared layout.
+	JobTmpDir            string
+	JobGoTmpDir          string
+	JobXDGDataHome       string
+	JobXDGStateHome      string
 	OperatorSkillDirs    []string
 	FileCapabilities     []sandbox.FileCapability
 	ChildProfile         *clientauth.Profile
@@ -131,12 +139,78 @@ type CapabilityPreflight interface {
 type StorageLifecycle interface {
 	AdmitDispatch(ctx context.Context) error
 	RecordSessionResources(ctx context.Context, repo, publicSessionID, workspacePath string) error
+	// RecordSessionProcessPool records only the session PROCESS pool; the
+	// shared layout has no per-session .sessions/<hash> runtime to record.
+	RecordSessionProcessPool(ctx context.Context, repo, publicSessionID, workspacePath string) error
+	RecordRuntimeHome(ctx context.Context, scope storage.RuntimeScope, paths storage.RuntimeHomePaths) error
+	RecordJobScratch(ctx context.Context, repo, jobID, path string) error
+	CompleteJobScratch(ctx context.Context, repo, jobID string) error
 	ReconcileStorage(ctx context.Context, apply, measureAll bool) (storage.Report, error)
+}
+
+// RuntimeIdentity pins the dispatcher to one runner scope: every job of a
+// repo shares the runner-scoped runtime HOME and receives its own disposable
+// scratch. The zero value keeps the legacy per-session runtime layout so
+// existing unit tests and non-runner wiring stay untouched.
+type RuntimeIdentity struct {
+	Hostname string
+	Realm    string
+	Runner   string
+}
+
+func (r RuntimeIdentity) enabled() bool {
+	return strings.TrimSpace(r.Hostname) != "" && strings.TrimSpace(r.Runner) != ""
+}
+
+// scope builds the storage runtime scope for one repo under this identity.
+func (r RuntimeIdentity) scope(repo string) storage.RuntimeScope {
+	return storage.RuntimeScope{
+		Hostname: strings.TrimSpace(r.Hostname),
+		Realm:    strings.TrimSpace(r.Realm),
+		Repo:     strings.TrimSpace(repo),
+		Runner:   strings.TrimSpace(r.Runner),
+	}
+}
+
+// RuntimeIdentityFor derives the dispatcher runtime identity from the runner
+// configuration: the named profile is resolved exactly as the runner scope
+// path derivation resolves it, then RuntimeIdentityFromProfile computes the
+// identity.
+func RuntimeIdentityFor(hostname, profileName, runner string) (RuntimeIdentity, error) {
+	profile, _, err := clientauth.ResolveProfile(profileName, hostname)
+	if err != nil {
+		return RuntimeIdentity{}, err
+	}
+	return RuntimeIdentityFromProfile(hostname, profile, runner)
+}
+
+// RuntimeIdentityFromProfile derives the dispatcher runtime identity from an
+// already resolved profile: the normalized lowercase hostname, the profile
+// realm (empty for the builtin GitHub profile; otherwise the lowercase
+// profile name plus the realm-key digest exactly as the runner scope path
+// derivation computes it), and the lowercase runner identity. The identity
+// feeds only the scope hash preimage; it is never used as a path segment.
+func RuntimeIdentityFromProfile(hostname string, profile clientauth.Profile, runner string) (RuntimeIdentity, error) {
+	host := strings.ToLower(clientauth.NormalizeHost(hostname))
+	if host == "" {
+		return RuntimeIdentity{}, fmt.Errorf("hostname is required for the runner runtime identity")
+	}
+	realm := ""
+	if !clientauth.IsBuiltinGitHubProfile(profile) {
+		digest := sha256.Sum256([]byte(profile.RealmKey()))
+		realm = strings.ToLower(profile.Name) + "-" + hex.EncodeToString(digest[:8])
+	}
+	runner = strings.ToLower(strings.TrimSpace(runner))
+	if runner == "" {
+		return RuntimeIdentity{}, fmt.Errorf("runner identity is required for the runner runtime identity")
+	}
+	return RuntimeIdentity{Hostname: host, Realm: realm, Runner: runner}, nil
 }
 
 type Dispatcher struct {
 	Store               Store
 	Storage             StorageLifecycle
+	RuntimeIdentity     RuntimeIdentity
 	Repositories        RepositoryResolver
 	Workspaces          WorkspaceManager
 	Sandbox             SandboxPreparer
@@ -890,19 +964,19 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
 	integrationRoot := firstNonEmpty(execBinding.AcpxWorkingDirectory, execBinding.Workspace.Path, execBinding.SandboxWorkspacePath)
-	runtimePaths, err := stableSessionRuntimePaths(integrationRoot, job.Repo, publicID)
-	if err != nil {
-		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
-	}
 	processRoot, err := prepareSessionProcessWorkspaceRoot(integrationRoot, job.Repo, publicID)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
-	// Fail-closed: the exact runtime/pool identity is recorded before the
-	// runtime is exposed to sandbox execution so unmanaged runtimes never
-	// proliferate.
+	layout, err := d.prepareRuntimeLayout(integrationRoot, job.Repo, publicID, job.ID)
+	if err != nil {
+		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
+	}
+	// Fail-closed: the exact runtime/pool/scratch identities are recorded
+	// before the runtime is exposed to sandbox execution so unmanaged
+	// runtimes never proliferate.
 	if d.Storage != nil {
-		if err := d.Storage.RecordSessionResources(ctx, job.Repo, publicID, integrationRoot); err != nil {
+		if err := d.recordRuntimeLayout(ctx, job, publicID, integrationRoot, layout); err != nil {
 			return ExecutionEnvironment{}, runnercontext.Bundle{}, "", fmt.Errorf("storage recording: %w", err)
 		}
 	}
@@ -913,11 +987,15 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
 		IssueSpecBinary:      d.IssueSpecBinary,
 		ExtraEnv:             extraEnv,
-		RuntimeHome:          runtimePaths.home,
-		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
-		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
-		RuntimeCodexHome:     runtimePaths.codexHome,
-		RuntimeAcpxDir:       runtimePaths.acpxRuntimeDir,
+		RuntimeHome:          layout.paths.home,
+		RuntimeGHConfigDir:   layout.paths.ghConfigDir,
+		RuntimeXDGConfigHome: layout.paths.xdgConfigHome,
+		RuntimeCodexHome:     layout.paths.codexHome,
+		RuntimeAcpxDir:       layout.paths.acpxRuntimeDir,
+		JobTmpDir:            layout.scratch.Tmp,
+		JobGoTmpDir:          layout.scratch.GoTmp,
+		JobXDGDataHome:       layout.scratch.XDGData,
+		JobXDGStateHome:      layout.scratch.XDGState,
 		OperatorSkillDirs:    append([]string(nil), d.OperatorSkillDirs...),
 		AcpxAgent:            job.CoordinatorKind,
 		ProcessWorkspaceRoot: processRoot,
@@ -942,6 +1020,100 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		return env, runnercontext.Bundle{}, "", err
 	}
 	return env, bundle, prompt, nil
+}
+
+// runtimeLayout is the resolved runtime HOME and scratch placement for one
+// dispatch: the runner-scoped shared home plus per-job scratch when a runtime
+// identity is configured, the legacy per-session runtime otherwise.
+type runtimeLayout struct {
+	paths   sessionRuntimePaths
+	home    storage.RuntimeHomePaths
+	scratch storage.JobScratchPaths
+	shared  bool
+}
+
+// prepareRuntimeLayout prepares the runtime HOME (and per-job scratch on the
+// shared layout) fail-closed before any sandbox exposure.
+func (d *Dispatcher) prepareRuntimeLayout(integrationRoot, repo, publicID, jobID string) (runtimeLayout, error) {
+	if !d.RuntimeIdentity.enabled() {
+		paths, err := stableSessionRuntimePaths(integrationRoot, repo, publicID)
+		if err != nil {
+			return runtimeLayout{}, err
+		}
+		return runtimeLayout{paths: paths}, nil
+	}
+	// The shared layout anchors .runner-home and .job-scratch at the same base
+	// the legacy per-session runtime root derives from the integration root.
+	workspaceRoot, err := runnerWorkspaceRootFor(integrationRoot)
+	if err != nil {
+		return runtimeLayout{}, err
+	}
+	scope := d.RuntimeIdentity.scope(repo)
+	home, err := storage.PrepareRuntimeHome(workspaceRoot, scope)
+	if err != nil {
+		return runtimeLayout{}, err
+	}
+	scratch, err := storage.PrepareJobScratch(workspaceRoot, jobID)
+	if err != nil {
+		return runtimeLayout{}, err
+	}
+	return runtimeLayout{
+		paths: sessionRuntimePaths{
+			home:           home.Home,
+			ghConfigDir:    home.GHConfigDir,
+			xdgConfigHome:  home.XDGConfigHome,
+			codexHome:      home.CodexHome,
+			acpxRuntimeDir: home.AcpxRuntimeDir,
+		},
+		home:    home,
+		scratch: scratch,
+		shared:  true,
+	}, nil
+}
+
+// recordRuntimeLayout persists the exact physical identities of the prepared
+// layout: the shared home, session PROCESS pool, and job scratch on the
+// shared layout; the per-session runtime and pool on the legacy layout.
+func (d *Dispatcher) recordRuntimeLayout(ctx context.Context, job state.Job, publicID, integrationRoot string, layout runtimeLayout) error {
+	if !layout.shared {
+		return d.Storage.RecordSessionResources(ctx, job.Repo, publicID, integrationRoot)
+	}
+	if err := d.Storage.RecordRuntimeHome(ctx, d.RuntimeIdentity.scope(job.Repo), layout.home); err != nil {
+		return err
+	}
+	if err := d.Storage.RecordSessionProcessPool(ctx, job.Repo, publicID, integrationRoot); err != nil {
+		return err
+	}
+	return d.Storage.RecordJobScratch(ctx, job.Repo, job.ID, layout.scratch.Root)
+}
+
+// runnerWorkspaceRootFor resolves the runner workspace root the shared layout
+// anchors to: the parent of the session clone, exactly the base
+// SessionRuntimeRoot derives from the same path.
+func runnerWorkspaceRootFor(workspacePath string) (string, error) {
+	abs, err := filepath.Abs(strings.TrimSpace(workspacePath))
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace path for the runner root: %w", err)
+	}
+	clean := filepath.Clean(abs)
+	root := filepath.Dir(clean)
+	if root == clean {
+		return "", fmt.Errorf("workspace path %q cannot be filesystem root for the runner root", clean)
+	}
+	return root, nil
+}
+
+// completeJobScratch removes one terminal job's disposable scratch. It is
+// best-effort: a removal failure becomes a bounded job diagnostic, never a
+// dispatch failure. It is a no-op on the legacy layout, where no per-job
+// scratch exists.
+func (d *Dispatcher) completeJobScratch(ctx context.Context, repo, jobID string) {
+	if d.Storage == nil || !d.RuntimeIdentity.enabled() {
+		return
+	}
+	if err := d.Storage.CompleteJobScratch(ctx, repo, jobID); err != nil {
+		_ = d.appendDiagnostic(ctx, jobID, "job scratch cleanup: "+safeError(err))
+	}
 }
 
 func resumeExecutionBinding(command runnercontext.CommandVerb, binding workspace.Binding, session state.PublicSession) (workspace.Binding, error) {
@@ -1273,12 +1445,14 @@ func (d *Dispatcher) persistStatusCommentInIntent(ctx context.Context, jobID str
 func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, terminal state.LifecycleStatus, diagnostics ...string) error {
 	now := d.now()
 	cancelled := false
+	jobRepo := ""
 	err := d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
 		current, ok := st.Jobs[jobID]
 		if !ok {
 			return fmt.Errorf("job %q not found", jobID)
 		}
+		jobRepo = current.Repo
 		if current.Status == state.StatusCancelled {
 			cancelled = true
 			return nil
@@ -1343,6 +1517,7 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 	if err != nil {
 		return err
 	}
+	d.completeJobScratch(ctx, jobRepo, jobID)
 	if cancelled {
 		return errDispatchCancelled
 	}
@@ -1454,6 +1629,9 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 	if cancelled {
 		return cancelledDuringDispatchResult(jobID), nil
 	}
+	if failed.ID != "" {
+		d.completeJobScratch(ctx, failed.Repo, jobID)
+	}
 	terminalErr := terminalJobFailure(cause)
 	if failed.ID != "" && d.Writeback != nil {
 		_, writebackErr := d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase,
@@ -1504,6 +1682,9 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 	}
 	if cancelled {
 		return cancelledDuringDispatchResult(jobID), nil
+	}
+	if failed.ID != "" {
+		d.completeJobScratch(ctx, failed.Repo, jobID)
 	}
 	terminalErr := terminalJobFailure(cause)
 	if failed.ID != "" && d.Writeback != nil {
@@ -1668,6 +1849,10 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	cfg.TempXDGConfigHome = firstNonEmpty(req.RuntimeXDGConfigHome, cfg.TempXDGConfigHome)
 	cfg.TempCodexHome = firstNonEmpty(req.RuntimeCodexHome, cfg.TempCodexHome)
 	cfg.AcpxRuntimeDir = firstNonEmpty(req.RuntimeAcpxDir, cfg.AcpxRuntimeDir)
+	cfg.JobTmpDir = firstNonEmpty(req.JobTmpDir, cfg.JobTmpDir)
+	cfg.JobGoTmpDir = firstNonEmpty(req.JobGoTmpDir, cfg.JobGoTmpDir)
+	cfg.JobXDGDataHome = firstNonEmpty(req.JobXDGDataHome, cfg.JobXDGDataHome)
+	cfg.JobXDGStateHome = firstNonEmpty(req.JobXDGStateHome, cfg.JobXDGStateHome)
 	if strings.TrimSpace(cfg.AcpxRuntimeDir) == "" && strings.TrimSpace(cfg.TempHome) != "" {
 		cfg.AcpxRuntimeDir = filepath.Join(cfg.TempHome, ".acpx", "runtime")
 	}
@@ -1721,6 +1906,14 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 		}
 	}
+	for _, dir := range []string{cfg.JobTmpDir, cfg.JobGoTmpDir, cfg.JobXDGDataHome, cfg.JobXDGStateHome} {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+		}
+	}
 	var ghAuthMirror ghAuthMirrorResult
 	if req.ChildProfile != nil {
 		// Darwin's os.UserConfigDir ignores XDG_CONFIG_HOME. In explicit
@@ -1735,11 +1928,19 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 		}
 		// A self-hosted child has no reason to observe hosts.yml or shared gh
 		// state, even if the operator process uses it for legacy GitHub mode.
-		if err := os.RemoveAll(cfg.TempGHConfigDir); err != nil {
+		// Content-aware: on the shared runtime home this dir is already empty
+		// in steady state, and wiping it anyway would race concurrent jobs.
+		empty, err := dirEmpty(cfg.TempGHConfigDir)
+		if err != nil {
 			return sandbox.Config{}, "", ghAuthMirror, err
 		}
-		if err := os.MkdirAll(cfg.TempGHConfigDir, 0o700); err != nil {
-			return sandbox.Config{}, "", ghAuthMirror, err
+		if !empty {
+			if err := os.RemoveAll(cfg.TempGHConfigDir); err != nil {
+				return sandbox.Config{}, "", ghAuthMirror, err
+			}
+			if err := os.MkdirAll(cfg.TempGHConfigDir, 0o700); err != nil {
+				return sandbox.Config{}, "", ghAuthMirror, err
+			}
 		}
 	} else {
 		var err error
@@ -1844,28 +2045,70 @@ func materializeChildProfile(xdgConfigHome string, profile clientauth.Profile) e
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(dir, ".profiles-*")
+	return writeFileAtomic(filepath.Join(dir, "profiles.json"), append(data, '\n'), 0o600)
+}
+
+// dirEmpty reports whether dir exists and contains no entries. A missing dir
+// counts as empty: there is nothing to wipe.
+func dirEmpty(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(entries) == 0, nil
+}
+
+// writeFileAtomic installs data at path through a temp file in the destination
+// directory plus rename, so a concurrent reader of the shared runtime home
+// never observes a partial mirror. An existing identical regular file is left
+// untouched (mode enforced): steady-state refreshes must not churn the shared
+// home.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
+		if existing, readErr := os.ReadFile(path); readErr == nil && bytes.Equal(existing, data) {
+			if info.Mode().Perm() != mode {
+				return os.Chmod(path, mode)
+			}
+			return nil
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".issue-spec-mirror-*")
 	if err != nil {
 		return err
 	}
-	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if _, err := temporary.Write(append(data, '\n')); err != nil {
-		temporary.Close()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryName, filepath.Join(dir, "profiles.json"))
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 func requestReadOnlyBinds(req SandboxRequest, acpxBinary string, lookPath func(string) (string, error)) ([]string, []string, string, error) {
@@ -2336,35 +2579,14 @@ func copyGHConfigDir(source, dest string) error {
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o700)
 		}
-		info, err := os.Lstat(target)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if err == nil {
-			if info.IsDir() {
-				return fmt.Errorf("target %s is a directory", target)
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				if err := os.Remove(target); err != nil {
-					return err
-				}
-			} else if info.Mode().IsRegular() {
-				if err := os.Chmod(target, 0o600); err != nil {
-					return err
-				}
-			}
+		if info, err := os.Lstat(target); err == nil && info.IsDir() {
+			return fmt.Errorf("target %s is a directory", target)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(target, data, 0o600); err != nil {
-			return err
-		}
-		return os.Chmod(target, 0o600)
+		return writeFileAtomic(target, data, 0o600)
 	})
 }
 
@@ -2456,24 +2678,14 @@ func copyLimitedCodexConfig(source, dest string) error {
 			return err
 		}
 		data = sanitizeCodexRuntimeFile(name, data)
-		if targetInfo, err := os.Lstat(targetPath); err == nil {
-			if targetInfo.IsDir() {
-				return fmt.Errorf("target %s is a directory", targetPath)
-			}
-			if err := os.Remove(targetPath); err != nil {
-				return err
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+		if targetInfo, err := os.Lstat(targetPath); err == nil && targetInfo.IsDir() {
+			return fmt.Errorf("target %s is a directory", targetPath)
 		}
 		mode := info.Mode().Perm()
 		if mode == 0 {
 			mode = 0o600
 		}
-		if err := os.WriteFile(targetPath, data, mode); err != nil {
-			return err
-		}
-		if err := os.Chmod(targetPath, mode); err != nil {
+		if err := writeFileAtomic(targetPath, data, mode); err != nil {
 			return err
 		}
 	}
@@ -2572,17 +2784,11 @@ func copyLimitedFiles(source, dest string, names []string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
-			return err
-		}
 		mode := info.Mode().Perm()
 		if mode == 0 {
 			mode = 0o600
 		}
-		if err := os.WriteFile(targetPath, data, mode); err != nil {
-			return err
-		}
-		if err := os.Chmod(targetPath, mode); err != nil {
+		if err := writeFileAtomic(targetPath, data, mode); err != nil {
 			return err
 		}
 	}
@@ -3167,6 +3373,18 @@ func tempPaths(meta sandbox.EnvMetadata) map[string]string {
 	}
 	if meta.CodexHome != "" {
 		out["CODEX_HOME"] = meta.CodexHome
+	}
+	if meta.TmpDir != "" {
+		out["TMPDIR"] = meta.TmpDir
+	}
+	if meta.GoTmpDir != "" {
+		out["GOTMPDIR"] = meta.GoTmpDir
+	}
+	if meta.XDGDataHome != "" {
+		out["XDG_DATA_HOME"] = meta.XDGDataHome
+	}
+	if meta.XDGStateHome != "" {
+		out["XDG_STATE_HOME"] = meta.XDGStateHome
 	}
 	if len(out) == 0 {
 		return nil

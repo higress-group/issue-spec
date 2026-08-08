@@ -63,6 +63,18 @@ func (f failingStorageLifecycle) AdmitDispatch(context.Context) error { return f
 func (f failingStorageLifecycle) RecordSessionResources(context.Context, string, string, string) error {
 	return f.err
 }
+func (f failingStorageLifecycle) RecordSessionProcessPool(context.Context, string, string, string) error {
+	return f.err
+}
+func (f failingStorageLifecycle) RecordRuntimeHome(context.Context, storage.RuntimeScope, storage.RuntimeHomePaths) error {
+	return f.err
+}
+func (f failingStorageLifecycle) RecordJobScratch(context.Context, string, string, string) error {
+	return f.err
+}
+func (f failingStorageLifecycle) CompleteJobScratch(context.Context, string, string) error {
+	return f.err
+}
 func (f failingStorageLifecycle) ReconcileStorage(context.Context, bool, bool) (storage.Report, error) {
 	return storage.Report{}, f.err
 }

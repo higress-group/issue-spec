@@ -386,14 +386,39 @@ func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job)
 	if err != nil {
 		return nil, err
 	}
-	runtimePaths, err := stableSessionRuntimePaths(workspacePath, job.Repo, publicID)
-	if err != nil {
-		return nil, err
+	var runtimePaths sessionRuntimePaths
+	var sharedHome storage.RuntimeHomePaths
+	if d.RuntimeIdentity.enabled() {
+		// Restart reconcile/cancel reuses the runner-scoped shared HOME so the
+		// coordinator sees the exact runtime the job was dispatched with. It
+		// never prepares per-job scratch: no new dispatch runs here.
+		workspaceRoot, rootErr := runnerWorkspaceRootFor(workspacePath)
+		if rootErr != nil {
+			return nil, rootErr
+		}
+		home, homeErr := storage.PrepareRuntimeHome(workspaceRoot, d.RuntimeIdentity.scope(job.Repo))
+		if homeErr != nil {
+			return nil, homeErr
+		}
+		sharedHome = home
+		runtimePaths = sessionRuntimePaths{
+			home:           home.Home,
+			ghConfigDir:    home.GHConfigDir,
+			xdgConfigHome:  home.XDGConfigHome,
+			codexHome:      home.CodexHome,
+			acpxRuntimeDir: home.AcpxRuntimeDir,
+		}
+	} else {
+		var pathErr error
+		runtimePaths, pathErr = stableSessionRuntimePaths(workspacePath, job.Repo, publicID)
+		if pathErr != nil {
+			return nil, pathErr
+		}
 	}
 	// Best-effort touch: a recording failure must not kill already running
 	// work, but it is diagnosed so startup/explicit reconcile can repair.
 	if d.Storage != nil {
-		if err := d.Storage.RecordSessionResources(ctx, job.Repo, publicID, workspacePath); err != nil {
+		if err := d.recordStoredJobRuntime(ctx, job, publicID, workspacePath, sharedHome); err != nil {
 			_ = d.appendDiagnostic(ctx, job.ID, "storage recording: "+safeError(err))
 		}
 	}
@@ -418,6 +443,19 @@ func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job)
 	}
 	coordinator, err := d.Acpx.NewCoordinator(env)
 	return coordinator, err
+}
+
+// recordStoredJobRuntime re-records a stored job's physical identities during
+// restart reconcile: the shared home plus session PROCESS pool on the shared
+// layout, the per-session runtime and pool on the legacy layout.
+func (d *Dispatcher) recordStoredJobRuntime(ctx context.Context, job state.Job, publicID, workspacePath string, sharedHome storage.RuntimeHomePaths) error {
+	if !d.RuntimeIdentity.enabled() {
+		return d.Storage.RecordSessionResources(ctx, job.Repo, publicID, workspacePath)
+	}
+	if err := d.Storage.RecordRuntimeHome(ctx, d.RuntimeIdentity.scope(job.Repo), sharedHome); err != nil {
+		return err
+	}
+	return d.Storage.RecordSessionProcessPool(ctx, job.Repo, publicID, workspacePath)
 }
 
 func (d *Dispatcher) applyReconcile(ctx context.Context, job state.Job, previous state.LifecycleStatus, reconciled acpx.TurnReconcileResult) (ReconcileJob, error) {
@@ -514,6 +552,7 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 	}); err != nil {
 		return ReconcileJob{}, err
 	}
+	d.completeJobScratch(ctx, final.Repo, final.ID)
 	d.releaseLock(ctx, final.ID, lock)
 	req := writeback.Request{
 		Job:                  final,

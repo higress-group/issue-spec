@@ -1110,6 +1110,10 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 	}
 	workspaces := runnerWorkspaceManager(cfg)
 	writebacks := wrapRunnerWriteback(&writeback.Service{GitHub: runnerBackend, Store: store}, a.runnerDiagnostics)
+	runtimeIdentity, err := jobs.RuntimeIdentityFor(cfg.Hostname, cfg.Profile, cfg.RunnerIdentity)
+	if err != nil {
+		return jobs.ReconcileResult{}, fmt.Errorf("runner runtime identity: %w", err)
+	}
 	dispatcher := jobs.Dispatcher{
 		Store:      store,
 		Storage:    runnerStorageLifecycle(ctx, cfg, store),
@@ -1119,9 +1123,10 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 			BwrapPath:       cfg.BwrapPath,
 			HostGHConfigDir: cfg.GHConfigDir,
 		}},
-		Acpx:       jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg), RunnerConfig: cfg},
-		Writeback:  writebacks,
-		AcpxBinary: cfg.AcpxPath,
+		Acpx:            jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg), RunnerConfig: cfg},
+		Writeback:       writebacks,
+		AcpxBinary:      cfg.AcpxPath,
+		RuntimeIdentity: runtimeIdentity,
 	}
 	return dispatcher.Reconcile(ctx)
 }
@@ -1141,10 +1146,15 @@ func (a *app) runRunnerWorkspaceCleanupWithStore(ctx context.Context, cfg commen
 		defer opened.Close()
 		store = opened
 	}
+	runtimeIdentity, err := jobs.RuntimeIdentityFor(cfg.Hostname, cfg.Profile, cfg.RunnerIdentity)
+	if err != nil {
+		return jobs.ReconcileResult{}, fmt.Errorf("runner runtime identity: %w", err)
+	}
 	dispatcher := jobs.Dispatcher{
-		Store:      store,
-		Storage:    runnerStorageLifecycle(ctx, cfg, store),
-		Workspaces: runnerWorkspaceManager(cfg),
+		Store:           store,
+		Storage:         runnerStorageLifecycle(ctx, cfg, store),
+		Workspaces:      runnerWorkspaceManager(cfg),
+		RuntimeIdentity: runtimeIdentity,
 	}
 	return dispatcher.CleanupWorkspaces(ctx)
 }
@@ -1235,6 +1245,10 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 	}
 	workspaces := runnerWorkspaceManager(cfg)
 	writebacks := wrapRunnerWriteback(&writeback.Service{GitHub: runnerBackend, Store: store}, a.runnerDiagnostics)
+	runtimeIdentity, err := jobs.RuntimeIdentityFor(cfg.Hostname, cfg.Profile, cfg.RunnerIdentity)
+	if err != nil {
+		return nil, nil, fmt.Errorf("runner runtime identity: %w", err)
+	}
 	dispatcher := &jobs.Dispatcher{
 		Store:        store,
 		Storage:      runnerStorageLifecycle(ctx, cfg, store),
@@ -1250,6 +1264,7 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 		Writeback:       writebacks,
 		AcpxBinary:      cfg.AcpxPath,
 		IssueSpecBinary: issueSpecBinaryForRunner(),
+		RuntimeIdentity: runtimeIdentity,
 	}
 	return dispatcher, cleanup, nil
 }

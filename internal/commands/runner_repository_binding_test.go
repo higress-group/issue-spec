@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,7 +87,10 @@ func TestBuildRunnerDispatcherPinsAuthenticatedGitHubMetadataBeforeWorkspace(t *
 		t.Fatal("caller-provided state store unexpectedly produced cleanup")
 	}
 
-	workspaceRoot := t.TempDir()
+	workspaceRoot := filepath.Join(cfg.WorkspaceRoot, "ws-github-binding")
+	if err := os.MkdirAll(workspaceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	binding := testkit.WorkspaceBinding("ws-github-binding")
 	binding.Workspace.Path = workspaceRoot
 	binding.AcpxWorkingDirectory = workspaceRoot
@@ -103,7 +107,7 @@ func TestBuildRunnerDispatcherPinsAuthenticatedGitHubMetadataBeforeWorkspace(t *
 	dispatcher.TurnCorrelationID = func() (string, error) { return "turn-github-binding", nil }
 
 	if err := store.Update(t.Context(), func(st *state.RunnerState) error {
-		_, _, err := st.CreateCommandJob(state.Job{ID: "job-github-binding", Repo: "o/r", IssueNumber: 379,
+		_, _, err := st.CreateCommandJob(state.Job{ID: "job-3793793793790001", Repo: "o/r", IssueNumber: 379,
 			CommandID: "cmd-github-binding", CommandName: "new", CommandPrompt: "implement", CommandIdempotencyKey: "github-binding",
 			SessionCreatorLogin: "alice", TriggeringUserLogin: "alice", TriggerCommentID: 37901,
 			Status: state.StatusQueued, CreatedAt: testkit.Now, FirstObservedComment: state.SeenComment{
@@ -127,7 +131,7 @@ func TestBuildRunnerDispatcherPinsAuthenticatedGitHubMetadataBeforeWorkspace(t *
 		t.Fatal(err)
 	}
 	pinned := workspaces.PrepareNewRequests[0].RepositoryBinding
-	job := store.Snapshot().Jobs["job-github-binding"]
+	job := store.Snapshot().Jobs["job-3793793793790001"]
 	if !pinned.Equal(want.Binding) || !job.RepositoryBinding.Equal(want.Binding) || !job.DispatchIntent.RepositoryBinding.Equal(want.Binding) {
 		t.Fatalf("authenticated metadata was not pinned before workspace: request=%+v job=%+v intent=%+v want=%+v",
 			pinned, job.RepositoryBinding, job.DispatchIntent.RepositoryBinding, want.Binding)

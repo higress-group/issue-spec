@@ -20,10 +20,34 @@ type recordedSessionResource struct {
 	workspace string
 }
 
+type recordedRuntimeHome struct {
+	scope storage.RuntimeScope
+	paths storage.RuntimeHomePaths
+}
+
+type recordedJobScratch struct {
+	repo  string
+	jobID string
+	path  string
+}
+
+type recordedScratchCompletion struct {
+	repo  string
+	jobID string
+}
+
 type fakeStorage struct {
 	admitErr        error
 	recordErr       error
 	recordCalls     []recordedSessionResource
+	poolErr         error
+	poolCalls       []recordedSessionResource
+	homeErr         error
+	homeCalls       []recordedRuntimeHome
+	scratchErr      error
+	scratchCalls    []recordedJobScratch
+	completeErr     error
+	completeCalls   []recordedScratchCompletion
 	admitCalls      int
 	reconcileCalls  int
 	reconcileApply  []bool
@@ -39,6 +63,26 @@ func (f *fakeStorage) AdmitDispatch(context.Context) error {
 func (f *fakeStorage) RecordSessionResources(_ context.Context, repo, publicSessionID, workspacePath string) error {
 	f.recordCalls = append(f.recordCalls, recordedSessionResource{repo: repo, sid: publicSessionID, workspace: workspacePath})
 	return f.recordErr
+}
+
+func (f *fakeStorage) RecordSessionProcessPool(_ context.Context, repo, publicSessionID, workspacePath string) error {
+	f.poolCalls = append(f.poolCalls, recordedSessionResource{repo: repo, sid: publicSessionID, workspace: workspacePath})
+	return f.poolErr
+}
+
+func (f *fakeStorage) RecordRuntimeHome(_ context.Context, scope storage.RuntimeScope, paths storage.RuntimeHomePaths) error {
+	f.homeCalls = append(f.homeCalls, recordedRuntimeHome{scope: scope, paths: paths})
+	return f.homeErr
+}
+
+func (f *fakeStorage) RecordJobScratch(_ context.Context, repo, jobID, path string) error {
+	f.scratchCalls = append(f.scratchCalls, recordedJobScratch{repo: repo, jobID: jobID, path: path})
+	return f.scratchErr
+}
+
+func (f *fakeStorage) CompleteJobScratch(_ context.Context, repo, jobID string) error {
+	f.completeCalls = append(f.completeCalls, recordedScratchCompletion{repo: repo, jobID: jobID})
+	return f.completeErr
 }
 
 func (f *fakeStorage) ReconcileStorage(_ context.Context, apply, _ bool) (storage.Report, error) {
