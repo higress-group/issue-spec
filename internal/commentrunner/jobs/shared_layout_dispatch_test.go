@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -235,6 +236,58 @@ func TestSharedLayoutRuntimeHomeDiffersAcrossRepos(t *testing.T) {
 	if filepath.Dir(filepath.Dir(first.RuntimeHome)) != filepath.Join(root, storage.RunnerHomesDirName) ||
 		filepath.Dir(filepath.Dir(second.RuntimeHome)) != filepath.Join(root, storage.RunnerHomesDirName) {
 		t.Fatalf("both homes must anchor below %q: first=%q second=%q", storage.RunnerHomesDirName, first.RuntimeHome, second.RuntimeHome)
+	}
+}
+
+// TestSharedLayoutDispatchNeverTouchesOldStyleRoots is the dispatch-side
+// fresh-root cutover acceptance: dispatching on a fresh root selects the
+// shared HOME, while a pre-existing old-style `.sessions/<hash>/home` fixture
+// in a separate root is never read for import, modified, or deleted.
+func TestSharedLayoutDispatchNeverTouchesOldStyleRoots(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 6, 9, 45, 0, 0, time.UTC)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := t.TempDir()
+	oldFixture := filepath.Join(oldRoot, ".sessions", "0123456789abcdef0123456789abcdef", "home")
+	if err := os.MkdirAll(oldFixture, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldBytes := []byte("{\"old\":\"session runtime\"}\n")
+	if err := os.WriteFile(filepath.Join(oldFixture, ".claude.json"), oldBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workspaces := &fakeWorkspaces{binding: sharedLayoutBinding(t, root, "ws-cutover", "o/r")}
+	coordinator := &fakeCoordinator{newResult: dispatchResult("ps-cutover", "rec-cutover", "turn-cutover", completedSummary())}
+	dispatcher, sandbox := newSharedLayoutDispatcher(store, workspaces, coordinator, &fakeStorage{}, now)
+
+	seedSharedLayoutJob(t, store, "job-9999999999999999", "o/r", now)
+	result, err := dispatcher.RunNext(context.Background())
+	if err != nil || !result.Executed || result.Status != state.StatusCompleted {
+		t.Fatalf("cutover dispatch result=%+v err=%v", result, err)
+	}
+	if len(sandbox.requests) != 1 {
+		t.Fatalf("sandbox requests = %d, want 1", len(sandbox.requests))
+	}
+	homeRoot, err := storage.RuntimeHomeRoot(root, sharedLayoutIdentity().scope("o/r"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sandbox.requests[0].RuntimeHome != filepath.Join(homeRoot, "home") {
+		t.Fatalf("fresh-root dispatch must select the shared HOME %q, got %q",
+			filepath.Join(homeRoot, "home"), sandbox.requests[0].RuntimeHome)
+	}
+
+	got, err := os.ReadFile(filepath.Join(oldFixture, ".claude.json"))
+	if err != nil || !bytes.Equal(got, oldBytes) {
+		t.Fatalf("old-style root fixture changed: bytes=%q err=%v", got, err)
+	}
+	entries, err := os.ReadDir(oldRoot)
+	if err != nil || len(entries) != 1 || entries[0].Name() != ".sessions" {
+		t.Fatalf("old-style root gained or lost entries: entries=%v err=%v", entries, err)
 	}
 }
 
