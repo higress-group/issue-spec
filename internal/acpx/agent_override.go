@@ -26,7 +26,11 @@ var codexAdapterPattern = regexp.MustCompile(`@agentclientprotocol/codex-acp@[A-
 
 // overrideWriteLocks serializes in-process writers per config file. The flock
 // on config.json.lock additionally serializes cooperating processes (e.g. a
-// runner and an operator CLI sharing one HOME).
+// runner and an operator CLI sharing one HOME). Entries persist for the
+// process lifetime: one per distinct lock path, bounded in practice by the
+// dispatcher's stable runner homes. Ad-hoc callers on the MkdirTemp fallback
+// path can accrue one entry per call; accepted, since growth stays
+// process-lifetime bounded.
 var overrideWriteLocks sync.Map // map[string]*sync.Mutex, keyed by cleaned lock path
 
 type AgentOverride struct {
