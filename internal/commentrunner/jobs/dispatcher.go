@@ -1990,6 +1990,12 @@ func rejectRepositoryAcpxConfig(workspacePath string) error {
 	return nil
 }
 
+// materializeHostAcpxAgentOverride refreshes exactly one agent's entry in the
+// shared runtime HOME. The host config stays authoritative for this agent, but
+// the write must be a per-agent merge applied under lock: concurrent
+// dispatches in the same runner scope share cfg.TempHome, so a whole-file
+// remove or replace would erase a peer agent's concurrently materialized
+// override (an absent host override deletes only this agent's entry).
 func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {
 	if cfg == nil || strings.TrimSpace(agent) == "" || strings.TrimSpace(cfg.TempHome) == "" {
 		return nil
@@ -1999,14 +2005,13 @@ func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {
 	if err != nil {
 		return fmt.Errorf("load host acpx %s agent override: %w", agent, err)
 	}
-	target := filepath.Join(cfg.TempHome, ".acpx", "config.json")
 	if !ok {
-		if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove stale runtime acpx agent override: %w", err)
+		if err := acpx.ApplyAgentOverride(cfg.TempHome, agent, nil); err != nil {
+			return fmt.Errorf("remove stale runtime acpx %s agent override: %w", agent, err)
 		}
 		return nil
 	}
-	if err := acpx.MaterializeAgentOverride(cfg.TempHome, override); err != nil {
+	if err := acpx.ApplyAgentOverride(cfg.TempHome, agent, &override); err != nil {
 		return fmt.Errorf("materialize host acpx %s agent override: %w", agent, err)
 	}
 	return nil

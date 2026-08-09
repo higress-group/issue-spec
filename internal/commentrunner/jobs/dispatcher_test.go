@@ -1859,6 +1859,87 @@ func TestHostSSHRuntimeLoadsAcpxOverrideFromReusedHome(t *testing.T) {
 	}
 }
 
+// Concurrent dispatches in one runner scope share the runtime HOME, so
+// per-agent override refreshes must merge: two agents with distinct host
+// overrides materialized at the same time must both end up in the shared
+// config (whole-file last-writer-wins would silently drop one).
+func TestMaterializeHostAcpxAgentOverrideConcurrentDistinctAgents(t *testing.T) {
+	hostHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostHome, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hostConfig := `{"agents":{"qoder":{"command":"npx","args":["-y","@qodercode/acp@1.2.3"]},"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@1.1.2"]}}}`
+	if err := os.WriteFile(filepath.Join(hostHome, ".acpx", "config.json"), []byte(hostConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimeHome := t.TempDir()
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + hostHome}, TempHome: runtimeHome}
+	const rounds = 40
+	var wg sync.WaitGroup
+	for _, agent := range []string{acpx.AgentQoder, acpx.AgentCodex} {
+		wg.Add(1)
+		go func(agent string) {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				if err := materializeHostAcpxAgentOverride(&cfg, agent); err != nil {
+					t.Errorf("materialize %s override: %v", agent, err)
+					return
+				}
+			}
+		}(agent)
+	}
+	wg.Wait()
+	for _, agent := range []string{acpx.AgentQoder, acpx.AgentCodex} {
+		if _, ok, err := acpx.LoadAgentOverride(runtimeHome, agent); err != nil || !ok {
+			t.Fatalf("%s override lost in shared runtime HOME: ok=%v err=%v", agent, ok, err)
+		}
+	}
+}
+
+// The peer-delete race: one dispatch materializes its host override while a
+// concurrent dispatch for another agent has NO host override and only prunes
+// its own (absent) entry. The materialized entry must survive.
+func TestMaterializeHostAcpxAgentOverrideConcurrentUpsertVsNoOverride(t *testing.T) {
+	hostHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostHome, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hostConfig := `{"agents":{"qoder":{"command":"npx","args":["-y","@qodercode/acp@1.2.3"]}}}`
+	if err := os.WriteFile(filepath.Join(hostHome, ".acpx", "config.json"), []byte(hostConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimeHome := t.TempDir()
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + hostHome}, TempHome: runtimeHome}
+	const rounds = 40
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			if err := materializeHostAcpxAgentOverride(&cfg, acpx.AgentQoder); err != nil {
+				t.Errorf("materialize qoder override: %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			if err := materializeHostAcpxAgentOverride(&cfg, acpx.AgentCodex); err != nil {
+				t.Errorf("prune absent codex override: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	if _, ok, err := acpx.LoadAgentOverride(runtimeHome, acpx.AgentQoder); err != nil || !ok {
+		t.Fatalf("qoder override erased by peer no-override dispatch: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := acpx.LoadAgentOverride(runtimeHome, acpx.AgentCodex); err != nil || ok {
+		t.Fatalf("codex entry should stay absent: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestSandboxRunnerRejectsRepositoryAcpxConfig(t *testing.T) {
 	root := t.TempDir()
 	workspacePath := filepath.Join(root, "workspace")
