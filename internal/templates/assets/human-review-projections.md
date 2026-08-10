@@ -58,12 +58,17 @@ Use this precedence when goals conflict:
 4. Write a compact Markdown fallback first. Open with the scene, why it matters, and a concrete before/after or request-to-outcome case; then expose every applicable review dimension, required human decisions, critical constraints, and source links without running HTML.
 5. Add one valid `html-preview` fence containing a complete, standalone document. Prefer one preview per projection so the intended review surface is the first preview.
 6. Serialize a deterministic source manifest containing the selected source identities, body digests or exact revisions, and typed statuses and links. Hash that manifest for `--source-digest`; do not hash only `projection.md`, and exclude the projection itself.
-7. Audit coverage before validating presentation: every applicable ledger entry must be discoverable, and a phase with no open decision must still expose settled premises, evidence gaps, alternatives, boundaries, risks, and verification obligations. Then validate the Markdown, preview metadata, keyboard flow, narrow layout, and GitHub fallback.
+7. Audit coverage before validating presentation: every applicable ledger entry must be discoverable, and a phase with no open decision must still expose settled premises, evidence gaps, alternatives, boundaries, risks, and verification obligations. Then validate the Markdown, keyboard flow, narrow layout, and GitHub fallback. Run `issue-spec projection validate --phase <phase> --body-file projection.md --json` to validate projection markers and preview metadata locally; repair reported authoring errors explicitly instead of rewriting IDs or versions silently.
 8. Upsert the one logical phase comment. The CLI appends the projection marker; do not add a typed marker or projection marker inside the body.
 
 Example write:
 
 ```sh
+issue-spec projection validate \
+  --phase implement-execution-brief \
+  --body-file projection.md \
+  --json
+
 issue-spec projection upsert \
   --repo owner/repo \
   --issue 123 \

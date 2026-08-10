@@ -400,3 +400,45 @@ The system MUST route self-hosted CLI QUESTION answers through the native truste
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/361#issuecomment-5118701687
+
+### Requirement: projection HTML preview preflight
+
+The CLI MUST expose provider-neutral local validation for projection bodies and MUST apply the same validation before projection upsert performs any backend operation. Every recognized html-preview block with canonical parser diagnostics MUST fail with bounded actionable diagnostics and no remote effects, while valid and preview-free projection bodies MUST preserve their existing bytes and behavior.
+
+#### Scenario: read-only validation reports canonical preview diagnostics
+
+- **WHEN** a caller validates a projection body containing an html-preview fence with missing, malformed, duplicate, unsupported, unclosed, oversized, or otherwise non-executable metadata or source
+- **THEN** the CLI MUST return a non-zero result with bounded diagnostics that retain the canonical parser codes and messages, identify the affected block without echoing its source, and perform no authentication or provider operation
+
+#### Scenario: projection upsert fails before backend access
+
+- **WHEN** projection upsert receives a body containing any recognized html-preview descriptor with parser diagnostics
+- **THEN** the command MUST invoke the same local preflight, MUST fail before backend selection or comment observation, and MUST NOT create or update a remote comment
+
+#### Scenario: machine callers receive a deterministic repair surface
+
+- **WHEN** validation is requested with JSON output for a non-executable preview
+- **THEN** the CLI MUST return a stable top-level failure code and a bounded diagnostics array sufficient for an Agent to correct the body and retry, including an actionable hint when required id or version metadata is missing
+
+#### Scenario: valid projection source remains exact
+
+- **WHEN** every recognized html-preview block is executable according to the canonical parser
+- **THEN** validation MUST succeed and projection upsert MUST preserve the caller body byte-for-byte apart from the existing command-owned projection marker
+
+#### Scenario: preview-free projection bodies remain compatible
+
+- **WHEN** a non-empty projection body contains no html-preview fence
+- **THEN** local validation and projection upsert MUST preserve the current successful behavior and MUST NOT manufacture a preview or metadata
+
+#### Scenario: validation does not silently repair author input
+
+- **WHEN** a projection preview is non-executable
+- **THEN** the CLI MUST report the defect and MUST NOT invent an id, change a version, rewrite a fence opener, normalize HTML, or otherwise mutate the submitted body
+
+#### Scenario: generic source-only writes remain unchanged
+
+- **WHEN** an issue or ordinary comment intentionally stores inert or forward-version html-preview source outside projection upsert
+- **THEN** this requirement MUST NOT make generic write commands reject that source, and the existing Server and Web fail-closed validation MUST remain authoritative defense in depth
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/444#issuecomment-5242702748

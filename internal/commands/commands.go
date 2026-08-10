@@ -229,6 +229,7 @@ Usage:
   issue-spec question answer --repo owner/repo --issue 1 --id ANSWER-1001 --question-id QUESTION-1001 (--select option-id|--custom "answer")
   issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-1001 --resolution-file file.md
     new typed IDs use <TYPE>-<issue><three-digit sequence>; allocate the sequence within that Issue and type
+  issue-spec projection validate --phase proposal-choice-brief --body-file file.md [--json]
   issue-spec projection upsert --repo owner/repo --issue N --phase proposal-choice-brief --source-digest SHA256 --body-file file.md [--allow-nonatomic --expected-absence|--allow-nonatomic --expected-digest SHA256]
     non-atomic first create uses --expected-absence; replacement uses the observed-body --expected-digest SHA256
   issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-3001 --pr 4
