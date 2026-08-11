@@ -118,6 +118,9 @@ issue-spec question answer --repo owner/repo --issue 1 --id ANSWER-1001 --questi
 issue-spec question answer --repo owner/repo --issue 1 --id ANSWER-1002 --question-id QUESTION-1001 --custom "另一个答案" --json
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-1001 --resolution-file resolution.md
 
+issue-spec projection validate --phase design-explainer --body-file projection.md --json
+issue-spec projection upsert --repo owner/repo --issue 2 --phase design-explainer --source-digest SHA256 --body-file projection.md --json
+
 issue-spec link --repo owner/repo --from SPEC-1001 --from-issue 1 --to TASK-2001 --to-issue 2
 issue-spec status --repo owner/repo --proposal 1 --design 2 --implement 3
 issue-spec verify-links --repo owner/repo --proposal 1 --design 2 --implement 3
@@ -267,6 +270,36 @@ fail closed。`--include-body` 只包含目标 artifact 的精确 Markdown。
 `--history` 选择 superseded artifact，可配合 `--include-body` 显式读取审计详情。
 `--active-only` 与 `--history` 互斥。不使用这些新 filter（且不使用
 `--include-all-links`）时，原有 list JSON contract 保持不变。
+
+## Projection HTML preview 预检
+
+写入 human-review projection 前，先运行与 provider 无关的预检：
+
+```bash
+issue-spec projection validate \
+  --phase design-explainer \
+  --body-file projection.md \
+  --json
+```
+
+`projection validate` 接受 `proposal-choice-brief`、`design-explainer` 与
+`implement-execution-brief`。它只读取指定文件或受保护的 stdin，不执行认证或
+backend 请求；不含 HTML preview 的非空 projection 也合法。调用方自行写入的
+projection marker、typed marker，以及 canonical preview parser 判定为不可执行的
+任意已识别 `html-preview` fence 都会被拒绝。该命令既不修复也不执行 preview 源码。
+
+成功的 JSON 结果只报告 `ok`、`phase` 与 `preview_count`。preview 无效时，JSON
+使用稳定的 `invalid_html_preview` code，并包含从 1 开始的 block 序号、存在时合法且
+已知的 ID、精确 fence 字节范围，以及 parser 的 canonical code 与 message。只有
+`missing_id` 和 `missing_version` 会获得固定修复提示。输出最多展示 20 条诊断，并用
+`diagnostics_truncated` 标明是否省略了其余项，但校验仍会扫描所有 descriptor。文本和
+JSON 诊断都不会包含 preview 源码、digest、provider 数据或凭据。
+
+`projection upsert` 会在选择或调用 issue backend 前运行同一预检。因此无效 preview
+会得到相同的有界诊断，且不会产生远端写入。合法正文中的 preview 源码保持逐字节
+不变；upsert 仍只添加命令拥有的 projection marker，并保留既有 conditional 与显式
+确认的 non-atomic 写入行为。通用 issue/comment 写入保持不变，仍可存储 inert preview
+源码供后续检查。
 
 ## Canonical 类型化评论
 

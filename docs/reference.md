@@ -118,6 +118,9 @@ issue-spec question answer --repo owner/repo --issue 1 --id ANSWER-1001 --questi
 issue-spec question answer --repo owner/repo --issue 1 --id ANSWER-1002 --question-id QUESTION-1001 --custom "A different answer" --json
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-1001 --resolution-file resolution.md
 
+issue-spec projection validate --phase design-explainer --body-file projection.md --json
+issue-spec projection upsert --repo owner/repo --issue 2 --phase design-explainer --source-digest SHA256 --body-file projection.md --json
+
 issue-spec link --repo owner/repo --from SPEC-1001 --from-issue 1 --to TASK-2001 --to-issue 2
 issue-spec status --repo owner/repo --proposal 1 --design 2 --implement 3
 issue-spec verify-links --repo owner/repo --proposal 1 --design 2 --implement 3
@@ -289,6 +292,42 @@ set of exact statuses. `--history` selects superseded artifacts and can be
 combined with `--include-body` for explicit audit detail. `--active-only` and
 `--history` are mutually exclusive. With none of these new filters (and without
 `--include-all-links`), the existing list JSON contract remains unchanged.
+
+## Projection HTML preview preflight
+
+Run the provider-neutral preflight before writing a human-review projection:
+
+```bash
+issue-spec projection validate \
+  --phase design-explainer \
+  --body-file projection.md \
+  --json
+```
+
+`projection validate` accepts `proposal-choice-brief`, `design-explainer`, and
+`implement-execution-brief`. It reads only the supplied file or protected stdin,
+performs no authentication or backend request, and allows a non-empty projection
+with no HTML preview. It rejects caller-authored projection markers, typed
+markers, and every recognized `html-preview` fence that the canonical preview
+parser marks non-executable. The command never repairs or executes preview
+source.
+
+A successful JSON result reports only `ok`, `phase`, and `preview_count`.
+Invalid preview JSON uses the stable `invalid_html_preview` code and includes
+the one-based block number, a valid known ID when available, the exact fence
+byte range, and the parser's canonical code and message. Fixed repair hints are
+provided only for `missing_id` and `missing_version`. Output is capped at 20
+diagnostics with `diagnostics_truncated` indicating omitted entries, although
+validation still scans every descriptor. Neither text nor JSON diagnostics
+include preview source, a digest, provider data, or credentials.
+
+`projection upsert` runs the same preflight before selecting or invoking an
+issue backend. Invalid preview source therefore produces the same bounded
+diagnostic model and no remote write. A valid body retains its exact preview
+source; upsert continues to add only its command-owned projection marker and
+preserves the existing conditional and acknowledged non-atomic write behavior.
+Generic issue and comment writes remain unchanged and may still store inert
+preview source for later inspection.
 
 ## Canonical Typed Comments
 

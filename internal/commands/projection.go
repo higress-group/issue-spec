@@ -14,7 +14,11 @@ import (
 	"github.com/higress-group/issue-spec/internal/preview"
 )
 
-const projectionMarkerVersion = 1
+const (
+	projectionMarkerVersion       = 1
+	maxProjectionDiagnostics      = 20
+	invalidHTMLPreviewFailureCode = "invalid_html_preview"
+)
 
 var (
 	projectionDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -36,6 +40,37 @@ type projectionMarker struct {
 type projectionMatch struct {
 	Comment github.Comment
 	Marker  projectionMarker
+}
+
+type projectionDiagnostic struct {
+	Block   int               `json:"block"`
+	ID      string            `json:"id,omitempty"`
+	Range   preview.ByteRange `json:"range"`
+	Code    string            `json:"code"`
+	Message string            `json:"message"`
+	Hint    string            `json:"hint,omitempty"`
+}
+
+type projectionBodyValidationError struct {
+	Code                 string
+	Message              string
+	PreviewCount         int
+	Diagnostics          []projectionDiagnostic
+	DiagnosticsTruncated bool
+}
+
+func (e *projectionBodyValidationError) Error() string {
+	return e.Message
+}
+
+type projectionValidationResult struct {
+	OK                   bool                   `json:"ok"`
+	Code                 string                 `json:"code,omitempty"`
+	Message              string                 `json:"message,omitempty"`
+	Phase                string                 `json:"phase"`
+	PreviewCount         int                    `json:"preview_count"`
+	Diagnostics          []projectionDiagnostic `json:"diagnostics,omitempty"`
+	DiagnosticsTruncated *bool                  `json:"diagnostics_truncated,omitempty"`
 }
 
 // conditionalProjectionCreateBackend is an optional backend capability whose
@@ -65,16 +100,55 @@ type projectionUpsertResult struct {
 
 func (a *app) runProjection(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec projection upsert ...\n")
+		a.errorf("usage: issue-spec projection validate|upsert ...\n")
 		return 2
 	}
 	switch args[0] {
+	case "validate":
+		return a.runProjectionValidate(args[1:])
 	case "upsert":
 		return a.runProjectionUpsert(ctx, args[1:])
 	default:
 		a.errorf("unknown projection command %q\n", args[0])
 		return 2
 	}
+}
+
+func (a *app) runProjectionValidate(args []string) int {
+	fs := newFlagSet("projection validate", a.err)
+	phaseFlag := fs.String("phase", "", "projection phase: proposal-choice-brief, design-explainer, or implement-execution-brief")
+	bodyFile := fs.String("body-file", "", "human-facing projection Markdown, or - for stdin")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+
+	phase := strings.TrimSpace(*phaseFlag)
+	if !projectionPhases[phase] {
+		a.errorf("unsupported --phase %q; valid values: proposal-choice-brief, design-explainer, implement-execution-brief\n", phase)
+		return 2
+	}
+	rawBody, ok := a.readBodyFile(*bodyFile)
+	if !ok {
+		return 2
+	}
+	preflight, err := preflightProjectionBody(rawBody)
+	if err != nil {
+		if *jsonOut {
+			if code := a.outputJSON(projectionValidationFailure(phase, err)); code != 0 {
+				return code
+			}
+		} else {
+			a.outputProjectionValidationError(err)
+		}
+		return 1
+	}
+	result := projectionValidationResult{OK: true, Phase: phase, PreviewCount: preflight.PreviewCount}
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "ok projection phase=%s preview_count=%d\n", phase, preflight.PreviewCount)
+	return 0
 }
 
 func (a *app) runProjectionUpsert(ctx context.Context, args []string) int {
@@ -129,6 +203,17 @@ func (a *app) runProjectionUpsert(ctx context.Context, args []string) int {
 		Phase: phase, Owner: issue, Version: projectionMarkerVersion, SourceDigest: sourceDigest,
 	})
 	if err != nil {
+		var validationErr *projectionBodyValidationError
+		if errors.As(err, &validationErr) && validationErr.Code == invalidHTMLPreviewFailureCode {
+			if *jsonOut {
+				if code := a.outputJSON(projectionValidationFailure(phase, validationErr)); code != 0 {
+					return code
+				}
+			} else {
+				a.outputProjectionValidationError(validationErr)
+			}
+			return 2
+		}
 		a.errorf("prepare projection body: %v\n", err)
 		return 2
 	}
@@ -314,20 +399,113 @@ func (a *app) upsertProjectionNonAtomic(ctx context.Context, client github.Backe
 		github.CommentMutationNonAtomicSingleWriter, false, 0, current.Body, desired), jsonOut)
 }
 
-func prepareProjectionBody(raw string, marker projectionMarker) (string, error) {
+type projectionBodyPreflight struct {
+	PreviewCount int
+}
+
+func preflightProjectionBody(raw string) (projectionBodyPreflight, *projectionBodyValidationError) {
+	parsed := preview.Parse(raw)
+	preflight := projectionBodyPreflight{PreviewCount: len(parsed.Descriptors)}
 	if strings.TrimSpace(raw) == "" {
-		return "", errors.New("--body-file must not be empty")
+		return preflight, &projectionBodyValidationError{
+			Code: "empty_body", Message: "--body-file must not be empty", PreviewCount: preflight.PreviewCount,
+		}
 	}
-	if matches := projectionMarkerPattern.FindAllStringSubmatch(preview.SemanticView(raw), -1); len(matches) > 0 {
-		return "", errors.New("--body-file must not contain an issue-spec projection marker; the command owns the marker")
+	if matches := projectionMarkerPattern.FindAllStringSubmatch(parsed.SemanticView(), -1); len(matches) > 0 {
+		return preflight, &projectionBodyValidationError{
+			Code:         "projection_marker_present",
+			Message:      "--body-file must not contain an issue-spec projection marker; the command owns the marker",
+			PreviewCount: preflight.PreviewCount,
+		}
 	}
 	if _, found, err := model.FindMarker(raw); err != nil {
-		return "", fmt.Errorf("typed marker is invalid: %w", err)
+		return preflight, &projectionBodyValidationError{
+			Code: "invalid_typed_marker", Message: fmt.Sprintf("typed marker is invalid: %v", err), PreviewCount: preflight.PreviewCount,
+		}
 	} else if found {
-		return "", errors.New("projection must remain an ordinary comment and cannot contain a typed marker")
+		return preflight, &projectionBodyValidationError{
+			Code:         "typed_marker_present",
+			Message:      "projection must remain an ordinary comment and cannot contain a typed marker",
+			PreviewCount: preflight.PreviewCount,
+		}
+	}
+
+	diagnostics := make([]projectionDiagnostic, 0, maxProjectionDiagnostics)
+	diagnosticCount := 0
+	for blockIndex, descriptor := range parsed.Descriptors {
+		if descriptor.Executable {
+			continue
+		}
+		for _, diagnostic := range descriptor.Diagnostics {
+			diagnosticCount++
+			if len(diagnostics) >= maxProjectionDiagnostics {
+				continue
+			}
+			flattened := projectionDiagnostic{
+				Block: blockIndex + 1, Range: descriptor.Range,
+				Code: diagnostic.Code, Message: diagnostic.Message,
+			}
+			if descriptor.ExpansionCommand != "" {
+				flattened.ID = descriptor.ID
+			}
+			switch diagnostic.Code {
+			case "missing_id":
+				flattened.Hint = "add id=<stable-preview-id> to the html-preview fence opener"
+			case "missing_version":
+				flattened.Hint = "add version=1 to the html-preview fence opener"
+			}
+			diagnostics = append(diagnostics, flattened)
+		}
+	}
+	if diagnosticCount > 0 {
+		return preflight, &projectionBodyValidationError{
+			Code:         invalidHTMLPreviewFailureCode,
+			Message:      fmt.Sprintf("projection body contains %d non-executable html-preview diagnostic(s)", diagnosticCount),
+			PreviewCount: preflight.PreviewCount, Diagnostics: diagnostics,
+			DiagnosticsTruncated: diagnosticCount > len(diagnostics),
+		}
+	}
+	return preflight, nil
+}
+
+func prepareProjectionBody(raw string, marker projectionMarker) (string, error) {
+	if _, err := preflightProjectionBody(raw); err != nil {
+		return "", err
 	}
 	content := strings.Trim(raw, "\r\n")
 	return renderProjectionMarker(marker) + "\n\n" + content + "\n", nil
+}
+
+func projectionValidationFailure(phase string, err *projectionBodyValidationError) projectionValidationResult {
+	truncated := err.DiagnosticsTruncated
+	result := projectionValidationResult{
+		OK: false, Code: err.Code, Phase: phase, PreviewCount: err.PreviewCount,
+		Diagnostics: append([]projectionDiagnostic(nil), err.Diagnostics...),
+	}
+	if err.Code == invalidHTMLPreviewFailureCode {
+		result.DiagnosticsTruncated = &truncated
+	} else {
+		result.Message = err.Message
+	}
+	return result
+}
+
+func (a *app) outputProjectionValidationError(err *projectionBodyValidationError) {
+	a.errorf("projection validation failed: %s: %s\n", err.Code, err.Message)
+	for _, diagnostic := range err.Diagnostics {
+		id := ""
+		if diagnostic.ID != "" {
+			id = " id=" + diagnostic.ID
+		}
+		a.errorf("- block=%d%s range=%d:%d %s: %s\n", diagnostic.Block, id,
+			diagnostic.Range.Start, diagnostic.Range.End, diagnostic.Code, diagnostic.Message)
+		if diagnostic.Hint != "" {
+			a.errorf("  hint: %s\n", diagnostic.Hint)
+		}
+	}
+	if err.DiagnosticsTruncated {
+		a.errorf("- diagnostics truncated after %d entries\n", len(err.Diagnostics))
+	}
 }
 
 func renderProjectionMarker(marker projectionMarker) string {

@@ -11,6 +11,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/preview"
 )
 
 type conditionalProjectionCreateTestBackend struct {
@@ -20,6 +21,174 @@ type conditionalProjectionCreateTestBackend struct {
 
 func (b conditionalProjectionCreateTestBackend) CreateProjectionCommentIfAbsent(ctx context.Context, repo string, issue int, phase string, owner int, body string) (github.CommentRepresentation, error) {
 	return b.createProjection(ctx, repo, issue, phase, owner, body)
+}
+
+func TestProjectionValidateAcceptsPreviewFreeAndExecutableBodies(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		previewCount int
+	}{
+		{name: "preview free", body: "Readable Markdown fallback.\n", previewCount: 0},
+		{name: "executable preview", body: "Fallback.\n```html-preview id=design-review version=1\n<p>Review</p>\n```\n", previewCount: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bodyFile := writeTempInput(t, test.body)
+			app, out, errOut := projectionTestApp(fakeGitHubBackend{})
+			code := app.runProjection(t.Context(), []string{"validate", "--phase", "design-explainer", "--body-file", bodyFile, "--json"})
+			if code != 0 || errOut.Len() != 0 {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+			var result projectionValidationResult
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if !result.OK || result.Phase != "design-explainer" || result.PreviewCount != test.previewCount ||
+				result.Code != "" || result.DiagnosticsTruncated != nil {
+				t.Fatalf("result=%+v", result)
+			}
+		})
+	}
+}
+
+func TestProjectionValidateReportsCanonicalPreviewDiagnostics(t *testing.T) {
+	oversized := strings.Repeat("x", preview.MaxSourceSize+1)
+	tests := []struct {
+		name string
+		body string
+		code string
+	}{
+		{name: "missing id", body: "```html-preview version=1\nx\n```\n", code: "missing_id"},
+		{name: "missing version", body: "```html-preview id=known\nx\n```\n", code: "missing_version"},
+		{name: "malformed metadata", body: "```html-preview id=known version=no\nx\n```\n", code: "malformed_metadata"},
+		{name: "duplicate id", body: "```html-preview id=dup version=1\na\n```\n```html-preview id=dup version=1\nb\n```\n", code: "duplicate_id"},
+		{name: "unknown version", body: "```html-preview id=known version=2\nx\n```\n", code: "unknown_version"},
+		{name: "unclosed fence", body: "```html-preview id=known version=1\nx\n", code: "unclosed_fence"},
+		{name: "oversized source", body: "```html-preview id=known version=1\n" + oversized + "\n```\n", code: "source_too_large"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bodyFile := writeTempInput(t, test.body)
+			app, out, errOut := projectionTestApp(fakeGitHubBackend{})
+			code := app.runProjection(t.Context(), []string{"validate", "--phase", "design-explainer", "--body-file", bodyFile, "--json"})
+			if code != 1 || errOut.Len() != 0 {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+			var result projectionValidationResult
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.OK || result.Code != invalidHTMLPreviewFailureCode || result.PreviewCount == 0 ||
+				result.DiagnosticsTruncated == nil || len(result.Diagnostics) == 0 {
+				t.Fatalf("result=%+v", result)
+			}
+			found := false
+			for _, diagnostic := range result.Diagnostics {
+				if diagnostic.Code == test.code {
+					found = true
+					if diagnostic.Block < 1 || diagnostic.Range.Start < 0 || diagnostic.Range.End > len(test.body) ||
+						diagnostic.Range.Start >= diagnostic.Range.End {
+						t.Fatalf("diagnostic range is not an exact bounded fence range: %+v body_len=%d", diagnostic, len(test.body))
+					}
+				}
+				if diagnostic.Hint != "" && diagnostic.Code != "missing_id" && diagnostic.Code != "missing_version" {
+					t.Fatalf("unexpected hint for %s: %+v", diagnostic.Code, diagnostic)
+				}
+			}
+			if !found {
+				t.Fatalf("missing code %q in %+v", test.code, result.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestProjectionValidateBoundsDiagnosticsWithoutEchoingSource(t *testing.T) {
+	const source = "SENSITIVE_PREVIEW_SOURCE_MUST_NOT_BE_EMITTED"
+	var body strings.Builder
+	for range 11 {
+		body.WriteString("```html-preview\n")
+		body.WriteString(source)
+		body.WriteString("\n```\n")
+	}
+	bodyFile := writeTempInput(t, body.String())
+	app, out, errOut := projectionTestApp(fakeGitHubBackend{})
+	code := app.runProjection(t.Context(), []string{"validate", "--phase", "proposal-choice-brief", "--body-file", bodyFile, "--json"})
+	if code != 1 || errOut.Len() != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var result projectionValidationResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.PreviewCount != 11 || len(result.Diagnostics) != maxProjectionDiagnostics ||
+		result.DiagnosticsTruncated == nil || !*result.DiagnosticsTruncated || strings.Contains(out.String(), source) {
+		t.Fatalf("result=%+v output_contains_source=%v", result, strings.Contains(out.String(), source))
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = app.runProjection(t.Context(), []string{"validate", "--phase", "proposal-choice-brief", "--body-file", bodyFile})
+	if code != 1 || out.Len() != 0 || !strings.Contains(errOut.String(), "diagnostics truncated after 20 entries") ||
+		!strings.Contains(errOut.String(), "missing_id: html-preview metadata requires id") ||
+		!strings.Contains(errOut.String(), "missing_version: html-preview metadata requires version=1") ||
+		strings.Contains(errOut.String(), source) {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestProjectionPreflightRejectsOrdinaryBodyViolations(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		code string
+	}{
+		{name: "empty", body: " \n\t", code: "empty_body"},
+		{name: "projection marker", body: "<!-- issue-spec:projection phase=design-explainer owner=1 version=1 source-digest=" + strings.Repeat("a", 64) + " -->\n", code: "projection_marker_present"},
+		{name: "typed marker", body: "<!-- issue-spec:type=TASK id=TASK-1001 version=1 -->\n# TASK-1001\n", code: "typed_marker_present"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := preflightProjectionBody(test.body)
+			if err == nil || err.Code != test.code {
+				t.Fatalf("error=%+v", err)
+			}
+		})
+	}
+}
+
+func TestProjectionUpsertInvalidPreviewDoesNotSelectBackend(t *testing.T) {
+	const sourceDigest = "4444444444444444444444444444444444444444444444444444444444444444"
+	bodyFile := writeTempInput(t, "Fallback.\n```html-preview\nPRIVATE_SOURCE\n```\n")
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	app := newApp(strings.NewReader(""), out, errOut)
+	backendSelections := 0
+	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
+		backendSelections++
+		return auth.GitHubBackendSelection{}, nil
+	}
+	code := app.runProjection(t.Context(), []string{"upsert", "--repo", "o/r", "--issue", "44",
+		"--phase", "design-explainer", "--source-digest", sourceDigest, "--body-file", bodyFile, "--json"})
+	if code != 2 || backendSelections != 0 || errOut.Len() != 0 || strings.Contains(out.String(), "PRIVATE_SOURCE") {
+		t.Fatalf("exit=%d selections=%d stdout=%q stderr=%q", code, backendSelections, out.String(), errOut.String())
+	}
+	var result projectionValidationResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Code != invalidHTMLPreviewFailureCode || result.PreviewCount != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestProjectionValidateIsAdvertisedInGlobalUsage(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Execute([]string{"--help"}, strings.NewReader(""), &out, &errOut); code != 0 || errOut.Len() != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "issue-spec projection validate --phase") {
+		t.Fatalf("global usage does not advertise projection validate:\n%s", out.String())
+	}
 }
 
 func TestProjectionUpsertNonAtomicCreateRequiresExpectedAbsenceAcknowledgement(t *testing.T) {
@@ -429,6 +598,12 @@ func TestProjectionMarkersInsidePreviewSourceStayOpaque(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	wantBody := renderProjectionMarker(projectionMarker{
+		Phase: "design-explainer", Owner: 22, Version: 1, SourceDigest: digest,
+	}) + "\n\n" + raw
+	if body != wantBody {
+		t.Fatalf("valid preview source changed:\ngot:  %q\nwant: %q", body, wantBody)
 	}
 	markers, err := parseProjectionMarkers(body)
 	if err != nil {
