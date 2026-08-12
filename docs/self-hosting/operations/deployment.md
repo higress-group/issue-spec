@@ -121,12 +121,17 @@ CREATE EXTENSION pg_jieba;
 Then start the server with `SEARCH_MODE=postgres`. The server never installs
 extensions or changes PostgreSQL parameters. It validates extension presence,
 preload state, tokenization/query behavior, and operator classes, then
-reconciles three required application-owned indexes for Proposal discovery and
-issue title/body matching under an advisory lock. As a non-normative upgrade
-note, an installation coming from the earlier general-discussion search may
-retain its obsolete comment and change-key indexes; the server no longer reads
-or validates them, and operators may drop them later through their normal
-database change process instead of an automatic startup deletion.
+reconciles five required application-owned indexes under an advisory lock:
+pg_bigm and pg_jieba GIN indexes for Issue title/body text, the same two GIN
+indexes for comment bodies, and the active-Proposal association index. Proposal
+discovery uses only Proposal Issue titles and bodies, while each repository's
+Issues page may search its complete Issue and comment discussion. As a
+non-normative upgrade note, an installation coming from the earlier
+general-discussion search may retain an obsolete change-key text index; the
+server no longer reads or validates that index, and operators may drop it later
+through their normal database change process instead of an automatic startup
+deletion. The two comment indexes remain required and MUST NOT be dropped while
+PostgreSQL search is enabled.
 If any required capability is missing, explicit postgres mode fails startup
 instead of silently degrading. Ordinary schema migrations remain independent
 from this optional capability.
