@@ -63,35 +63,41 @@ const fullRepositorySearchQuery = `WITH eligible_issues AS NOT MATERIALIZED (
 				AND l.repository_id = il.repository_id AND l.id = il.label_id
 			WHERE il.organization_id = i.organization_id AND il.repository_id = i.repository_id
 				AND il.issue_id = i.id AND l.name_key = ANY($6::text[])) = $7)
-), global_issue_bigm_matches AS MATERIALIZED (
+), scoped_issue_bigm_matches AS MATERIALIZED (
 	SELECT i.organization_id, i.repository_id, i.id AS issue_id,
 		CASE WHEN lower(i.title) = $3 THEN 90000
 			WHEN lower(i.title) LIKE public.likequery($3) THEN 80000 ELSE 70000 END AS score
 	FROM issues i
-	WHERE $4::bigint = 0 AND lower(i.title || E'\n' || i.body) LIKE public.likequery($3)
-), global_issue_jieba_matches AS MATERIALIZED (
+	WHERE $4::bigint = 0 AND i.organization_id = $1 AND i.repository_id = $2
+		AND lower(encode(uuid_send(i.organization_id), 'hex') || '/' ||
+			encode(uuid_send(i.repository_id), 'hex') || E'\n' || i.title || E'\n' || i.body)
+			LIKE lower(encode(uuid_send($1), 'hex') || '/' || encode(uuid_send($2), 'hex') || E'\n') || public.likequery($3)
+), scoped_issue_jieba_matches AS MATERIALIZED (
 	SELECT i.organization_id, i.repository_id, i.id AS issue_id, 60000 AS score
 	FROM issues i
-	WHERE $4::bigint = 0 AND to_tsvector('public.jiebacfg'::regconfig, i.title || E'\n' || i.body)
+	WHERE $4::bigint = 0 AND i.organization_id = $1 AND i.repository_id = $2
+		AND to_tsvector('public.jiebacfg'::regconfig, i.title || E'\n' || i.body)
 		@@ plainto_tsquery('public.jiebacfg'::regconfig, $3)
 ), issue_text_matches AS MATERIALIZED (
 	SELECT matched.issue_id, max(matched.score)::int AS score
-	FROM (SELECT * FROM global_issue_bigm_matches UNION ALL SELECT * FROM global_issue_jieba_matches) matched
-	WHERE matched.organization_id = $1 AND matched.repository_id = $2
+	FROM (SELECT * FROM scoped_issue_bigm_matches UNION ALL SELECT * FROM scoped_issue_jieba_matches) matched
 	GROUP BY matched.issue_id
-), global_comment_bigm_matches AS MATERIALIZED (
+), scoped_comment_bigm_matches AS MATERIALIZED (
 	SELECT c.organization_id, c.repository_id, c.id, c.issue_id, c.body, c.updated_at, 50000 AS score
 	FROM comments c
-	WHERE $4::bigint = 0 AND lower(c.body) LIKE public.likequery($3)
-), global_comment_jieba_matches AS MATERIALIZED (
+	WHERE $4::bigint = 0 AND c.organization_id = $1 AND c.repository_id = $2
+		AND lower(encode(uuid_send(c.organization_id), 'hex') || '/' ||
+			encode(uuid_send(c.repository_id), 'hex') || E'\n' || c.body)
+			LIKE lower(encode(uuid_send($1), 'hex') || '/' || encode(uuid_send($2), 'hex') || E'\n') || public.likequery($3)
+), scoped_comment_jieba_matches AS MATERIALIZED (
 	SELECT c.organization_id, c.repository_id, c.id, c.issue_id, c.body, c.updated_at, 40000 AS score
 	FROM comments c
-	WHERE $4::bigint = 0 AND to_tsvector('public.jiebacfg'::regconfig, c.body)
+	WHERE $4::bigint = 0 AND c.organization_id = $1 AND c.repository_id = $2
+		AND to_tsvector('public.jiebacfg'::regconfig, c.body)
 		@@ plainto_tsquery('public.jiebacfg'::regconfig, $3)
 ), comment_text_matches AS MATERIALIZED (
 	SELECT matched.id, matched.issue_id, matched.body, matched.updated_at, max(matched.score)::int AS score
-	FROM (SELECT * FROM global_comment_bigm_matches UNION ALL SELECT * FROM global_comment_jieba_matches) matched
-	WHERE matched.organization_id = $1 AND matched.repository_id = $2
+	FROM (SELECT * FROM scoped_comment_bigm_matches UNION ALL SELECT * FROM scoped_comment_jieba_matches) matched
 	GROUP BY matched.id, matched.issue_id, matched.body, matched.updated_at
 ), comment_candidates AS MATERIALIZED (
 	SELECT issue_id, max(score)::int AS score,

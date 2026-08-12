@@ -105,7 +105,7 @@ func TestReconcileIndexRecoversMissingAndStaleIndexes(t *testing.T) {
 		})
 	}
 
-	healthy := &fakeCapabilityConn{rows: []fakeRow{{values: []any{expected.signature, true, true}}}}
+	healthy := &fakeCapabilityConn{rows: []fakeRow{{values: []any{strings.Join(expected.signatures, " "), true, true}}}}
 	if err := reconcileIndex(t.Context(), healthy, expected); err != nil {
 		t.Fatal(err)
 	}

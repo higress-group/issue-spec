@@ -45,7 +45,7 @@ func TestPostgresSearchProposalTitleBodyAuthorizationAndIndexes(t *testing.T) {
 	if err := store.RunMigrations(t.Context(), pool); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(t.Context(), `CREATE INDEX issue_spec_search_issues_bigm_v1 ON issues (id)`); err != nil {
+	if _, err := pool.Exec(t.Context(), `CREATE INDEX issue_spec_search_issues_bigm_v2 ON issues (id)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := Prepare(t.Context(), pool); err != nil {
@@ -72,7 +72,8 @@ func TestPostgresSearchProposalTitleBodyAuthorizationAndIndexes(t *testing.T) {
 			($4, $6, $7, 20, 'Ordinary discussion', 'ordinary-only-token 鉴权'),
 			($5, $6, $7, 21, 'Design discussion', 'design-only-token 鉴权')`, []any{titleID, bodyID, commentOnlyID, ordinaryID, designID, orgID, publicRepoID}},
 		{`INSERT INTO comments (organization_id, repository_id, issue_id, body) VALUES
-			($1, $2, $3, 'comment-only-token auth-lock 更新后仍不应被检索')`, []any{orgID, publicRepoID, commentOnlyID}},
+			($1, $2, $3, 'comment-only-token auth-lock 更新后仍不应被检索'),
+			($1, $4, $5, 'comment-only-token auth-lock unrelated tenant')`, []any{orgID, publicRepoID, commentOnlyID, privateRepoID, privateID}},
 		{`INSERT INTO issue_spec_artifacts (organization_id, repository_id, issue_id, change_key, artifact_type, content) VALUES
 			($1, $2, $3, 'auth-lock', 'proposal', 'proposal'),
 			($1, $2, $4, 'auth-title', 'proposal', 'proposal'),
@@ -171,7 +172,7 @@ func TestPostgresSearchProposalTitleBodyAuthorizationAndIndexes(t *testing.T) {
 	}
 	var commentIndexes int
 	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema()
-		AND indexname IN ('issue_spec_search_comments_bigm_v1', 'issue_spec_search_comments_jieba_v1')`).Scan(&commentIndexes); err != nil || commentIndexes != 2 {
+		AND indexname IN ('issue_spec_search_comments_bigm_v2', 'issue_spec_search_comments_jieba_v1')`).Scan(&commentIndexes); err != nil || commentIndexes != 2 {
 		t.Fatalf("comment search indexes=%d err=%v", commentIndexes, err)
 	}
 	planTx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
@@ -187,10 +188,16 @@ func TestPostgresSearchProposalTitleBodyAuthorizationAndIndexes(t *testing.T) {
 		orgID, publicRepoID, "updated-comment-token", int64(0), "all", []string{}, 0, 20, 0).Scan(&plan); err != nil {
 		t.Fatal(err)
 	}
-	for _, index := range []string{"issue_spec_search_issues_bigm_v1", "issue_spec_search_issues_jieba_v1",
-		"issue_spec_search_comments_bigm_v1", "issue_spec_search_comments_jieba_v1"} {
+	for _, index := range []string{"issue_spec_search_issues_bigm_v2", "issue_spec_search_issues_jieba_v1",
+		"issue_spec_search_comments_bigm_v2", "issue_spec_search_comments_jieba_v1"} {
 		if !strings.Contains(string(plan), index) {
 			t.Fatalf("full repository query plan does not use %s: %s", index, plan)
+		}
+	}
+	for _, scopeID := range []uuid.UUID{orgID, publicRepoID} {
+		encoded := strings.ReplaceAll(scopeID.String(), "-", "")
+		if !strings.Contains(strings.ToLower(string(plan)), encoded) {
+			t.Fatalf("full repository query plan does not bind tenant prefix %s: %s", encoded, plan)
 		}
 	}
 }

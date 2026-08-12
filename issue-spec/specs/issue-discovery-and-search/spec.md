@@ -48,7 +48,7 @@ Source SPEC comments:
 
 ### Requirement: Repository Issues page searches complete issue discussions
 
-The self-hosted repository Issues page MUST provide an authorized repository-local search that matches Issue titles, Issue bodies, exact Issue numbers, and comment bodies through a native endpoint distinct from Proposal discovery. The operation MUST preserve state and selected-label filters, deterministic issue-centric ordering, pagination, canonical local navigation, bounded inert excerpts, and existing repository read authorization. It MUST use a 60-second database query deadline, honor earlier client cancellation, return no partial results on timeout, and expose a stable timeout problem. PostgreSQL search preparation MUST reconcile comment-body pg_bigm and pg_jieba indexes for this operation while the CLI and dedicated Search page remain Proposal-only with their existing five-second deadline.
+The self-hosted repository Issues page MUST provide an authorized repository-local search that matches Issue titles, Issue bodies, exact Issue numbers, and comment bodies through a native endpoint distinct from Proposal discovery. The operation MUST preserve state and selected-label filters, deterministic issue-centric ordering, pagination, canonical local navigation, bounded inert excerpts, and existing repository read authorization. It MUST use a 60-second database query deadline, honor earlier client cancellation, return no partial results on timeout, and expose a stable timeout problem. Text candidate plans MUST use repository-scoped pg_bigm plus scoped pg_jieba index paths and MUST NOT materialize matches from repositories outside the authorized target. PostgreSQL search preparation MUST reconcile comment-body pg_bigm and pg_jieba indexes for this operation while the CLI and dedicated Search page remain Proposal-only with their existing five-second deadline.
 
 #### Scenario: Issue title or body is searchable from the repository page
 
@@ -64,6 +64,11 @@ The self-hosted repository Issues page MUST provide an authorized repository-loc
 
 - **WHEN** a search request includes state and selected-label filters or targets a repository the caller cannot read
 - **THEN** filters apply before pagination and the existing non-enumerating repository authorization boundary prevents disclosure
+
+#### Scenario: Text candidates remain repository-local
+
+- **WHEN** unrelated repositories contain many Issue or comment matches for the same query
+- **THEN** the target repository search uses tenant-scoped text index candidates without materializing those unrelated matches
 
 #### Scenario: Full search times out without partial results
 

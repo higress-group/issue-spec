@@ -191,6 +191,7 @@ func (s *Service) queryFullRepository(ctx context.Context, scope models.RepoScop
 	if err != nil {
 		return Page{}, fmt.Errorf("search: query full repository issues: %w", err)
 	}
+	defer rows.Close()
 	items := make([]Issue, 0, options.PerPage+1)
 	var total int64
 	for rows.Next() {
