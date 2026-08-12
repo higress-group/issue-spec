@@ -246,6 +246,7 @@ func (d *Dispatcher) cancelQueuedJob(ctx context.Context, cancel state.Cancellat
 	}); err != nil {
 		return err
 	}
+	d.completeJobScratch(ctx, cancelled.Repo, cancelled.ID)
 	_, err := d.Writeback.Write(ctx, writeback.Request{
 		Job:                cancelled,
 		Status:             state.StatusCancelled,
@@ -288,6 +289,7 @@ func (d *Dispatcher) cancelConfirmed(ctx context.Context, cancel state.Cancellat
 	}); err != nil {
 		return err
 	}
+	d.completeJobScratch(ctx, cancelled.Repo, cancelled.ID)
 	d.releaseLock(ctx, cancelled.ID, lock)
 	_, err := d.Writeback.Write(ctx, writeback.Request{
 		Job:                cancelled,

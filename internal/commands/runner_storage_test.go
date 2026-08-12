@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -117,10 +118,27 @@ func TestRunnerStorageReconcileJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
 	}
-	var report storage.Report
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
-		t.Fatalf("decode report: %v\n%s", err, out.String())
+	// The JSON schema is stable: the report is always wrapped, even on a
+	// legacy root with no runtime homes or eviction results.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(out.Bytes(), &top); err != nil {
+		t.Fatalf("decode top-level report: %v\n%s", err, out.String())
 	}
+	if _, ok := top["report"]; !ok {
+		t.Fatalf("JSON must always wrap the report under \"report\": %s", out.String())
+	}
+	for _, absent := range []string{"runtime", "eviction"} {
+		if _, ok := top[absent]; ok {
+			t.Fatalf("legacy root must omit the %q section: %s", absent, out.String())
+		}
+	}
+	var wrapped struct {
+		Report storage.Report `json:"report"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &wrapped); err != nil {
+		t.Fatalf("decode wrapped report: %v\n%s", err, out.String())
+	}
+	report := wrapped.Report
 	if !report.DryRun {
 		t.Fatalf("report not marked dry-run")
 	}
@@ -447,5 +465,228 @@ func TestRunnerStorageLifecycleFailsClosed(t *testing.T) {
 	}
 	if _, err := lifecycle.ReconcileStorage(context.Background(), true, false); err == nil {
 		t.Fatal("reconcile must surface the construction error")
+	}
+}
+
+// seedSharedRuntimeFixture builds a fresh runner root on the shared layout:
+// one prepared runner-scoped runtime home recorded in the storage sidecar.
+func seedSharedRuntimeFixture(t *testing.T) (statePath, workspaceRoot string, scope storage.RuntimeScope, home storage.RuntimeHomePaths) {
+	t.Helper()
+	base := t.TempDir()
+	statePath = filepath.Join(base, "state.json")
+	workspaceRoot = filepath.Join(base, "workspaces")
+	if err := os.MkdirAll(workspaceRoot, 0o700); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := crstate.SaveFile(statePath, crstate.NewState()); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	scope = storage.RuntimeScope{Hostname: "github.com", Repo: "o/r", Runner: "bot"}
+	home, err := storage.PrepareRuntimeHome(workspaceRoot, scope)
+	if err != nil {
+		t.Fatalf("prepare runtime home: %v", err)
+	}
+	svc, err := storage.NewService(storage.ServiceConfig{
+		WorkspaceRoot: workspaceRoot,
+		StateLoader:   func(context.Context) (crstate.RunnerState, error) { return crstate.NewState(), nil },
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer svc.Close()
+	if err := svc.RecordRuntimeHome(context.Background(), scope, home); err != nil {
+		t.Fatalf("record runtime home: %v", err)
+	}
+	return statePath, workspaceRoot, scope, home
+}
+
+func writeSizedFile(t *testing.T, path string, size int) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), size), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunnerStorageReconcileReportIncludesRuntimeSection(t *testing.T) {
+	statePath, workspaceRoot, scope, home := seedSharedRuntimeFixture(t)
+	writeSizedFile(t, filepath.Join(home.Home, ".gitconfig"), 100)
+	writeSizedFile(t, filepath.Join(home.Home, ".cache", "blob"), 200)
+	writeSizedFile(t, filepath.Join(home.Home, "misc.bin"), 50)
+	writeSizedFile(t, filepath.Join(workspaceRoot, ".job-scratch", "job-aaaaaaaaaaaaaaaa", "tmp", "f"), 30)
+
+	usage, err := storage.MeasureRuntimeHome(home.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runRunner(context.Background(), []string{"storage", "reconcile",
+		"--state", statePath, "--workspace-root", workspaceRoot, "--dry-run"})
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+	text := out.String()
+	hash, err := storage.RuntimeScopeHash(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "runtime: runner_homes=1 job_scratch=30 bytes") {
+		t.Fatalf("runtime section header missing or wrong:\n%s", text)
+	}
+	wantHome := "- runner_home " + hash + " repo=o/r protected=" +
+		strconv.FormatInt(usage.ProtectedBytes, 10) + " cache=" +
+		strconv.FormatInt(usage.CacheBytes, 10) + " unknown=" +
+		strconv.FormatInt(usage.UnknownBytes, 10)
+	if !strings.Contains(text, wantHome) {
+		t.Fatalf("runtime home line %q missing:\n%s", wantHome, text)
+	}
+	if usage.CacheBytes != 200 || usage.UnknownBytes != 50 {
+		t.Fatalf("measurement sanity: cache=%d unknown=%d, want 200/50", usage.CacheBytes, usage.UnknownBytes)
+	}
+	// A dry run measures but never deletes.
+	if _, err := os.Lstat(filepath.Join(home.Home, ".cache", "blob")); err != nil {
+		t.Fatalf("dry-run must not delete cache content: %v", err)
+	}
+}
+
+func TestRunnerStorageReconcileWithoutRunnerHomesOmitsRuntimeSection(t *testing.T) {
+	statePath, workspaceRoot, _ := seedStorageFixture(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runRunner(context.Background(), []string{"storage", "reconcile",
+		"--state", statePath, "--workspace-root", workspaceRoot, "--dry-run"})
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "runtime: runner_homes=") {
+		t.Fatalf("legacy root must not print a runtime section:\n%s", out.String())
+	}
+}
+
+func TestRunnerStorageReconcileEvictCachesRequiresApply(t *testing.T) {
+	statePath, workspaceRoot, _, _ := seedSharedRuntimeFixture(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runRunner(context.Background(), []string{"storage", "reconcile",
+		"--state", statePath, "--workspace-root", workspaceRoot, "--dry-run", "--evict-caches"})
+	if code != 2 {
+		t.Fatalf("exit=%d, want 2 for --evict-caches without --apply (stdout=%q)", code, out.String())
+	}
+}
+
+func TestRunnerStorageReconcileEvictCachesEvictsOnlyCaches(t *testing.T) {
+	statePath, workspaceRoot, _, home := seedSharedRuntimeFixture(t)
+	writeSizedFile(t, filepath.Join(home.Home, ".cache", "blob"), 400)
+	writeSizedFile(t, filepath.Join(home.Home, "go", "pkg", "mod", "mod.bin"), 300)
+	writeSizedFile(t, filepath.Join(home.Home, ".gitconfig"), 100)
+	writeSizedFile(t, filepath.Join(home.CodexHome, "auth.json"), 40)
+	writeSizedFile(t, filepath.Join(workspaceRoot, ".job-scratch", "job-bbbbbbbbbbbbbbbb", "tmp", "f"), 60)
+
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runRunner(context.Background(), []string{"storage", "reconcile",
+		"--state", statePath, "--workspace-root", workspaceRoot, "--apply", "--evict-caches"})
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+	text := out.String()
+	if !strings.Contains(text, "evict-caches: reclaimed=760 bytes scratch_removed=1 caches_evicted=2") {
+		t.Fatalf("eviction summary missing or wrong:\n%s", text)
+	}
+	for _, gone := range []string{
+		filepath.Join(home.Home, ".cache"),
+		filepath.Join(home.Home, "go", "pkg", "mod"),
+		filepath.Join(workspaceRoot, ".job-scratch", "job-bbbbbbbbbbbbbbbb"),
+	} {
+		if _, err := os.Lstat(gone); !os.IsNotExist(err) {
+			t.Fatalf("eviction must remove %s, err=%v", gone, err)
+		}
+	}
+	for _, kept := range []string{
+		filepath.Join(home.Home, ".gitconfig"),
+		filepath.Join(home.Root, "scope.json"),
+		filepath.Join(home.CodexHome, "auth.json"),
+	} {
+		if _, err := os.Lstat(kept); err != nil {
+			t.Fatalf("eviction must keep protected path %s: %v", kept, err)
+		}
+	}
+
+	// The JSON shape wraps the main report with the runtime and eviction
+	// sections once --evict-caches runs.
+	writeSizedFile(t, filepath.Join(home.Home, ".cache", "blob2"), 10)
+	var jsonOutBuf, jsonErrBuf bytes.Buffer
+	jsonApp := newApp(strings.NewReader(""), &jsonOutBuf, &jsonErrBuf)
+	code = jsonApp.runRunner(context.Background(), []string{"storage", "reconcile",
+		"--state", statePath, "--workspace-root", workspaceRoot, "--apply", "--evict-caches", "--json"})
+	if code != 0 {
+		t.Fatalf("json exit=%d stderr=%q", code, jsonErrBuf.String())
+	}
+	var decoded struct {
+		Report  storage.Report `json:"report"`
+		Runtime *struct {
+			Homes []struct {
+				Hash string `json:"hash"`
+			} `json:"homes"`
+		} `json:"runtime"`
+		Eviction *struct {
+			Caches storage.RuntimeReconcileReport `json:"caches"`
+		} `json:"eviction"`
+	}
+	if err := json.Unmarshal(jsonOutBuf.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode wrapped report: %v\n%s", err, jsonOutBuf.String())
+	}
+	if decoded.Runtime == nil || len(decoded.Runtime.Homes) != 1 || decoded.Eviction == nil || len(decoded.Eviction.Caches.CacheEvicted) != 1 {
+		t.Fatalf("wrapped JSON missing runtime/eviction sections: %s", jsonOutBuf.String())
+	}
+}
+
+func TestRunnerStorageReconcileApplyRecoversRecordedStaleScratch(t *testing.T) {
+	statePath, workspaceRoot, _, _ := seedSharedRuntimeFixture(t)
+	scratch, err := storage.PrepareJobScratch(workspaceRoot, "job-cccccccccccccccc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSizedFile(t, filepath.Join(scratch.Tmp, "f"), 25)
+	svc, err := storage.NewService(storage.ServiceConfig{
+		WorkspaceRoot: workspaceRoot,
+		StateLoader:   func(context.Context) (crstate.RunnerState, error) { return crstate.NewState(), nil },
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if err := svc.RecordJobScratch(context.Background(), "o/r", "job-cccccccccccccccc", scratch.Root); err != nil {
+		t.Fatalf("record job scratch: %v", err)
+	}
+	svc.Close()
+
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runRunner(context.Background(), []string{"storage", "reconcile",
+		"--state", statePath, "--workspace-root", workspaceRoot, "--apply", "--evict-caches"})
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "evict-caches: reclaimed=25 bytes scratch_removed=1 caches_evicted=0") {
+		t.Fatalf("stale scratch recovery summary missing:\n%s", out.String())
+	}
+	if _, err := os.Lstat(scratch.Root); !os.IsNotExist(err) {
+		t.Fatalf("stale recorded scratch must be removed, err=%v", err)
+	}
+	svc2, err := storage.NewService(storage.ServiceConfig{
+		WorkspaceRoot: workspaceRoot,
+		StateLoader:   func(context.Context) (crstate.RunnerState, error) { return crstate.NewState(), nil },
+	})
+	if err != nil {
+		t.Fatalf("NewService reopen: %v", err)
+	}
+	defer svc2.Close()
+	for id, resource := range svc2.Store().State().Resources {
+		if resource.Kind == storage.ResourceKindJobScratch {
+			t.Fatalf("stale scratch record %s must be garbage-collected", id)
+		}
 	}
 }

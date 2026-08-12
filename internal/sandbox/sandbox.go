@@ -26,6 +26,14 @@ const (
 	HostSSHDirSandboxPath   = "/tmp/issue-spec-home/.ssh"
 	HostSSHAgentSandboxPath = "/run/issue-spec/ssh-agent.sock"
 
+	// JobScratchSandboxBase anchors the per-job disposable scratch mounts:
+	// TMPDIR, GOTMPDIR, XDG_DATA_HOME, and XDG_STATE_HOME of one job.
+	JobScratchSandboxBase  = "/tmp/issue-spec-scratch"
+	JobTmpSandboxPath      = JobScratchSandboxBase + "/tmp"
+	JobGoTmpSandboxPath    = JobScratchSandboxBase + "/go-tmp"
+	JobXDGDataSandboxPath  = JobScratchSandboxBase + "/xdg-data"
+	JobXDGStateSandboxPath = JobScratchSandboxBase + "/xdg-state"
+
 	defaultMinBwrapVersion = "0.5.0"
 )
 
@@ -82,7 +90,14 @@ type Config struct {
 	TempXDGConfigHome string
 	TempCodexHome     string
 	AcpxRuntimeDir    string
-	HostGHConfigDir   string
+	// JobTmpDir, JobGoTmpDir, JobXDGDataHome, and JobXDGStateHome are the
+	// job's disposable scratch directories on the host. Empty fields leave the
+	// corresponding environment untouched (legacy behavior).
+	JobTmpDir       string
+	JobGoTmpDir     string
+	JobXDGDataHome  string
+	JobXDGStateHome string
+	HostGHConfigDir string
 	// HostSSHDir and HostSSHAgentSocket are explicit opt-ins. In bubblewrap
 	// mode the directory is mounted read-only at HOME/.ssh and the optional
 	// Unix socket is mounted at a fixed path. In explicit unsafe mode the host
@@ -204,6 +219,11 @@ type EnvMetadata struct {
 	GHConfigDir   string
 	XDGConfigHome string
 	CodexHome     string
+
+	TmpDir       string
+	GoTmpDir     string
+	XDGDataHome  string
+	XDGStateHome string
 }
 
 type Mount struct {
@@ -279,6 +299,10 @@ type envPaths struct {
 	ghConfigDir   string
 	xdgConfigHome string
 	codexHome     string
+	tmpDir        string
+	goTmpDir      string
+	xdgDataHome   string
+	xdgStateHome  string
 }
 
 func hostEnvPaths(cfg Config) envPaths {
@@ -286,11 +310,29 @@ func hostEnvPaths(cfg Config) envPaths {
 	if cfg.UnsafeNoSandbox && strings.TrimSpace(cfg.HostSSHDir) != "" {
 		home = filepath.Dir(filepath.Clean(cfg.HostSSHDir))
 	}
-	return envPaths{home: home, ghConfigDir: cfg.TempGHConfigDir, xdgConfigHome: cfg.TempXDGConfigHome, codexHome: cfg.TempCodexHome}
+	return envPaths{
+		home:          home,
+		ghConfigDir:   cfg.TempGHConfigDir,
+		xdgConfigHome: cfg.TempXDGConfigHome,
+		codexHome:     cfg.TempCodexHome,
+		tmpDir:        cfg.JobTmpDir,
+		goTmpDir:      cfg.JobGoTmpDir,
+		xdgDataHome:   cfg.JobXDGDataHome,
+		xdgStateHome:  cfg.JobXDGStateHome,
+	}
 }
 
 func sandboxEnvPaths() envPaths {
-	return envPaths{home: "/tmp/issue-spec-home", ghConfigDir: "/tmp/issue-spec-gh", xdgConfigHome: "/tmp/issue-spec-xdg", codexHome: "/tmp/issue-spec-codex"}
+	return envPaths{
+		home:          "/tmp/issue-spec-home",
+		ghConfigDir:   "/tmp/issue-spec-gh",
+		xdgConfigHome: "/tmp/issue-spec-xdg",
+		codexHome:     "/tmp/issue-spec-codex",
+		tmpDir:        JobTmpSandboxPath,
+		goTmpDir:      JobGoTmpSandboxPath,
+		xdgDataHome:   JobXDGDataSandboxPath,
+		xdgStateHome:  JobXDGStateSandboxPath,
+	}
 }
 
 type envBuildResult struct {
@@ -318,6 +360,24 @@ func scrubEnvironment(cfg Config, paths envPaths, requireTempPaths bool) envBuil
 	if strings.TrimSpace(cfg.TempCodexHome) != "" {
 		codexHome = paths.codexHome
 	}
+	// Job scratch env is opt-in per field: an unset host dir keeps the
+	// inherited/default behavior for that variable.
+	tmpDir := ""
+	if strings.TrimSpace(cfg.JobTmpDir) != "" {
+		tmpDir = paths.tmpDir
+	}
+	goTmpDir := ""
+	if strings.TrimSpace(cfg.JobGoTmpDir) != "" {
+		goTmpDir = paths.goTmpDir
+	}
+	xdgDataHome := ""
+	if strings.TrimSpace(cfg.JobXDGDataHome) != "" {
+		xdgDataHome = paths.xdgDataHome
+	}
+	xdgStateHome := ""
+	if strings.TrimSpace(cfg.JobXDGStateHome) != "" {
+		xdgStateHome = paths.xdgStateHome
+	}
 
 	values := map[string]string{}
 	meta := EnvMetadata{
@@ -325,6 +385,10 @@ func scrubEnvironment(cfg Config, paths envPaths, requireTempPaths bool) envBuil
 		GHConfigDir:   paths.ghConfigDir,
 		XDGConfigHome: paths.xdgConfigHome,
 		CodexHome:     codexHome,
+		TmpDir:        tmpDir,
+		GoTmpDir:      goTmpDir,
+		XDGDataHome:   xdgDataHome,
+		XDGStateHome:  xdgStateHome,
 	}
 	for _, entry := range hostEnv {
 		name, value, ok := strings.Cut(entry, "=")
@@ -367,6 +431,18 @@ func scrubEnvironment(cfg Config, paths envPaths, requireTempPaths bool) envBuil
 	}
 	if codexHome != "" {
 		values["CODEX_HOME"] = codexHome
+	}
+	if tmpDir != "" {
+		values["TMPDIR"] = tmpDir
+	}
+	if goTmpDir != "" {
+		values["GOTMPDIR"] = goTmpDir
+	}
+	if xdgDataHome != "" {
+		values["XDG_DATA_HOME"] = xdgDataHome
+	}
+	if xdgStateHome != "" {
+		values["XDG_STATE_HOME"] = xdgStateHome
 	}
 	for _, capability := range cfg.FileCapabilities {
 		values[capability.EnvName] = capability.Destination
@@ -430,7 +506,8 @@ func validatedWritableBinds(cfg Config) ([]string, error) {
 		}
 		workspace = filepath.Clean(canonicalWorkspace)
 	}
-	reserved := []string{workspace, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome, cfg.AcpxRuntimeDir, cfg.HostSSHDir, cfg.HostSSHAgentSocket}
+	reserved := []string{workspace, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome, cfg.AcpxRuntimeDir, cfg.HostSSHDir, cfg.HostSSHAgentSocket,
+		cfg.JobTmpDir, cfg.JobGoTmpDir, cfg.JobXDGDataHome, cfg.JobXDGStateHome}
 	reserved = append(reserved, cfg.ReadOnlyBinds...)
 	systemBinds := cfg.SystemReadOnlyBinds
 	if len(systemBinds) == 0 {
@@ -554,6 +631,10 @@ func mergeCommandEnv(baseEntries, commandEntries []string, cfg Config, meta *Env
 		"XDG_CONFIG_HOME": true,
 		"CODEX_HOME":      true,
 		"SSH_AUTH_SOCK":   true,
+		"TMPDIR":          true,
+		"GOTMPDIR":        true,
+		"XDG_DATA_HOME":   true,
+		"XDG_STATE_HOME":  true,
 	}
 	for _, entry := range commandEntries {
 		name, value, ok := strings.Cut(entry, "=")

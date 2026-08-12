@@ -209,6 +209,35 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	if strings.TrimSpace(cfg.AcpxRuntimeDir) != "" {
 		seenDirs[acpxSocketDir] = true
 	}
+	// Per-job scratch: each configured host dir lands read-write at its fixed
+	// sandbox path. The scratch base is not covered by any existing mount, so
+	// create it and each destination explicitly before binding (the same
+	// --dir + --bind pattern as the temporary HOME mounts).
+	scratchDirs := []struct {
+		host string
+		dest string
+	}{
+		{cfg.JobTmpDir, JobTmpSandboxPath},
+		{cfg.JobGoTmpDir, JobGoTmpSandboxPath},
+		{cfg.JobXDGDataHome, JobXDGDataSandboxPath},
+		{cfg.JobXDGStateHome, JobXDGStateSandboxPath},
+	}
+	scratchBaseCreated := false
+	for _, scratch := range scratchDirs {
+		host := filepath.Clean(strings.TrimSpace(scratch.host))
+		if host == "." || !filepath.IsAbs(host) {
+			continue
+		}
+		if !scratchBaseCreated {
+			args = append(args, "--dir", JobScratchSandboxBase)
+			mounts = append(mounts, Mount{Destination: JobScratchSandboxBase, Mode: "dir"})
+			seenDirs[JobScratchSandboxBase] = true
+			scratchBaseCreated = true
+		}
+		args = append(args, "--dir", scratch.dest, "--bind", host, scratch.dest)
+		mounts = append(mounts, Mount{Source: host, Destination: scratch.dest, Mode: "rw"})
+		seenDirs[scratch.dest] = true
+	}
 	if socket := strings.TrimSpace(cfg.HostSSHAgentSocket); socket != "" {
 		socket = filepath.Clean(socket)
 		args, mounts = appendBindParentDirs(args, mounts, HostSSHAgentSandboxPath, seenDirs, nil)

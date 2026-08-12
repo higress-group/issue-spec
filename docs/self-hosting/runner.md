@@ -440,12 +440,26 @@ rerun `runner preflight --verify-agent-runtime` as the same user.
 ### Storage lifecycle and single owner
 
 The runner anchors storage at `--workspace-root`: a private `.storage`
-directory holds the sidecar inventory of session runtime roots and PROCESS
-workspace pools, an owner lock, and first-migration backups. One canonical
+directory holds the sidecar inventory of every managed physical resource —
+runner-scoped shared runtime homes (`.runner-home/<scope-hash>/`), per-job
+scratch directories (`.job-scratch/<job-id>/`), and PROCESS workspace pools,
+plus per-session runtime roots (`.sessions/<hash>/`) on roots created by
+older binaries — an owner lock, and first-migration backups. One canonical
 root has exactly one destructive owner, so run exactly one systemd unit per
 state/workspace pair. A second `runner serve` (or `runner poll`) against the
 same root fails at startup with "stop the old runner before starting a new
 one"; always stop the old unit before starting a replacement.
+
+Every dispatched job shares the persistent runtime HOME of its runtime scope
+(hostname, profile realm, repository, and runner identity) at
+`.runner-home/<scope-hash>/` — agent `home/`, `gh/`, `xdg/`, `codex/`, and
+`acpx-runtime/` directories plus a `scope.json` binding that fails closed on
+a foreign scope — so package and build caches warm later jobs of the same
+scope. Each job additionally receives a disposable `.job-scratch/<job-id>/`
+(`TMPDIR`, `GOTMPDIR`, `XDG_DATA_HOME`, `XDG_STATE_HOME`) that is removed
+when the job reaches a terminal state. Agent identity and configuration in a
+home are protected; only rebuildable caches (`~/.cache`, `~/.npm`,
+`~/go/pkg/mod`) are eviction-eligible.
 
 Two optional flags tune storage behavior on `runner serve`:
 
@@ -468,13 +482,32 @@ sudo -u issue-spec-runner issue-spec --profile team runner storage reconcile \
 
 `--dry-run` only reports classifications and `would_delete` actions;
 `--apply` deletes eligible resources after re-validating each against freshly
-reloaded runner state. Both modes acquire the owner lock, so run the command
-while the unit is stopped. If the command reports the sidecar as report-only
-(different root identity or newer schema), it inventories read-only and exits
-non-zero; do not delete `.storage` by hand unless you also accept losing
-ownership and orphan-observation proof. Retired PROCESS pools are deleted
-only when proven empty; uncertain pools are preserved with a remediation
-diagnostic and are never force-abandoned.
+reloaded runner state. When shared runtime homes exist, the report adds a
+`runtime:` section with per-home protected/cache/unknown bytes and total
+job-scratch bytes, and `--apply --evict-caches` also reconciles stale job
+scratch and evicts the rebuildable cache directories of each recorded home,
+printing the reclaimed bytes. Both modes acquire the owner lock, so run the
+command while the unit is stopped. If the command reports the sidecar as
+report-only (different root identity or newer schema), it inventories
+read-only and exits non-zero; do not delete `.storage` by hand unless you
+also accept losing ownership and orphan-observation proof. Retired PROCESS
+pools are deleted only when proven empty; uncertain pools are preserved with
+a remediation diagnostic and are never force-abandoned.
+
+Upgrading a unit to the shared runtime layout is a breaking cutover, not an
+in-place upgrade: the new binary never reads for import, modifies, or deletes
+an old root, and pre-cutover sessions are not resumable because their acpx
+records live in the old root's per-session runtimes. Cut over with a fresh
+runner root:
+
+1. Stop the old unit (`systemctl stop issue-spec-runner`) and let in-flight
+   jobs finish or cancel them first.
+2. Optionally archive the old state/workspace root for audit.
+3. Point the unit at a fresh, empty `--state`/`--workspace-root` pair (or
+   move the old root away first) and start the new binary.
+4. Verify with `runner preflight --verify-agent-runtime` and one `/new`
+   command; follow-ups to pre-cutover sessions start new sessions.
+5. Archive or delete the old root separately once the new root is proven.
 
 ## 8. Trigger the agent from a comment
 

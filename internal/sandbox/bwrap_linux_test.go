@@ -356,6 +356,70 @@ func assertMount(t *testing.T, mounts []Mount, want Mount) {
 	t.Fatalf("mounts missing %+v in %+v", want, mounts)
 }
 
+func TestLinuxPrepareBindsJobScratchAtFixedPaths(t *testing.T) {
+	cfg := Config{
+		BwrapPath:           "/usr/bin/bwrap",
+		WorkspacePath:       "/tmp/workspace",
+		TempHome:            "/tmp/home",
+		TempGHConfigDir:     "/tmp/gh",
+		TempXDGConfigHome:   "/tmp/xdg",
+		TempCodexHome:       "/tmp/codex",
+		JobTmpDir:           "/tmp/job-scratch/tmp",
+		JobGoTmpDir:         "/tmp/job-scratch/go-tmp",
+		JobXDGDataHome:      "/tmp/job-scratch/xdg-data",
+		JobXDGStateHome:     "/tmp/job-scratch/xdg-state",
+		HostEnv:             []string{"PATH=/usr/bin"},
+		SystemReadOnlyBinds: []string{"/usr"},
+	}
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "acpx", Args: []string{"run"}}, Dependencies{Runner: capableBwrapRunner(t)})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	args := prepared.Command.Args
+	assertArgSequence(t, args, "--dir", JobScratchSandboxBase)
+	assertArgSequence(t, args, "--dir", JobTmpSandboxPath, "--bind", "/tmp/job-scratch/tmp", JobTmpSandboxPath)
+	assertArgSequence(t, args, "--dir", JobGoTmpSandboxPath, "--bind", "/tmp/job-scratch/go-tmp", JobGoTmpSandboxPath)
+	assertArgSequence(t, args, "--dir", JobXDGDataSandboxPath, "--bind", "/tmp/job-scratch/xdg-data", JobXDGDataSandboxPath)
+	assertArgSequence(t, args, "--dir", JobXDGStateSandboxPath, "--bind", "/tmp/job-scratch/xdg-state", JobXDGStateSandboxPath)
+	assertArgSequence(t, args, "--setenv", "TMPDIR", JobTmpSandboxPath)
+	assertArgSequence(t, args, "--setenv", "GOTMPDIR", JobGoTmpSandboxPath)
+	assertArgSequence(t, args, "--setenv", "XDG_DATA_HOME", JobXDGDataSandboxPath)
+	assertArgSequence(t, args, "--setenv", "XDG_STATE_HOME", JobXDGStateSandboxPath)
+	assertMount(t, prepared.Metadata.Mounts, Mount{Source: "/tmp/job-scratch/tmp", Destination: JobTmpSandboxPath, Mode: "rw"})
+	assertMount(t, prepared.Metadata.Mounts, Mount{Source: "/tmp/job-scratch/go-tmp", Destination: JobGoTmpSandboxPath, Mode: "rw"})
+	assertMount(t, prepared.Metadata.Mounts, Mount{Source: "/tmp/job-scratch/xdg-data", Destination: JobXDGDataSandboxPath, Mode: "rw"})
+	assertMount(t, prepared.Metadata.Mounts, Mount{Source: "/tmp/job-scratch/xdg-state", Destination: JobXDGStateSandboxPath, Mode: "rw"})
+	meta := prepared.Metadata.Env
+	if meta.TmpDir != JobTmpSandboxPath || meta.GoTmpDir != JobGoTmpSandboxPath ||
+		meta.XDGDataHome != JobXDGDataSandboxPath || meta.XDGStateHome != JobXDGStateSandboxPath {
+		t.Fatalf("sandbox scratch metadata must use the fixed paths: %+v", meta)
+	}
+}
+
+func TestLinuxPrepareWithoutJobScratchBindsNothing(t *testing.T) {
+	cfg := Config{
+		BwrapPath:           "/usr/bin/bwrap",
+		WorkspacePath:       "/tmp/workspace",
+		TempHome:            "/tmp/home",
+		TempGHConfigDir:     "/tmp/gh",
+		TempXDGConfigHome:   "/tmp/xdg",
+		HostEnv:             []string{"PATH=/usr/bin"},
+		SystemReadOnlyBinds: []string{"/usr"},
+	}
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "acpx"}, Dependencies{Runner: capableBwrapRunner(t)})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	if argsContain(prepared.Command.Args, JobScratchSandboxBase) {
+		t.Fatalf("no scratch mount may appear without configured scratch dirs: %v", prepared.Command.Args)
+	}
+	for _, mount := range prepared.Metadata.Mounts {
+		if mount.Destination == JobScratchSandboxBase || strings.HasPrefix(mount.Destination, JobScratchSandboxBase+"/") {
+			t.Fatalf("unexpected scratch mount: %+v", mount)
+		}
+	}
+}
+
 func capableBwrapRunner(t *testing.T) Runner {
 	t.Helper()
 	return runnerFunc(func(ctx context.Context, command Command) (Result, error) {

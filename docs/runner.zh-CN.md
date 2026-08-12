@@ -49,7 +49,7 @@ fallback，而不是运维侧的版本策略：即使主机上的 `codex` CLI �
 ```
 
 将该内容保存为 Runner 服务用户的 `~/.acpx/config.json`，并将版本纳入运维配置管理。
-runner 只会把选中的 Codex override 复制到每个任务隔离的 ACPX home，因此该固定版本会在
+runner 只会把选中的 Codex override 复制到 runner 作用域共享的 ACPX home，因此该固定版本会在
 bubblewrap 内生效，而不会携带其他无关的 ACPX 配置。无法访问 npm registry 的主机应预先
 缓存精确的固定版本，例如 `npm cache add @agentclientprotocol/codex-acp@1.1.2`。
 
@@ -156,7 +156,7 @@ issue-spec runner poll \
 - `--gh-config-dir <path>` 选择要镜像进沙箱的宿主 GitHub CLI 配置目录。默认情况下 runner 会从宿主 GitHub CLI 环境推导。
 - `--allow-cancel=false` 关闭 `/cancel` intake。
 
-Runner 的存储以 workspace root 为锚点。runner 在受管克隆旁边维护一个私有的 `.storage` 目录：session runtime 根（`.sessions/<hash>`）与 PROCESS workspace pool（`.process-workspaces/<hash>`）的 sidecar 清单、owner 锁，以及首次迁移备份。一个规范化 root 只有一个具备破坏性的 owner：`runner poll` 与 `runner serve` 在进程生命周期内持有 owner 锁，在同一 root 上启动第二个 runner 会失败并提示「stop the old runner before starting a new one」。在同一 state 与 workspace 对上启动新 runner 之前，务必先停止旧 runner。`runner storage reconcile` 在两种模式下也会获取 owner 锁——`--dry-run` 不做任何修改，但仍与存活 runner 互斥；只有 `runner preflight` 不加锁。
+Runner 的存储以 workspace root 为锚点。runner 在受管克隆旁边维护一个私有的 `.storage` 目录：覆盖所有受管物理资源的 sidecar 清单——runner 作用域共享 runtime home（`.runner-home/<scope-hash>/`）、按 job 划分的 scratch 目录（`.job-scratch/<job-id>/`）、PROCESS workspace pool（`.process-workspaces/<hash>/`），以及旧版本二进制创建的 root 上的 per-session runtime 根（`.sessions/<hash>/`）——以及 owner 锁与首次迁移备份。一个规范化 root 只有一个具备破坏性的 owner：`runner poll` 与 `runner serve` 在进程生命周期内持有 owner 锁，在同一 root 上启动第二个 runner 会失败并提示「stop the old runner before starting a new one」。在同一 state 与 workspace 对上启动新 runner 之前，务必先停止旧 runner。`runner storage reconcile` 在两种模式下也会获取 owner 锁——`--dry-run` 不做任何修改，但仍与存活 runner 互斥；只有 `runner preflight` 不加锁。
 
 可以通过 runner 内部使用的同一引擎显式检查或回收存储：
 
@@ -165,9 +165,24 @@ issue-spec runner storage reconcile --state <state.json> --workspace-root <path>
 issue-spec runner storage reconcile --state <state.json> --workspace-root <path> --apply
 ```
 
-`--dry-run` 对清单中的每个资源分类（`protected`、`retired_known`、`orphan_observed`、`rejected`）并报告 `would_delete` 动作，不做任何修改。`--apply` 只删除符合条件的资源，并在删除前立即对照重新加载的 runner 状态重新校验每一项。在对某个 root 执行首次破坏性 pass 之前，原始的迁移前 runner 状态会被保存到 `.storage/backups/state-first.json`；如果该备份无法写入，本次 pass 会跳过删除。当 sidecar 处于 report-only 状态时命令以非零码退出：绑定到不同规范化 root 身份、或由更新 schema 版本写入的 sidecar 只会被只读清点，绝不会被修改或删除。
+`--dry-run` 对清单中的每个资源分类（`protected`、`retired_known`、`orphan_observed`、`rejected`）并报告 `would_delete` 动作，不做任何修改。`--apply` 只删除符合条件的资源，并在删除前立即对照重新加载的 runner 状态重新校验每一项。在对某个 root 执行首次破坏性 pass 之前，原始的迁移前 runner 状态会被保存到 `.storage/backups/state-first.json`；如果该备份无法写入，本次 pass 会跳过删除。当 sidecar 处于 report-only 状态时命令以非零码退出：绑定到不同规范化 root 身份、或由更新 schema 版本写入的 sidecar 只会被只读清点，绝不会被修改或删除。当存在共享 runtime home 时，报告会增加 `runtime:` 小节：每个 home 一行——受保护的 identity/配置字节数、可重建 cache 字节数与未知字节数——以及 job scratch 总字节数。`--apply --evict-caches` 还会 reconcile 过期 job scratch，并只驱逐每个已记录 home 中可重建的 cache 目录，打印回收的字节数。
 
 PROCESS pool 的删除刻意保持保守。仅当所属 clone 存在且 inspection 证明 pool 为空时才会删除已退役的 pool：没有活跃 lease、ownership marker、已注册 worktree 或残留文件。不确定的 pool 会被保留并给出运维处置诊断，绝不会被强制放弃；请通过所属 PROCESS（例如 `issue-spec workflow workspace reconcile`）检查或恢复后，再手动移除任何内容。runtime 与 pool 的删除失败会把所属 workspace 从本次分组 workspace 清理中 defer，以免破坏处置证据。
+
+每个被分发的 job 都使用 workspace root 下两个由 runner 拥有的锚点：
+
+- `.runner-home/<scope-hash>/` 是同一 runtime 作用域（hostname、issue 后端 profile realm、仓库与 runner 身份）下所有 job 共享的持久 runtime HOME。它包含 agent 可见的 `home/`、`gh/`、`xdg/`、`codex/`、`acpx-runtime/` 目录，以及一个 `scope.json` 绑定；若不同的作用域解析到同一路径，绑定会 fail-closed。共享同一个 HOME 可以让包与构建缓存（Go module 与构建缓存、npm 缓存）在同一作用域的后续 job 中保持温热，而不是每个 session 重建；宿主凭据镜像在每次分发时原子刷新，并发 job 绝不会读到写了一半的文件。
+- `.job-scratch/<job-id>/` 是该 job 的一次性 scratch：`TMPDIR`、`GOTMPDIR`、`XDG_DATA_HOME` 与 `XDG_STATE_HOME` 在 bubblewrap 内绑定到 `/tmp/issue-spec-scratch` 下的固定路径（显式 unsafe 模式直接导出宿主路径）。scratch 在 job 进入终态——完成、失败或取消——时被移除；残留的 scratch 由 `runner storage reconcile --apply --evict-caches` 回收。
+
+存储记账把 home 中的 agent identity 与配置（包括 `~/.ssh`、`~/.gitconfig` 以及镜像来的 `gh`/`codex` 配置）视为受保护对象，绝不作为驱逐目标；只有可重建的 cache（`~/.cache`、`~/.npm`、`~/go/pkg/mod`）会被驱逐，且按最容易重建的优先。
+
+升级到共享 runtime 布局是一次破坏性切换，不是原地升级。带有共享布局的二进制绝不会读取导入、修改或删除旧版本二进制创建的 root；切换前创建的 session 在切换后不可恢复——它们的 acpx 记录保存在旧 root 的 per-session runtime 中，新二进制不会查阅。请使用全新的 runner root 完成切换：
+
+1. 停止旧 runner，让在途 job 跑完或先取消它们。
+2. 如需审计，可先行归档旧 root（state 文件、`workspaces/` 与 `.storage/`）。
+3. 以全新的空 `--state`/`--workspace-root` 对启动新二进制——要么换新路径，要么先把旧 root 移走再用原路径。
+4. 用 `runner preflight` 和一条 `/new` 命令验证；切换前的 session 不会迁移，后续对话请开新 session。
+5. 新 root 验证通过后，再单独归档或删除旧 root。
 
 在 Linux 上，runner 分发默认使用 bubblewrap，把 coordinator 的文件系统写入限制在受管 session clone 与该 session 的 PROCESS workspace pool 内，同时仍允许 GitHub、model 与包操作的网络访问。原生 child 共享这一外层边界；bubblewrap 不会为每个 child 创建独立 sandbox。当 bubblewrap 不在 `PATH` 上时，请安装它或设置 `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path`。若 bubblewrap 不可用或不受支持，runner 会让 preflight 失败，而不是在没有隔离的情况下静默运行。
 

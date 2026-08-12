@@ -49,10 +49,22 @@ type ResourceKind string
 const (
 	ResourceKindSessionRuntime     ResourceKind = "session_runtime"
 	ResourceKindSessionProcessPool ResourceKind = "session_process_pool"
+	// ResourceKindRunnerHome tracks one runner-scoped shared runtime HOME root.
+	// The record's repo segment is the scope repo, the session segment stays
+	// empty, and the hash segment is the scope hash.
+	ResourceKindRunnerHome ResourceKind = "runner_home"
+	// ResourceKindJobScratch tracks one job's disposable scratch root. The
+	// record's hash segment is the exact job ID.
+	ResourceKindJobScratch ResourceKind = "job_scratch"
 )
 
 func (k ResourceKind) Valid() bool {
-	return k == ResourceKindSessionRuntime || k == ResourceKindSessionProcessPool
+	switch k {
+	case ResourceKindSessionRuntime, ResourceKindSessionProcessPool, ResourceKindRunnerHome, ResourceKindJobScratch:
+		return true
+	default:
+		return false
+	}
 }
 
 // CleanupState is the sidecar-persisted deletion lifecycle of one resource:

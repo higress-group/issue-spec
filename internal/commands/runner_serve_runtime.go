@@ -144,12 +144,17 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	// Wrap the selected writeback boundary, including hermetic test or operator
 	// dependencies, so every live lifecycle transition reaches diagnostics.
 	writebacks = wrapRunnerWriteback(writebacks, input.Diagnostics)
+	runtimeIdentity, err := jobs.RuntimeIdentityFromProfile(input.Runner.Hostname, profile, input.Runner.RunnerIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("runner runtime identity: %w", err)
+	}
 	dispatcher := &jobs.Dispatcher{Store: input.Store, Storage: input.Storage,
 		Repositories: repository.NativeResolver{Bindings: native, Scopes: scopes.ByRepository},
 		Workspaces:   workspaces, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,
 		AcpxBinary: input.Runner.AcpxPath, IssueSpecBinary: issueSpecBinary, CredentialBroker: broker,
 		CredentialScopes: scopes.ByRepository, CapabilityPreflight: broker, CapabilityHost: profile.Hostname,
 		OperatorSkillDirs: input.Runner.OperatorSkillDirs,
+		RuntimeIdentity:   runtimeIdentity,
 		RequiredOperations: []capability.Operation{capability.OperationIssueRead, capability.OperationIssueCommentWrite,
 			capability.OperationArtifactWrite, capability.OperationGitClone, capability.OperationGitPush},
 	}
