@@ -172,13 +172,25 @@ func (s *Service) queryFullRepository(ctx context.Context, scope models.RepoScop
 	if parsed, err := strconv.ParseInt(trimmedNumber, 10, 64); err == nil && parsed > 0 {
 		number = parsed
 	}
-	rows, err := s.pool.Query(ctx, fullRepositorySearchQuery, scope.OrgID, scope.RepoID,
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Page{}, fmt.Errorf("search: begin full repository query: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	// The search capability validates these four application-owned GIN indexes
+	// at startup. PostgreSQL otherwise underprices per-row pg_bigm/pg_jieba
+	// evaluation on modest repositories and may choose a linear scan. Keep this
+	// planner setting transaction-local so only this index-backed operation is
+	// affected.
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		return Page{}, fmt.Errorf("search: require full-text index plan: %w", err)
+	}
+	rows, err := tx.Query(ctx, fullRepositorySearchQuery, scope.OrgID, scope.RepoID,
 		strings.ToLower(options.Query), number, options.State, options.Labels, len(options.Labels),
 		options.PerPage+1, (options.Page-1)*options.PerPage)
 	if err != nil {
 		return Page{}, fmt.Errorf("search: query full repository issues: %w", err)
 	}
-	defer rows.Close()
 	items := make([]Issue, 0, options.PerPage+1)
 	var total int64
 	for rows.Next() {
@@ -214,6 +226,10 @@ func (s *Service) queryFullRepository(ctx context.Context, scope models.RepoScop
 	}
 	if err := rows.Err(); err != nil {
 		return Page{}, fmt.Errorf("search: iterate full repository results: %w", err)
+	}
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return Page{}, fmt.Errorf("search: commit full repository query: %w", err)
 	}
 	hasNext := len(items) > options.PerPage
 	if hasNext {

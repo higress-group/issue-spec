@@ -76,8 +76,11 @@ func TestSearchQueryMaterializesProposalsBeforeMatchingTitleAndBody(t *testing.T
 }
 
 func TestFullRepositorySearchQueryIncludesIssuesCommentsAndFilters(t *testing.T) {
-	for _, required := range []string{"eligible_issues AS NOT MATERIALIZED", "FROM comments c", "FROM issue_labels il",
-		"i.number = $4", "LIKE public.likequery($3)", "to_tsvector('public.jiebacfg'::regconfig", "LIMIT $8 OFFSET $9"} {
+	for _, required := range []string{"eligible_issues AS NOT MATERIALIZED", "global_issue_bigm_matches AS MATERIALIZED",
+		"global_issue_jieba_matches AS MATERIALIZED", "global_comment_bigm_matches AS MATERIALIZED",
+		"global_comment_jieba_matches AS MATERIALIZED", "FROM comments c", "FROM issue_labels il",
+		"$4::bigint = 0", "i.number = $4", "LIKE public.likequery($3)",
+		"to_tsvector('public.jiebacfg'::regconfig", "LIMIT $8 OFFSET $9"} {
 		if !strings.Contains(fullRepositorySearchQuery, required) {
 			t.Fatalf("full repository search query missing %q", required)
 		}
