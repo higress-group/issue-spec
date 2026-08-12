@@ -64,15 +64,15 @@ in-flight changes findable across repositories.
 
 [![Issue workspace with search and filters](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.md)
 
-Full-text search groups matching issues and comments by their related change,
-so one query surfaces the historical proposal, design, and implement trail a
-new change should build on:
+Full-text search finds canonical Proposals by title or body and keeps each
+result linked to its related change, so one query surfaces the earlier intent
+a new change should build on:
 
 [![Search results grouped by related change](docs/self-hosting/assets/self-hosted-search.png)](docs/self-hosting/README.md)
 
 The same capability is CLI-native — agents run
-`issue-spec search issues --repo owner/repo --query "..." --source change --stage design`
-to find prior related changes and their decisions before proposing a new one.
+`issue-spec search issues --repo owner/repo --query "..." --state all`
+to find prior Proposals and their decisions before proposing a new one.
 
 Change boards group the three phase issues into one change and expose
 lifecycle, TASK/PROCESS progress, and linked code changes — a GitHub pull

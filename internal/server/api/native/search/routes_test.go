@@ -22,18 +22,25 @@ func TestSearchRoutesAndScopes(t *testing.T) {
 	if _, err := NewRouteSet(Dependencies{}); err == nil {
 		t.Fatal("NewRouteSet accepted missing dependencies")
 	}
-	service := &fakeService{page: searchservice.Page{Items: []searchservice.Issue{{Number: 17, Title: "鉴权锁争用", Matches: []searchservice.Match{}}}, Page: 2, PerPage: 5}}
+	service := &fakeService{page: searchservice.Page{Items: []searchservice.Issue{{Organization: "acme", Repository: "widgets",
+		Number: 17, Title: "鉴权锁争用", Matches: []searchservice.Match{}}}, Page: 2, PerPage: 5}}
 	mux := searchMux(t, service)
 	orgID, repoID := uuid.New(), uuid.New()
-	response := searchRequest(mux, "/api/v1/orgs/"+orgID.String()+"/repos/"+repoID.String()+"/search/issues?q=%E9%94%81&state=open&source=comments&stage=implement&page=2&per_page=5", true)
+	response := searchRequest(mux, "/api/v1/orgs/"+orgID.String()+"/repos/"+repoID.String()+"/search/issues?q=%E9%94%81&state=open&source=all&stage=proposal&page=2&per_page=5", true)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"title":"鉴权锁争用"`) ||
 		service.repoScope != (models.RepoScope{OrgID: orgID, RepoID: repoID}) || service.options.Query != "锁" ||
-		service.options.State != "open" || service.options.Source != searchservice.SourceComments || service.options.Stage != "implement" || service.options.Page != 2 {
+		service.options.State != "open" || service.options.Source != searchservice.SourceIssue || service.options.Stage != "proposal" || service.options.Page != 2 {
 		t.Fatalf("response=%d scope=%+v options=%+v body=%s", response.Code, service.repoScope, service.options, response.Body.String())
 	}
 	contextResponse := searchRequest(mux, "/api/v1/context/repos/acme/widgets/search/issues?q=alpha", false)
 	if contextResponse.Code != http.StatusOK || service.owner != "acme" || service.repository != "widgets" {
 		t.Fatalf("context response=%d owner=%s repo=%s", contextResponse.Code, service.owner, service.repository)
+	}
+	fullResponse := searchRequest(mux, "/api/v1/context/repos/acme/widgets/issues/search?q=comment-token&state=closed&labels=Bug,Needs-Review&page=2&per_page=5", false)
+	if fullResponse.Code != http.StatusOK || service.fullOptions.Query != "comment-token" || service.fullOptions.State != "closed" ||
+		strings.Join(service.fullOptions.Labels, ",") != "bug,needs-review" || service.fullOptions.Page != 2 ||
+		!strings.Contains(fullResponse.Body.String(), `"url":"https://issues.test/acme/widgets/issues/17"`) {
+		t.Fatalf("full response=%d options=%+v body=%s", fullResponse.Code, service.fullOptions, fullResponse.Body.String())
 	}
 	orgResponse := searchRequest(mux, "/api/v1/orgs/"+orgID.String()+"/search/issues?q=alpha", true)
 	if orgResponse.Code != http.StatusOK || service.orgScope.OrgID != orgID {
@@ -51,7 +58,12 @@ func TestSearchRouteAuthenticationValidationAndConcealment(t *testing.T) {
 	}
 	assertProblem(t, searchRequest(mux, "/api/v1/orgs/"+orgID+"/search/issues?q=alpha", false), 401, "authentication_required")
 	for _, path := range []string{repoPath + "&unknown=x", strings.Replace(repoPath, "q=alpha", "q=", 1),
-		strings.Replace(repoPath, "q=alpha", "q=alpha&page=no", 1), "/api/v1/orgs/bad/repos/" + repoID + "/search/issues?q=x"} {
+		strings.Replace(repoPath, "q=alpha", "q=alpha&page=no", 1), repoPath + "&source=comments", repoPath + "&source=change",
+		repoPath + "&stage=design", repoPath + "&stage=implement", "/api/v1/orgs/bad/repos/" + repoID + "/search/issues?q=x"} {
+		assertProblem(t, searchRequest(mux, path, true), 422, "invalid_request")
+	}
+	fullPath := "/api/v1/context/repos/acme/widgets/issues/search?q=alpha"
+	for _, path := range []string{fullPath + "&source=comments", fullPath + "&q=beta", fullPath + "&page=no"} {
 		assertProblem(t, searchRequest(mux, path, true), 422, "invalid_request")
 	}
 	for _, item := range []struct {
@@ -67,16 +79,19 @@ func TestSearchRouteAuthenticationValidationAndConcealment(t *testing.T) {
 			t.Fatalf("internal error leaked: %s", response.Body.String())
 		}
 	}
+	service.err = context.DeadlineExceeded
+	assertProblem(t, searchRequest(mux, fullPath, true), http.StatusGatewayTimeout, "search_timeout")
 }
 
 type fakeService struct {
-	page       searchservice.Page
-	err        error
-	repoScope  models.RepoScope
-	orgScope   models.OrgScope
-	options    searchservice.Options
-	owner      string
-	repository string
+	page        searchservice.Page
+	err         error
+	repoScope   models.RepoScope
+	orgScope    models.OrgScope
+	options     searchservice.Options
+	fullOptions searchservice.FullOptions
+	owner       string
+	repository  string
 }
 
 func (f *fakeService) Repository(_ context.Context, _ authz.Subject, scope models.RepoScope, options searchservice.Options) (searchservice.Page, error) {
@@ -91,6 +106,11 @@ func (f *fakeService) Organization(_ context.Context, _ authz.Subject, scope mod
 
 func (f *fakeService) ContextRepository(_ context.Context, _ authz.Subject, owner, repository string, options searchservice.Options) (searchservice.Page, error) {
 	f.owner, f.repository, f.options = owner, repository, options
+	return f.page, f.err
+}
+
+func (f *fakeService) ContextRepositoryFull(_ context.Context, _ authz.Subject, owner, repository string, options searchservice.FullOptions) (searchservice.Page, error) {
+	f.owner, f.repository, f.fullOptions = owner, repository, options
 	return f.page, f.err
 }
 

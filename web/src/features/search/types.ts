@@ -1,13 +1,10 @@
 import { z } from "zod";
 
 export const searchStateSchema = z.enum(["all", "open", "closed"]);
-export const searchSourceSchema = z.enum(["all", "issue", "comments", "change"]);
-export const searchStageSchema = z.enum(["proposal", "design", "implement"]);
 
 export const searchMatchSchema = z.object({
-  source: z.enum(["issue", "comment", "change"]),
+  source: z.literal("issue"),
   excerpt: z.string(),
-  comment_id: z.string().uuid().optional(),
 });
 
 export const searchChangeSchema = z.object({ key: z.string().min(1), stage: z.enum(["proposal", "design", "implement", "unknown"]), matched: z.boolean() });
@@ -41,8 +38,6 @@ export type SearchIssueModel = z.infer<typeof searchIssueSchema>;
 export type SearchFilters = {
   query: string;
   state: z.infer<typeof searchStateSchema>;
-  source: z.infer<typeof searchSourceSchema>;
-  stage?: z.infer<typeof searchStageSchema>;
   page: number;
   perPage: number;
 };

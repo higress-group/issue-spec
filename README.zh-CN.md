@@ -42,13 +42,13 @@ Proposal、design、implement issue 的正文承载当前产物，时间线承�
 
 [![带检索与过滤的 issue 工作台](docs/self-hosting/assets/self-hosted-dashboard.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
-全文检索会把命中的 issue 与评论按其关联变更分组：一次查询就能找到新变更应该参考的历史 proposal、design、implement 轨迹：
+全文检索会匹配 canonical Proposal 的标题或主体，并保留其关联变更导航：一次查询就能找到新变更应该参考的早期意图：
 
 [![按关联变更分组的检索结果](docs/self-hosting/assets/self-hosted-search.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
 同样的能力也是 CLI 原生的——agent 可以用
-`issue-spec search issues --repo owner/repo --query "..." --source change --stage design`
-在提新变更之前先找到历史关联变更及其决策。
+`issue-spec search issues --repo owner/repo --query "..." --state all`
+在提新变更之前先找到历史 Proposal 及其决策。
 
 变更看板把三个阶段 issue 聚合为一个变更，展示生命周期、TASK/PROCESS 进度与关联代码变更——一个 GitHub pull request 和一个内部 merge request 可以挂在同一个变更下。
 

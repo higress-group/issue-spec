@@ -244,7 +244,7 @@ Usage:
   issue-spec verify-links --repo owner/repo --proposal N --design N --implement N
   issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only]
   issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]
-  issue-spec search issues --repo owner/repo --query TEXT [--state all|open|closed] [--source all|issue|comments|change] [--stage proposal|design|implement] [--limit 10]
+  issue-spec search issues --repo owner/repo --query TEXT [--state all|open|closed] [--source all|issue] [--stage proposal] [--limit 10]
   issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
   issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
 	issue-spec requirements setup --server URL [--token-stdin] [--yes] [--json]

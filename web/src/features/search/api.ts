@@ -5,9 +5,8 @@ import { searchPageSchema, type SearchFilters } from "./types";
 function segment(value: string) { return encodeURIComponent(value.trim()); }
 
 function query(filters: SearchFilters) {
-  const values = new URLSearchParams({ q: filters.query, state: filters.state, source: filters.source,
+  const values = new URLSearchParams({ q: filters.query, state: filters.state,
     page: String(filters.page), per_page: String(filters.perPage) });
-  if (filters.stage) values.set("stage", filters.stage);
   return values.toString();
 }
 

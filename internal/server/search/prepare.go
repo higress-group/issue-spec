@@ -14,33 +14,43 @@ import (
 const advisoryLockKey = "issue-spec:postgres-search-indexes:v1"
 
 type searchIndex struct {
-	name      string
-	statement string
-	signature string
+	name       string
+	statement  string
+	signatures []string
 }
 
 var searchIndexes = []searchIndex{
-	{"issue_spec_search_issues_bigm_v1",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_bigm_v1
-			ON issues USING gin (lower(title || E'\n' || body) public.gin_bigm_ops)`,
-		`issues USING gin (lower(((title || '\n'::text) || body)) gin_bigm_ops)`},
-	{"issue_spec_search_comments_bigm_v1",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_bigm_v1
-			ON comments USING gin (lower(body) public.gin_bigm_ops)`,
-		`comments USING gin (lower(body) gin_bigm_ops)`},
-	{"issue_spec_search_issues_jieba_v1",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_jieba_v1
-			ON issues USING gin (to_tsvector('public.jiebacfg'::regconfig, title || E'\n' || body))`,
-		`issues USING gin (to_tsvector('jiebacfg'::regconfig, ((title || '\n'::text) || body)))`},
-	{"issue_spec_search_comments_jieba_v1",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_jieba_v1
-			ON comments USING gin (to_tsvector('public.jiebacfg'::regconfig, body))`,
-		`comments USING gin (to_tsvector('jiebacfg'::regconfig, body))`},
-	{"issue_spec_search_change_keys_v1",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_change_keys_v1
-			ON issue_spec_artifacts (organization_id, repository_id, lower(change_key), issue_id)
-			WHERE active AND issue_id IS NOT NULL`,
-		`issue_spec_artifacts USING btree (organization_id, repository_id, lower(change_key), issue_id) WHERE (active AND (issue_id IS NOT NULL))`},
+	{"issue_spec_search_issues_bigm_v2",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_bigm_v2
+			ON issues USING gin (lower(encode(uuid_send(organization_id), 'hex') || '/' ||
+				encode(uuid_send(repository_id), 'hex') || E'\n' || title || E'\n' || body) public.gin_bigm_ops)`,
+		[]string{`issues USING gin (lower(`, `encode(uuid_send(organization_id), 'hex'::text)`, `'/'::text`,
+			`encode(uuid_send(repository_id), 'hex'::text)`, `'\n'::text`, `title`, `'\n'::text`, `body`, `gin_bigm_ops`}},
+	{"issue_spec_search_comments_bigm_v2",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_bigm_v2
+			ON comments USING gin (lower(encode(uuid_send(organization_id), 'hex') || '/' ||
+				encode(uuid_send(repository_id), 'hex') || E'\n' || body) public.gin_bigm_ops)`,
+		[]string{`comments USING gin (lower(`, `encode(uuid_send(organization_id), 'hex'::text)`, `'/'::text`,
+			`encode(uuid_send(repository_id), 'hex'::text)`, `'\n'::text`, `body`, `gin_bigm_ops`}},
+	{"issue_spec_search_issues_jieba_v2",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_jieba_v2
+			ON issues USING gin ((to_tsvector('simple'::regconfig, 'org' || encode(uuid_send(organization_id), 'hex') ||
+				' repo' || encode(uuid_send(repository_id), 'hex')) ||
+				to_tsvector('public.jiebacfg'::regconfig, title || E'\n' || body)))`,
+		[]string{`issues USING gin (`, `to_tsvector('simple'::regconfig`, `'org'::text`, `encode(uuid_send(organization_id), 'hex'::text)`,
+			`' repo'::text`, `encode(uuid_send(repository_id), 'hex'::text)`, `to_tsvector('jiebacfg'::regconfig`, `title`, `'\n'::text`, `body`}},
+	{"issue_spec_search_comments_jieba_v2",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_jieba_v2
+			ON comments USING gin ((to_tsvector('simple'::regconfig, 'org' || encode(uuid_send(organization_id), 'hex') ||
+				' repo' || encode(uuid_send(repository_id), 'hex')) ||
+				to_tsvector('public.jiebacfg'::regconfig, body)))`,
+		[]string{`comments USING gin (`, `to_tsvector('simple'::regconfig`, `'org'::text`, `encode(uuid_send(organization_id), 'hex'::text)`,
+			`' repo'::text`, `encode(uuid_send(repository_id), 'hex'::text)`, `to_tsvector('jiebacfg'::regconfig, body)`}},
+	{"issue_spec_search_proposals_v1",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_proposals_v1
+			ON issue_spec_artifacts (organization_id, repository_id, issue_id, change_key)
+			WHERE active AND artifact_type = 'proposal' AND issue_id IS NOT NULL`,
+		[]string{`issue_spec_artifacts USING btree (organization_id, repository_id, issue_id, change_key) WHERE (active AND (artifact_type = 'proposal'::text) AND (issue_id IS NOT NULL))`}},
 }
 
 // Prepare validates the explicitly selected PostgreSQL search mode and
@@ -113,13 +123,21 @@ func inspectIndex(ctx context.Context, conn capabilityConn, expected searchIndex
 	if err != nil {
 		return false, false, "", err
 	}
-	return true, valid && ready && indexDefinitionMatches(definition, expected.signature), definition, nil
+	return true, valid && ready && indexDefinitionMatches(definition, expected.signatures...), definition, nil
 }
 
-func indexDefinitionMatches(definition, signature string) bool {
+func indexDefinitionMatches(definition string, signatures ...string) bool {
 	normalized := strings.ReplaceAll(definition, "public.", "")
 	normalized = strings.ReplaceAll(normalized, "\n", `\n`)
-	return strings.Contains(normalized, signature)
+	position := 0
+	for _, signature := range signatures {
+		next := strings.Index(normalized[position:], signature)
+		if next < 0 {
+			return false
+		}
+		position += next + len(signature)
+	}
+	return true
 }
 
 func validateCapabilities(ctx context.Context, conn capabilityConn) error {

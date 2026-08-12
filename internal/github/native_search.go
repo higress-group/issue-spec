@@ -31,6 +31,19 @@ func (c *Client) SearchNativeIssues(ctx context.Context, repo string, options Na
 	if options.Query == "" || len(options.Query) > 256 || options.Page < 0 || options.PerPage < 0 || options.PerPage > 50 {
 		return NativeIssueSearchPage{}, errors.New("native issue search options are invalid")
 	}
+	options.Source = strings.ToLower(strings.TrimSpace(options.Source))
+	if options.Source == "" {
+		options.Source = "all"
+	}
+	if options.Source != "all" && options.Source != "issue" {
+		return NativeIssueSearchPage{}, errors.New("native issue search source must be all or issue; search is limited to Proposal titles and bodies")
+	}
+	options.Stage = strings.ToLower(strings.TrimSpace(options.Stage))
+	if options.Stage != "" && options.Stage != "proposal" {
+		return NativeIssueSearchPage{}, errors.New("native issue search stage must be proposal")
+	}
+	options.Source = "issue"
+	options.Stage = "proposal"
 	query := url.Values{"q": []string{options.Query}}
 	for key, value := range map[string]string{"state": options.State, "source": options.Source, "stage": options.Stage} {
 		if value = strings.TrimSpace(value); value != "" {

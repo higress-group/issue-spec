@@ -263,6 +263,39 @@ describe("canonical issue read authority", () => {
     expect(container.querySelector(".precise-time-disclosure")).toHaveTextContent(time.title);
   });
 
+  it("searches repository issue bodies and comments from the issue list", async () => {
+    installIssueListHandlers();
+    let requested = new URLSearchParams();
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, search: true } })),
+      http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/search", ({ request }) => {
+      requested = new URL(request.url).searchParams;
+      return HttpResponse.json({
+        items: [{
+          organization_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", organization: "acme",
+          repository_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", repository: "workflow",
+          id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", number: 52, title: "Comment-only result", state: "open",
+          updated_at: "2026-07-10T10:00:00Z", url: "http://localhost/acme/workflow/issues/52",
+          changes: [], score: 50000, matches: [{ source: "comment", comment_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", excerpt: "the remembered comment-token lives here" }],
+        }],
+        page: 1, per_page: 20, total: 1, has_next: false,
+      });
+    }));
+    const { container } = renderIssueList(activeRepository(false, ["read"]));
+    const user = userEvent.setup();
+    const input = await screen.findByRole("searchbox", { name: "Search issue titles, bodies, and comments" });
+    await user.type(input, "comment-token");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    expect(await screen.findByText("Comment-only result")).toBeVisible();
+    expect(requested.get("q")).toBe("comment-token");
+    expect(requested.get("state")).toBe("open");
+    expect(screen.getByText("the remembered comment-token lives here")).toBeVisible();
+    expect(screen.getByText("Comment")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("1 matching issue");
+    expect(screen.getByRole("link", { name: /Comment-only result/ })).toHaveAttribute("href", "/acme/workflow/issues/52");
+    expect((await axe.run(container)).violations).toEqual([]);
+  });
+
   it("shows authenticated mutations only when allowed_actions grants them", async () => {
     installIssueDetailHandlers([relationshipFixture("github", "42"), relationshipFixture("aone-bridge", "73", "mismatched", { head_revision: "abc123" })]);
     renderIssueDetail(activeRepository(true, ["read", "contribute", "triage"]));
@@ -683,6 +716,17 @@ describe("GitHub-compatible issue API", () => {
     const response = await issueApi.createIssue("acme", "workflow", { title: "Raw", body: raw, labels: [] });
     expect(created).toEqual({ title: "Raw", body: raw, labels: [] });
     expect(response.body).toBe(raw);
+  });
+
+  it("sends bounded filters to the native repository full-search route", async () => {
+    let target = new URL("http://localhost/");
+    server.use(http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/search", ({ request }) => {
+      target = new URL(request.url);
+      return HttpResponse.json({ items: [], page: 3, per_page: 20, total: 0, has_next: false });
+    }));
+    await issueApi.searchIssues("acme", "workflow", { query: "auth lock", state: "closed", labels: ["design", "question"], page: 3 });
+    expect(target.pathname).toBe("/api/v1/context/repos/acme/workflow/issues/search");
+    expect(Object.fromEntries(target.searchParams)).toEqual({ q: "auth lock", state: "closed", page: "3", per_page: "20", labels: "design,question" });
   });
 
   it("loads code-change relationships through the canonical optional-auth route", async () => {

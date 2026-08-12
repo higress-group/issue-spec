@@ -1,7 +1,7 @@
 import { z, type ZodType } from "zod";
 import { cookieValue } from "../../lib/api/client";
 import { issueRelationshipsSchema } from "../../lib/api/relationships";
-import { answerResponseSchema, commentSchema, issueSchema, labelSchema, questionAuthoritySchema, reactionSchema, type ReactionContent } from "./types";
+import { answerResponseSchema, commentSchema, fullIssueSearchPageSchema, issueSchema, labelSchema, questionAuthoritySchema, reactionSchema, type ReactionContent } from "./types";
 
 type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 type Options<T> = { method?: Method; body?: unknown; schema?: ZodType<T>; signal?: AbortSignal };
@@ -80,6 +80,11 @@ export const issueApi = {
     const query = new URLSearchParams({ state: options.state, page: String(options.page), per_page: String(options.perPage ?? 20) });
     if (options.labels.length) query.set("labels", options.labels.join(","));
     return request(`${base(owner, repo)}/issues?${query}`, { schema: issueListSchema, signal });
+  },
+  searchIssues: (owner: string, repo: string, options: { query: string; state: string; labels: string[]; page: number; perPage?: number }, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ q: options.query, state: options.state, page: String(options.page), per_page: String(options.perPage ?? 20) });
+    if (options.labels.length) query.set("labels", options.labels.join(","));
+    return request(`/api/v1/context/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/search?${query}`, { schema: fullIssueSearchPageSchema, signal });
   },
   getIssue: (owner: string, repo: string, number: number, signal?: AbortSignal) => request(`${base(owner, repo)}/issues/${number}`, { schema: issueSchema, signal }),
   getRelationships: (owner: string, repo: string, number: number, signal?: AbortSignal) =>

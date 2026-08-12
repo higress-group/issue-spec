@@ -63,11 +63,11 @@ func (a *app) runSearchIssues(ctx context.Context, args []string) int {
 	fs := newFlagSet("search issues", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name on the issue backend")
 	host := fs.String("hostname", "github.com", "issue backend hostname")
-	query := fs.String("query", "", "full-text search query")
-	state := fs.String("state", "all", "issue state: all, open, or closed")
-	source := fs.String("source", "all", "match source: all, issue, comments, or change (change is self-hosted only)")
-	stage := fs.String("stage", "", "change stage: proposal, design, or implement (canonical label on GitHub)")
-	limit := fs.Int("limit", 10, "maximum issue results (1-50)")
+	query := fs.String("query", "", "Proposal title/body search query")
+	state := fs.String("state", "all", "Proposal state: all, open, or closed")
+	source := fs.String("source", "all", "compatibility filter: all or issue (both search Proposal title/body)")
+	stage := fs.String("stage", "", "compatibility filter: proposal only")
+	limit := fs.Int("limit", 10, "maximum Proposal results (1-50)")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
@@ -83,6 +83,8 @@ func (a *app) runSearchIssues(ctx context.Context, args []string) int {
 		a.errorf("%v\n", err)
 		return 2
 	}
+	options.Source = "issue"
+	options.Stage = "proposal"
 	profile, _, err := auth.ResolveProfile(a.profileName, *host)
 	if err != nil {
 		a.errorf("resolve issue backend profile: %v\n", err)
@@ -154,11 +156,11 @@ func validateSearchOptions(options github.IssueSearchOptions) error {
 	if options.State != "all" && options.State != "open" && options.State != "closed" {
 		return errors.New("--state must be all, open, or closed")
 	}
-	if options.Source != "all" && options.Source != "issue" && options.Source != "comments" && options.Source != "change" {
-		return errors.New("--source must be all, issue, comments, or change")
+	if options.Source != "all" && options.Source != "issue" {
+		return errors.New("--source must be all or issue; search is limited to Proposal titles and bodies")
 	}
-	if options.Stage != "" && options.Stage != "proposal" && options.Stage != "design" && options.Stage != "implement" {
-		return errors.New("--stage must be proposal, design, or implement")
+	if options.Stage != "" && options.Stage != "proposal" {
+		return errors.New("--stage must be proposal; search does not include Design or Implement Issues")
 	}
 	if options.PerPage < 1 || options.PerPage > 50 {
 		return errors.New("--limit must be between 1 and 50")

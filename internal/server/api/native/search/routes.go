@@ -1,4 +1,4 @@
-// Package searchapi exposes permission-filtered issue and comment search.
+// Package searchapi exposes permission-filtered Proposal title/body search.
 package searchapi
 
 import (
@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
@@ -24,6 +25,7 @@ type Service interface {
 	Repository(context.Context, authz.Subject, models.RepoScope, searchservice.Options) (searchservice.Page, error)
 	Organization(context.Context, authz.Subject, models.OrgScope, searchservice.Options) (searchservice.Page, error)
 	ContextRepository(context.Context, authz.Subject, string, string, searchservice.Options) (searchservice.Page, error)
+	ContextRepositoryFull(context.Context, authz.Subject, string, string, searchservice.FullOptions) (searchservice.Page, error)
 }
 
 type Dependencies struct {
@@ -49,6 +51,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "native.search.organization.issues", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/search/issues", Handler: protect(deps.Authenticate, h.organization)},
 		{Name: "native.search.repository.issues", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/search/issues", Handler: protect(deps.AuthenticateOptional, h.repository)},
 		{Name: "native.search.context.issues", Method: http.MethodGet, Pattern: "/api/v1/context/repos/{owner}/{repo}/search/issues", Handler: protect(deps.AuthenticateOptional, h.contextRepository)},
+		{Name: "native.search.context.full-issues", Method: http.MethodGet, Pattern: "/api/v1/context/repos/{owner}/{repo}/issues/search", Handler: protect(deps.AuthenticateOptional, h.contextRepositoryFull)},
 	}}
 	return set, set.Validate()
 }
@@ -96,6 +99,20 @@ func (h handlers) contextRepository(w http.ResponseWriter, r *http.Request) {
 	h.writePage(w, page, err)
 }
 
+func (h handlers) contextRepositoryFull(w http.ResponseWriter, r *http.Request) {
+	options, ok := parseFullOptions(w, r)
+	if !ok {
+		return
+	}
+	// The server-wide write deadline remains short for ordinary API calls. This
+	// operation alone needs enough time to return the 60-second query outcome.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(searchservice.FullQueryTimeout + 5*time.Second))
+	ctx, cancel := context.WithTimeout(r.Context(), searchservice.FullQueryTimeout)
+	defer cancel()
+	page, err := h.service.ContextRepositoryFull(ctx, subject(r), r.PathValue("owner"), r.PathValue("repo"), options)
+	h.writePage(w, page, err)
+}
+
 func subject(r *http.Request) authz.Subject {
 	if principal, ok := serverauth.PrincipalFromContext(r.Context()); ok && principal.User.ID != uuid.Nil {
 		return authz.Authenticated(principal)
@@ -136,6 +153,43 @@ func parseOptions(w http.ResponseWriter, r *http.Request) (searchservice.Options
 	return options, true
 }
 
+func parseFullOptions(w http.ResponseWriter, r *http.Request) (searchservice.FullOptions, bool) {
+	allowed := map[string]bool{"q": true, "state": true, "labels": true, "page": true, "per_page": true}
+	for key, values := range r.URL.Query() {
+		if !allowed[key] || len(values) != 1 {
+			problem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid search query")
+			return searchservice.FullOptions{}, false
+		}
+	}
+	page, perPage := 0, 0
+	var err error
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		page, err = strconv.Atoi(raw)
+		if err != nil {
+			problem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid pagination")
+			return searchservice.FullOptions{}, false
+		}
+	}
+	if raw := r.URL.Query().Get("per_page"); raw != "" {
+		perPage, err = strconv.Atoi(raw)
+		if err != nil {
+			problem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid pagination")
+			return searchservice.FullOptions{}, false
+		}
+	}
+	var labels []string
+	if raw := r.URL.Query().Get("labels"); raw != "" {
+		labels = strings.Split(raw, ",")
+	}
+	options, err := (searchservice.FullOptions{Query: r.URL.Query().Get("q"), State: r.URL.Query().Get("state"),
+		Labels: labels, Page: page, PerPage: perPage}).Normalize()
+	if err != nil {
+		problem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid search query")
+		return searchservice.FullOptions{}, false
+	}
+	return options, true
+}
+
 func (h handlers) writePage(w http.ResponseWriter, page searchservice.Page, err error) {
 	if err == nil {
 		for index := range page.Items {
@@ -147,6 +201,8 @@ func (h handlers) writePage(w http.ResponseWriter, page searchservice.Page, err 
 		return
 	}
 	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		problem(w, http.StatusGatewayTimeout, "search_timeout", "Search timed out")
 	case errors.Is(err, searchservice.ErrInvalidOptions), errors.Is(err, adminservice.ErrInvalidInput):
 		problem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid search query")
 	case errors.Is(err, adminservice.ErrNotFound):
