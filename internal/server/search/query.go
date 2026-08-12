@@ -76,8 +76,11 @@ const fullRepositorySearchQuery = `WITH eligible_issues AS NOT MATERIALIZED (
 	SELECT i.organization_id, i.repository_id, i.id AS issue_id, 60000 AS score
 	FROM issues i
 	WHERE $4::bigint = 0 AND i.organization_id = $1 AND i.repository_id = $2
-		AND to_tsvector('public.jiebacfg'::regconfig, i.title || E'\n' || i.body)
-		@@ plainto_tsquery('public.jiebacfg'::regconfig, $3)
+		AND (to_tsvector('simple'::regconfig, 'org' || encode(uuid_send(i.organization_id), 'hex') ||
+			' repo' || encode(uuid_send(i.repository_id), 'hex')) ||
+			to_tsvector('public.jiebacfg'::regconfig, i.title || E'\n' || i.body))
+			@@ (to_tsquery('simple'::regconfig, 'org' || encode(uuid_send($1), 'hex') ||
+				' & repo' || encode(uuid_send($2), 'hex')) && plainto_tsquery('public.jiebacfg'::regconfig, $3))
 ), issue_text_matches AS MATERIALIZED (
 	SELECT matched.issue_id, max(matched.score)::int AS score
 	FROM (SELECT * FROM scoped_issue_bigm_matches UNION ALL SELECT * FROM scoped_issue_jieba_matches) matched
@@ -93,8 +96,11 @@ const fullRepositorySearchQuery = `WITH eligible_issues AS NOT MATERIALIZED (
 	SELECT c.organization_id, c.repository_id, c.id, c.issue_id, c.body, c.updated_at, 40000 AS score
 	FROM comments c
 	WHERE $4::bigint = 0 AND c.organization_id = $1 AND c.repository_id = $2
-		AND to_tsvector('public.jiebacfg'::regconfig, c.body)
-		@@ plainto_tsquery('public.jiebacfg'::regconfig, $3)
+		AND (to_tsvector('simple'::regconfig, 'org' || encode(uuid_send(c.organization_id), 'hex') ||
+			' repo' || encode(uuid_send(c.repository_id), 'hex')) ||
+			to_tsvector('public.jiebacfg'::regconfig, c.body))
+			@@ (to_tsquery('simple'::regconfig, 'org' || encode(uuid_send($1), 'hex') ||
+				' & repo' || encode(uuid_send($2), 'hex')) && plainto_tsquery('public.jiebacfg'::regconfig, $3))
 ), comment_text_matches AS MATERIALIZED (
 	SELECT matched.id, matched.issue_id, matched.body, matched.updated_at, max(matched.score)::int AS score
 	FROM (SELECT * FROM scoped_comment_bigm_matches UNION ALL SELECT * FROM scoped_comment_jieba_matches) matched

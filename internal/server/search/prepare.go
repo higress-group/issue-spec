@@ -24,22 +24,28 @@ var searchIndexes = []searchIndex{
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_bigm_v2
 			ON issues USING gin (lower(encode(uuid_send(organization_id), 'hex') || '/' ||
 				encode(uuid_send(repository_id), 'hex') || E'\n' || title || E'\n' || body) public.gin_bigm_ops)`,
-		[]string{`issues USING gin`, `encode(uuid_send(organization_id), 'hex'::text)`,
-			`encode(uuid_send(repository_id), 'hex'::text)`, `title`, `body`, `gin_bigm_ops`}},
+		[]string{`issues USING gin (lower(`, `encode(uuid_send(organization_id), 'hex'::text)`, `'/'::text`,
+			`encode(uuid_send(repository_id), 'hex'::text)`, `'\n'::text`, `title`, `'\n'::text`, `body`, `gin_bigm_ops`}},
 	{"issue_spec_search_comments_bigm_v2",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_bigm_v2
 			ON comments USING gin (lower(encode(uuid_send(organization_id), 'hex') || '/' ||
 				encode(uuid_send(repository_id), 'hex') || E'\n' || body) public.gin_bigm_ops)`,
-		[]string{`comments USING gin`, `encode(uuid_send(organization_id), 'hex'::text)`,
-			`encode(uuid_send(repository_id), 'hex'::text)`, `body`, `gin_bigm_ops`}},
-	{"issue_spec_search_issues_jieba_v1",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_jieba_v1
-			ON issues USING gin (to_tsvector('public.jiebacfg'::regconfig, title || E'\n' || body))`,
-		[]string{`issues USING gin (to_tsvector('jiebacfg'::regconfig, ((title || '\n'::text) || body)))`}},
-	{"issue_spec_search_comments_jieba_v1",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_jieba_v1
-			ON comments USING gin (to_tsvector('public.jiebacfg'::regconfig, body))`,
-		[]string{`comments USING gin (to_tsvector('jiebacfg'::regconfig, body))`}},
+		[]string{`comments USING gin (lower(`, `encode(uuid_send(organization_id), 'hex'::text)`, `'/'::text`,
+			`encode(uuid_send(repository_id), 'hex'::text)`, `'\n'::text`, `body`, `gin_bigm_ops`}},
+	{"issue_spec_search_issues_jieba_v2",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_jieba_v2
+			ON issues USING gin ((to_tsvector('simple'::regconfig, 'org' || encode(uuid_send(organization_id), 'hex') ||
+				' repo' || encode(uuid_send(repository_id), 'hex')) ||
+				to_tsvector('public.jiebacfg'::regconfig, title || E'\n' || body)))`,
+		[]string{`issues USING gin (`, `to_tsvector('simple'::regconfig`, `'org'::text`, `encode(uuid_send(organization_id), 'hex'::text)`,
+			`' repo'::text`, `encode(uuid_send(repository_id), 'hex'::text)`, `to_tsvector('jiebacfg'::regconfig`, `title`, `'\n'::text`, `body`}},
+	{"issue_spec_search_comments_jieba_v2",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_jieba_v2
+			ON comments USING gin ((to_tsvector('simple'::regconfig, 'org' || encode(uuid_send(organization_id), 'hex') ||
+				' repo' || encode(uuid_send(repository_id), 'hex')) ||
+				to_tsvector('public.jiebacfg'::regconfig, body)))`,
+		[]string{`comments USING gin (`, `to_tsvector('simple'::regconfig`, `'org'::text`, `encode(uuid_send(organization_id), 'hex'::text)`,
+			`' repo'::text`, `encode(uuid_send(repository_id), 'hex'::text)`, `to_tsvector('jiebacfg'::regconfig, body)`}},
 	{"issue_spec_search_proposals_v1",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_proposals_v1
 			ON issue_spec_artifacts (organization_id, repository_id, issue_id, change_key)
@@ -123,10 +129,13 @@ func inspectIndex(ctx context.Context, conn capabilityConn, expected searchIndex
 func indexDefinitionMatches(definition string, signatures ...string) bool {
 	normalized := strings.ReplaceAll(definition, "public.", "")
 	normalized = strings.ReplaceAll(normalized, "\n", `\n`)
+	position := 0
 	for _, signature := range signatures {
-		if !strings.Contains(normalized, signature) {
+		next := strings.Index(normalized[position:], signature)
+		if next < 0 {
 			return false
 		}
+		position += next + len(signature)
 	}
 	return true
 }

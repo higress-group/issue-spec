@@ -172,7 +172,7 @@ func TestPostgresSearchProposalTitleBodyAuthorizationAndIndexes(t *testing.T) {
 	}
 	var commentIndexes int
 	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema()
-		AND indexname IN ('issue_spec_search_comments_bigm_v2', 'issue_spec_search_comments_jieba_v1')`).Scan(&commentIndexes); err != nil || commentIndexes != 2 {
+		AND indexname IN ('issue_spec_search_comments_bigm_v2', 'issue_spec_search_comments_jieba_v2')`).Scan(&commentIndexes); err != nil || commentIndexes != 2 {
 		t.Fatalf("comment search indexes=%d err=%v", commentIndexes, err)
 	}
 	planTx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
@@ -188,8 +188,8 @@ func TestPostgresSearchProposalTitleBodyAuthorizationAndIndexes(t *testing.T) {
 		orgID, publicRepoID, "updated-comment-token", int64(0), "all", []string{}, 0, 20, 0).Scan(&plan); err != nil {
 		t.Fatal(err)
 	}
-	for _, index := range []string{"issue_spec_search_issues_bigm_v2", "issue_spec_search_issues_jieba_v1",
-		"issue_spec_search_comments_bigm_v2", "issue_spec_search_comments_jieba_v1"} {
+	for _, index := range []string{"issue_spec_search_issues_bigm_v2", "issue_spec_search_issues_jieba_v2",
+		"issue_spec_search_comments_bigm_v2", "issue_spec_search_comments_jieba_v2"} {
 		if !strings.Contains(string(plan), index) {
 			t.Fatalf("full repository query plan does not use %s: %s", index, plan)
 		}

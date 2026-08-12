@@ -113,3 +113,19 @@ func TestReconcileIndexRecoversMissingAndStaleIndexes(t *testing.T) {
 		t.Fatalf("healthy index execs = %#v", healthy.execs)
 	}
 }
+
+func TestIndexDefinitionMatchesRequiresOrderedExactFragments(t *testing.T) {
+	fragments := []string{"lower(", "organization_id", "'/'::text", "repository_id", "'\\n'::text", "body", "gin_bigm_ops"}
+	valid := "comments USING gin (lower(organization_id || '/'::text || repository_id || '\\n'::text || body) gin_bigm_ops)"
+	if !indexDefinitionMatches(valid, fragments...) {
+		t.Fatalf("valid definition did not match: %s", valid)
+	}
+	for _, invalid := range []string{
+		"comments USING gin (lower(repository_id || '/'::text || organization_id || '\\n'::text || body) gin_bigm_ops)",
+		"comments USING gin (lower(organization_id || ':'::text || repository_id || '\\n'::text || body) gin_bigm_ops)",
+	} {
+		if indexDefinitionMatches(invalid, fragments...) {
+			t.Fatalf("invalid definition matched: %s", invalid)
+		}
+	}
+}
