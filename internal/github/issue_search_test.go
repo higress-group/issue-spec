@@ -19,7 +19,7 @@ func TestRESTIssueSearchBuildsProposalTitleBodyQueryAndFiltersResults(t *testing
 			r.Header.Get("Accept") != githubTextMatchMediaType || r.Header.Get("Authorization") != "Bearer token" {
 			t.Fatalf("headers=%v query=%v", r.Header, r.URL.Query())
 		}
-		_ = json.NewEncoder(w).Encode(githubIssueSearchResponse{TotalCount: 6, Items: []githubIssueSearchItem{
+		_ = json.NewEncoder(w).Encode(githubIssueSearchResponse{TotalCount: 7, Items: []githubIssueSearchItem{
 			{Number: 1, Title: "pull request", State: "closed", RepositoryURL: "https://api.github.com/repos/acme/widgets", Labels: []githubIssueSearchLabel{{Name: "issue-spec/proposal"}}, PullRequest: &struct{}{}},
 			{Number: 2, Title: "other repo", State: "closed", RepositoryURL: "https://api.github.com/repos/other/widgets", Labels: []githubIssueSearchLabel{{Name: "issue-spec/proposal"}}},
 			{Number: 3, Title: "wrong state", State: "open", RepositoryURL: "https://api.github.com/repos/acme/widgets", Labels: []githubIssueSearchLabel{{Name: "issue-spec/proposal"}}},
@@ -28,6 +28,8 @@ func TestRESTIssueSearchBuildsProposalTitleBodyQueryAndFiltersResults(t *testing
 				Labels: []githubIssueSearchLabel{{Name: "ISSUE-SPEC/PROPOSAL"}}, TextMatches: []githubIssueTextMatch{{ObjectType: "Issue", Property: "body", Fragment: "auth lock matched"}}},
 			{Number: 6, Title: "comment-only provider drift", State: "closed", RepositoryURL: "https://api.github.com/repos/acme/widgets",
 				Labels: []githubIssueSearchLabel{{Name: "issue-spec/proposal"}}, TextMatches: []githubIssueTextMatch{{ObjectType: "IssueComment", Property: "body", Fragment: "auth lock in comment"}}},
+			{Number: 7, Title: "label-only provider drift", State: "closed", RepositoryURL: "https://api.github.com/repos/acme/widgets",
+				Labels: []githubIssueSearchLabel{{Name: "issue-spec/proposal"}}, TextMatches: []githubIssueTextMatch{{ObjectType: "Issue", Property: "labels", Fragment: "auth lock in label"}}},
 		}})
 	}))
 	defer server.Close()
@@ -46,7 +48,7 @@ func TestRESTIssueSearchEnforcesLimitAndBoundsExcerpts(t *testing.T) {
 	longFragment := strings.Repeat("prefix ", 100) + "needle" + strings.Repeat(" suffix", 100)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(githubIssueSearchResponse{TotalCount: 3, Items: []githubIssueSearchItem{
-			{Number: 1, Title: "one", State: "open", RepositoryURL: "https://api.github.com/repos/o/r", Labels: []githubIssueSearchLabel{{Name: "issue-spec/proposal"}}, TextMatches: []githubIssueTextMatch{{ObjectType: "Issue", Fragment: longFragment}}},
+			{Number: 1, Title: "one", State: "open", RepositoryURL: "https://api.github.com/repos/o/r", Labels: []githubIssueSearchLabel{{Name: "issue-spec/proposal"}}, TextMatches: []githubIssueTextMatch{{ObjectType: "Issue", Property: "title", Fragment: longFragment}}},
 			{Number: 2, Title: "two", Body: "needle", State: "open", RepositoryURL: "https://api.github.com/repos/o/r", Labels: []githubIssueSearchLabel{{Name: "issue-spec/proposal"}}},
 			{Number: 3, Title: "three", Body: "needle", State: "open", RepositoryURL: "https://api.github.com/repos/o/r", Labels: []githubIssueSearchLabel{{Name: "issue-spec/proposal"}}},
 		}})

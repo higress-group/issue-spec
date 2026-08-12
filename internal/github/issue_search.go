@@ -248,7 +248,9 @@ func githubIssueMatches(item githubIssueSearchItem, options IssueSearchOptions) 
 		if len(matches) == maxIssueSearchMatches {
 			break
 		}
-		if !strings.EqualFold(match.ObjectType, "Issue") {
+		if !strings.EqualFold(match.ObjectType, "Issue") ||
+			(!strings.EqualFold(strings.TrimSpace(match.Property), "title") &&
+				!strings.EqualFold(strings.TrimSpace(match.Property), "body")) {
 			continue
 		}
 		excerpt := boundedIssueSearchExcerpt(match.Fragment, options.Query)
