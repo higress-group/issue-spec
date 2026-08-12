@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -63,17 +64,58 @@ func (s *Service) Organization(ctx context.Context, subject authz.Subject, scope
 }
 
 func (s *Service) ContextRepository(ctx context.Context, subject authz.Subject, owner, repository string, options Options) (Page, error) {
+	scope, err := s.resolveContextRepository(ctx, owner, repository)
+	if err != nil {
+		return Page{}, err
+	}
+	return s.Repository(ctx, subject, scope, options)
+}
+
+func (s *Service) resolveContextRepository(ctx context.Context, owner, repository string) (models.RepoScope, error) {
 	var scope models.RepoScope
 	err := s.pool.QueryRow(ctx, `SELECT o.id, r.id FROM orgs o JOIN repos r ON r.organization_id = o.id
 		WHERE o.name_key = lower($1) AND r.name_key = lower($2) AND o.archived_at IS NULL AND r.archived_at IS NULL`,
 		strings.TrimSpace(owner), strings.TrimSpace(repository)).Scan(&scope.OrgID, &scope.RepoID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Page{}, adminservice.ErrNotFound
+		return models.RepoScope{}, adminservice.ErrNotFound
 	}
 	if err != nil {
-		return Page{}, fmt.Errorf("search: resolve repository: %w", err)
+		return models.RepoScope{}, fmt.Errorf("search: resolve repository: %w", err)
 	}
-	return s.Repository(ctx, subject, scope, options)
+	return scope, nil
+}
+
+// FullRepository searches complete Issue discussions for the repository
+// Issues page. Its longer deadline is isolated from Proposal discovery.
+func (s *Service) FullRepository(ctx context.Context, subject authz.Subject, scope models.RepoScope, options FullOptions) (Page, error) {
+	options, err := options.normalize()
+	if err != nil {
+		return Page{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, FullQueryTimeout)
+	defer cancel()
+	decision, err := s.authz.EvaluateRepository(ctx, subject, authz.RepositoryRequest{Scope: scope, Operation: authz.OperationRead})
+	if err != nil {
+		return Page{}, err
+	}
+	if err := decision.AuthorizationError(); err != nil {
+		return Page{}, err
+	}
+	return s.queryFullRepository(ctx, scope, options)
+}
+
+func (s *Service) ContextRepositoryFull(ctx context.Context, subject authz.Subject,
+	owner, repository string, options FullOptions) (Page, error) {
+	scope, err := s.resolveContextRepository(ctx, owner, repository)
+	if err != nil {
+		return Page{}, err
+	}
+	return s.FullRepository(ctx, subject, scope, options)
+}
+
+type rawCommentMatch struct {
+	ID   uuid.UUID `json:"id"`
+	Body string    `json:"body"`
 }
 
 func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uuid.UUID, options Options) (Page, error) {
@@ -118,6 +160,72 @@ func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uui
 		firstPage, err := s.query(ctx, orgID, repositories, firstPageOptions)
 		if err != nil {
 			return Page{}, fmt.Errorf("search: recover total for empty page: %w", err)
+		}
+		total = firstPage.Total
+	}
+	return Page{Items: items, Page: options.Page, PerPage: options.PerPage, Total: total, HasNext: hasNext}, nil
+}
+
+func (s *Service) queryFullRepository(ctx context.Context, scope models.RepoScope, options FullOptions) (Page, error) {
+	number := int64(0)
+	trimmedNumber := strings.TrimPrefix(options.Query, "#")
+	if parsed, err := strconv.ParseInt(trimmedNumber, 10, 64); err == nil && parsed > 0 {
+		number = parsed
+	}
+	rows, err := s.pool.Query(ctx, fullRepositorySearchQuery, scope.OrgID, scope.RepoID,
+		strings.ToLower(options.Query), number, options.State, options.Labels, len(options.Labels),
+		options.PerPage+1, (options.Page-1)*options.PerPage)
+	if err != nil {
+		return Page{}, fmt.Errorf("search: query full repository issues: %w", err)
+	}
+	defer rows.Close()
+	items := make([]Issue, 0, options.PerPage+1)
+	var total int64
+	for rows.Next() {
+		var item Issue
+		var issueBody string
+		var issueMatched bool
+		var changesJSON, commentsJSON []byte
+		var itemTotal int64
+		if err := rows.Scan(&item.OrganizationID, &item.Organization, &item.RepositoryID, &item.Repository,
+			&item.ID, &item.Number, &item.Title, &issueBody, &item.State, &item.UpdatedAt,
+			&changesJSON, &item.Score, &issueMatched, &commentsJSON, &itemTotal); err != nil {
+			return Page{}, fmt.Errorf("search: scan full repository result: %w", err)
+		}
+		total = itemTotal
+		if err := json.Unmarshal(changesJSON, &item.Changes); err != nil {
+			return Page{}, fmt.Errorf("search: decode full repository changes: %w", err)
+		}
+		item.Matches = make([]Match, 0, 4)
+		if issueMatched {
+			item.Matches = append(item.Matches, Match{Source: SourceIssue,
+				Excerpt: excerpt(item.Title+"\n"+issueBody, options.Query)})
+		}
+		var comments []rawCommentMatch
+		if err := json.Unmarshal(commentsJSON, &comments); err != nil {
+			return Page{}, fmt.Errorf("search: decode full repository comment matches: %w", err)
+		}
+		for _, comment := range comments {
+			id := comment.ID
+			item.Matches = append(item.Matches, Match{Source: SourceComment, CommentID: &id,
+				Excerpt: excerpt(comment.Body, options.Query)})
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return Page{}, fmt.Errorf("search: iterate full repository results: %w", err)
+	}
+	hasNext := len(items) > options.PerPage
+	if hasNext {
+		items = items[:options.PerPage]
+	}
+	if len(items) == 0 && options.Page > 1 {
+		firstPageOptions := options
+		firstPageOptions.Page = 1
+		firstPageOptions.PerPage = 1
+		firstPage, err := s.queryFullRepository(ctx, scope, firstPageOptions)
+		if err != nil {
+			return Page{}, fmt.Errorf("search: recover full repository total for empty page: %w", err)
 		}
 		total = firstPage.Total
 	}

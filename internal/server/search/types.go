@@ -9,10 +9,13 @@ import (
 )
 
 const (
-	DefaultPerPage = 20
-	MaxPerPage     = 50
-	MaxQueryBytes  = 256
-	QueryTimeout   = 5 * time.Second
+	DefaultPerPage   = 20
+	MaxPerPage       = 50
+	MaxQueryBytes    = 256
+	MaxSearchLabels  = 100
+	MaxLabelBytes    = 100
+	QueryTimeout     = 5 * time.Second
+	FullQueryTimeout = 60 * time.Second
 )
 
 var ErrInvalidOptions = errors.New("search: invalid options")
@@ -20,8 +23,9 @@ var ErrInvalidOptions = errors.New("search: invalid options")
 type Source string
 
 const (
-	SourceAll   Source = "all"
-	SourceIssue Source = "issue"
+	SourceAll     Source = "all"
+	SourceIssue   Source = "issue"
+	SourceComment Source = "comment"
 )
 
 type Options struct {
@@ -72,6 +76,60 @@ func (o Options) normalize() (Options, error) {
 // Normalize applies the public request bounds shared by HTTP and service
 // callers. The service repeats this check so non-HTTP callers remain safe.
 func (o Options) Normalize() (Options, error) { return o.normalize() }
+
+// FullOptions belongs only to the repository Issues-page search surface. It
+// deliberately omits discovery source and stage filters because that surface
+// always searches Issue title/body text and comment bodies.
+type FullOptions struct {
+	Query   string   `json:"query"`
+	State   string   `json:"state,omitempty"`
+	Labels  []string `json:"labels,omitempty"`
+	Page    int      `json:"page,omitempty"`
+	PerPage int      `json:"per_page,omitempty"`
+}
+
+func (o FullOptions) normalize() (FullOptions, error) {
+	o.Query = strings.TrimSpace(o.Query)
+	if o.Query == "" || len(o.Query) > MaxQueryBytes {
+		return FullOptions{}, ErrInvalidOptions
+	}
+	o.State = strings.ToLower(strings.TrimSpace(o.State))
+	if o.State == "" {
+		o.State = "all"
+	}
+	if o.State != "all" && o.State != "open" && o.State != "closed" {
+		return FullOptions{}, ErrInvalidOptions
+	}
+	seen := make(map[string]struct{}, len(o.Labels))
+	labels := make([]string, 0, len(o.Labels))
+	for _, label := range o.Labels {
+		label = strings.ToLower(strings.TrimSpace(label))
+		if label == "" || len(label) > MaxLabelBytes {
+			return FullOptions{}, ErrInvalidOptions
+		}
+		if _, exists := seen[label]; exists {
+			continue
+		}
+		seen[label] = struct{}{}
+		labels = append(labels, label)
+	}
+	if len(labels) > MaxSearchLabels {
+		return FullOptions{}, ErrInvalidOptions
+	}
+	o.Labels = labels
+	if o.Page == 0 {
+		o.Page = 1
+	}
+	if o.PerPage == 0 {
+		o.PerPage = DefaultPerPage
+	}
+	if o.Page < 1 || o.PerPage < 1 || o.PerPage > MaxPerPage {
+		return FullOptions{}, ErrInvalidOptions
+	}
+	return o, nil
+}
+
+func (o FullOptions) Normalize() (FullOptions, error) { return o.normalize() }
 
 type Match struct {
 	Source    Source     `json:"source"`

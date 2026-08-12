@@ -109,6 +109,18 @@ func TestPostgresSearchProposalTitleBodyAuthorizationAndIndexes(t *testing.T) {
 			t.Fatalf("excluded source search %q = %+v, %v", query, page, err)
 		}
 	}
+	fullComment, err := service.FullRepository(t.Context(), authz.Anonymous(), scope, FullOptions{Query: "comment-only-token"})
+	if err != nil || len(fullComment.Items) != 1 || fullComment.Items[0].Number != 19 ||
+		len(fullComment.Items[0].Matches) != 1 || fullComment.Items[0].Matches[0].Source != SourceComment ||
+		!strings.Contains(fullComment.Items[0].Matches[0].Excerpt, "comment-only-token") {
+		t.Fatalf("full comment search = %+v, %v", fullComment, err)
+	}
+	for query, number := range map[string]int64{"ordinary-only-token": 20, "design-only-token": 21, "#17": 17} {
+		page, err := service.FullRepository(t.Context(), authz.Anonymous(), scope, FullOptions{Query: query})
+		if err != nil || len(page.Items) != 1 || page.Items[0].Number != number {
+			t.Fatalf("full repository search %q = %+v, %v", query, page, err)
+		}
+	}
 	ranked, err := service.Repository(t.Context(), authz.Anonymous(), scope, Options{Query: "鉴权"})
 	if err != nil || len(ranked.Items) != 3 || ranked.Total != 3 || ranked.Items[0].Number != 17 {
 		t.Fatalf("Proposal title/body ranking = %+v, %v", ranked, err)
@@ -124,6 +136,11 @@ func TestPostgresSearchProposalTitleBodyAuthorizationAndIndexes(t *testing.T) {
 	commentPage, err := service.Repository(t.Context(), authz.Anonymous(), scope, Options{Query: "updated-comment-token"})
 	if err != nil || len(commentPage.Items) != 0 {
 		t.Fatalf("updated comment search = %+v, %v", commentPage, err)
+	}
+	updatedFullComment, err := service.FullRepository(t.Context(), authz.Anonymous(), scope, FullOptions{Query: "updated-comment-token"})
+	if err != nil || len(updatedFullComment.Items) != 1 || updatedFullComment.Items[0].Number != 19 ||
+		updatedFullComment.Items[0].Matches[0].Source != SourceComment {
+		t.Fatalf("updated full comment search = %+v, %v", updatedFullComment, err)
 	}
 	const updatedBody = "updated-proposal-token 更新后立即可检索"
 	if _, err := pool.Exec(t.Context(), `UPDATE issues SET body = $1, state = 'closed' WHERE id = $2`, updatedBody, bodyID); err != nil {
@@ -151,5 +168,10 @@ func TestPostgresSearchProposalTitleBodyAuthorizationAndIndexes(t *testing.T) {
 	if err := pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = current_schema()
 		AND indexname = 'issue_spec_search_proposals_v1')`).Scan(&proposalIndex); err != nil || !proposalIndex {
 		t.Fatalf("Proposal search index exists=%t err=%v", proposalIndex, err)
+	}
+	var commentIndexes int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema()
+		AND indexname IN ('issue_spec_search_comments_bigm_v1', 'issue_spec_search_comments_jieba_v1')`).Scan(&commentIndexes); err != nil || commentIndexes != 2 {
+		t.Fatalf("comment search indexes=%d err=%v", commentIndexes, err)
 	}
 }

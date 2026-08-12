@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOptionsNormalize(t *testing.T) {
@@ -21,6 +22,32 @@ func TestOptionsNormalize(t *testing.T) {
 	} {
 		if _, err := options.normalize(); !errors.Is(err, ErrInvalidOptions) {
 			t.Fatalf("normalize(%+v) error = %v", options, err)
+		}
+	}
+}
+
+func TestFullOptionsNormalize(t *testing.T) {
+	got, err := (FullOptions{Query: "  comment token  ", State: "OPEN",
+		Labels: []string{" Bug ", "bug", "Needs-Review"}}).normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Query != "comment token" || got.State != "open" || strings.Join(got.Labels, ",") != "bug,needs-review" ||
+		got.Page != 1 || got.PerPage != DefaultPerPage || FullQueryTimeout != 60*time.Second {
+		t.Fatalf("normalized full options = %+v timeout=%s", got, FullQueryTimeout)
+	}
+	for _, options := range []FullOptions{
+		{}, {Query: strings.Repeat("x", MaxQueryBytes+1)}, {Query: "x", State: "merged"},
+		{Query: "x", Labels: []string{""}}, {Query: "x", Labels: []string{strings.Repeat("x", MaxLabelBytes+1)}},
+		{Query: "x", Labels: make([]string, MaxSearchLabels+1)}, {Query: "x", Page: -1}, {Query: "x", PerPage: MaxPerPage + 1},
+	} {
+		if len(options.Labels) == MaxSearchLabels+1 {
+			for index := range options.Labels {
+				options.Labels[index] = string(rune('a'+index%26)) + string(rune('0'+index/26))
+			}
+		}
+		if _, err := options.normalize(); !errors.Is(err, ErrInvalidOptions) {
+			t.Fatalf("normalize full (%+v) error = %v", options, err)
 		}
 	}
 }
@@ -44,6 +71,20 @@ func TestSearchQueryMaterializesProposalsBeforeMatchingTitleAndBody(t *testing.T
 	for _, excluded := range []string{"FROM comments", "JOIN comments", "lower(change_key) =", "i.number ="} {
 		if strings.Contains(searchQuery, excluded) {
 			t.Fatalf("search query unexpectedly contains %q", excluded)
+		}
+	}
+}
+
+func TestFullRepositorySearchQueryIncludesIssuesCommentsAndFilters(t *testing.T) {
+	for _, required := range []string{"eligible_issues AS NOT MATERIALIZED", "FROM comments c", "FROM issue_labels il",
+		"i.number = $4", "LIKE public.likequery($3)", "to_tsvector('public.jiebacfg'::regconfig", "LIMIT $8 OFFSET $9"} {
+		if !strings.Contains(fullRepositorySearchQuery, required) {
+			t.Fatalf("full repository search query missing %q", required)
+		}
+	}
+	for _, excluded := range []string{"artifact_type = 'proposal'", "lower(change_key) ="} {
+		if strings.Contains(fullRepositorySearchQuery, excluded) {
+			t.Fatalf("full repository search query unexpectedly contains %q", excluded)
 		}
 	}
 }

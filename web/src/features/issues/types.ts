@@ -60,6 +60,36 @@ export const commentSchema = z.object({
   reactions: reactionsSchema,
 });
 
+export const fullIssueSearchMatchSchema = z.object({
+  source: z.enum(["issue", "comment"]),
+  excerpt: z.string(),
+  comment_id: z.string().uuid().optional(),
+});
+
+export const fullIssueSearchResultSchema = z.object({
+  organization_id: z.string().uuid(),
+  organization: z.string(),
+  repository_id: z.string().uuid(),
+  repository: z.string(),
+  id: z.string().uuid(),
+  number: z.number().int().positive(),
+  title: z.string(),
+  state: z.enum(["open", "closed"]),
+  updated_at: z.string().datetime({ offset: true }),
+  url: z.string().url(),
+  changes: z.array(z.object({ key: z.string(), stage: z.string(), matched: z.boolean() })).default([]),
+  score: z.number().int(),
+  matches: z.array(fullIssueSearchMatchSchema).max(4),
+});
+
+export const fullIssueSearchPageSchema = z.object({
+  items: z.array(fullIssueSearchResultSchema),
+  page: z.number().int().positive(),
+  per_page: z.number().int().positive(),
+  total: z.number().int().nonnegative(),
+  has_next: z.boolean(),
+});
+
 export const choiceOptionSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
   label: z.string(),
@@ -120,6 +150,8 @@ export const reactionSchema = z.object({
 
 export type Issue = z.infer<typeof issueSchema>;
 export type IssueComment = z.infer<typeof commentSchema>;
+export type FullIssueSearchResult = z.infer<typeof fullIssueSearchResultSchema>;
+export type FullIssueSearchPage = z.infer<typeof fullIssueSearchPageSchema>;
 export type Label = z.infer<typeof labelSchema>;
 export type Reactions = z.infer<typeof reactionsSchema>;
 export type Reaction = z.infer<typeof reactionSchema>;

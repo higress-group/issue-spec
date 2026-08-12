@@ -225,7 +225,7 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
-    if (url.pathname === "/api/v1/meta") return route.fulfill({ json: { api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false, webhooks: false, change_boards: false, runner: true, recovery_exchange: true, email_notifications: true, repository_email_subscriptions: true, html_preview_execution: true, interactive_question_answers: true } } });
+    if (url.pathname === "/api/v1/meta") return route.fulfill({ json: { api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false, webhooks: false, change_boards: false, runner: true, recovery_exchange: true, search: true, email_notifications: true, repository_email_subscriptions: true, html_preview_execution: true, interactive_question_answers: true } } });
     if (url.pathname === "/api/v1/context") return route.fulfill({ json: { user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", login: "alice", display_name: "Alice", email: "alice@example.test", site_admin: !externalContributor }, credential: { kind: "session", scope_mode: "identity", repository_restricted: false }, session: { csrf_cookie_name: "issue_spec_csrf", csrf_header_name: "X-CSRF-Token" }, allowed_actions: externalContributor ? [] : ["site.admin"], organizations: [{ id: organizationId, name: "acme", display_name: "Acme Studio", effective_permission: externalContributor ? "read" : "admin", container_only: false, allowed_actions: externalContributor ? ["organization.read"] : ["organization.read", "organization.admin"] }] } });
     if (url.pathname === "/api/v1/profile") return route.fulfill({ json: {
       id: 1, login: "alice", display_name: "Alice", identity_display_name: "Alice",
@@ -281,6 +281,34 @@ test.beforeEach(async ({ page }) => {
         question_body_digest: payload.question_digest,
       } });
     }
+    if (url.pathname === "/api/v1/context/repos/acme/workflow/issues/search") return route.fulfill({ json: {
+      items: [{
+        organization_id: organizationId,
+        organization: "acme",
+        repository_id: repositoryId,
+        repository: "workflow",
+        id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        number: 41,
+        title: issueTitle,
+        state: "open",
+        updated_at: "2026-07-10T10:00:00Z",
+        url: "http://127.0.0.1:4173/acme/workflow/issues/41",
+        changes: [],
+        score: 50000,
+        matches: [{
+          source: "comment",
+          comment_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          excerpt: documentationText(
+            "The rollout token exists only in this comment, so repository search can still find the discussion.",
+            "发布令牌只存在于这条评论中，因此仓库搜索仍能找到这段讨论。",
+          ),
+        }],
+      }],
+      page: 1,
+      per_page: 20,
+      total: 1,
+      has_next: false,
+    } });
     if (url.pathname === "/repos/acme/workflow/issues/41") return route.fulfill({ json: activeIssue });
     if (url.pathname === "/repos/acme/workflow/issues") return route.fulfill({ json: url.searchParams.get("labels") ? [] : [activeIssue] });
     return route.fallback();
@@ -678,6 +706,20 @@ test("issue list presents the repository subscription entry", async ({ page }, t
     await stabilizeScreenshotDates(page);
     await expect(page).toHaveScreenshot(documentationSnapshot("issue-list"), { fullPage: true, animations: "disabled" });
   }
+});
+
+test("repository full-discussion search presents comment matches", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  await page.goto("/acme/workflow/issues");
+  await page.getByRole("searchbox", { name: documentationText("Search issue titles, bodies, and comments", "搜索议题标题、主体和评论") }).fill("rollout token");
+  await page.getByRole("button", { name: documentationText("Search", "搜索"), exact: true }).click();
+  await expect(page).toHaveURL(/q=rollout\+token/);
+  await expect(page.getByText(documentationText("The rollout token exists only in this comment, so repository search can still find the discussion.", "发布令牌只存在于这条评论中，因此仓库搜索仍能找到这段讨论。"))).toBeVisible();
+  const accessibility = await new AxeBuilder({ page }).analyze();
+  expect(accessibility.violations).toEqual([]);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await stabilizeScreenshotDates(page);
+  await expect(page).toHaveScreenshot(documentationSnapshot("issue-list-search"), { fullPage: true, animations: "disabled" });
 });
 
 test("combined label filters produce an intentional empty state", async ({ page }, testInfo) => {
