@@ -65,12 +65,12 @@ consume.
 
 ![Design explainer review projection](assets/self-hosted-review-design.png)
 
-### Search groups matches by related change
+### Search finds canonical Proposals
 
-Full-text search covers issue bodies and comments and groups matches by their
-related change and stage, so reviewers and agents can trace the historical
-proposal, design, and implement trail behind any keyword. The same query runs
-from the CLI with `issue-spec search issues --source change --stage <stage>`.
+Full-text search covers canonical Proposal titles and bodies and keeps each
+match linked to its related change. Comments, ordinary issues, and later
+Design/Implement artifacts are outside this discovery surface. The same query
+runs from the CLI with `issue-spec search issues --query <text> --state all`.
 
 ![Search results grouped by related change](assets/self-hosted-search.png)
 
@@ -91,13 +91,13 @@ the same change while retaining their provider identity.
 
 ### Search recovers earlier decisions before the next change
 
-When the operator enables PostgreSQL search, the browser workspace can search
-visible issue bodies and comments, including closed discussions, and group
-matches by issue with related change keys and stages. Authorization filtering
-happens before matching, ranking, totals, excerpts, or pagination. Search
-requests accept at most 256 query bytes and 50 results per page, and the
-server applies a five-second database query deadline while preserving any
-earlier caller deadline.
+When the operator enables PostgreSQL search, the browser workspace searches
+visible canonical Proposal titles and bodies, including closed Proposals, and
+keeps related change navigation beside each result. Authorization and the
+Proposal candidate boundary are applied before title/body matching. Search
+requests accept at most 256 query bytes and 50 results per page, and the server
+applies a five-second database query deadline while preserving any earlier
+caller deadline.
 
 Direct Codex, Claude, and other issue-spec clients use the same capability:
 

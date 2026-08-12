@@ -121,7 +121,8 @@ CREATE EXTENSION pg_jieba;
 Then start the server with `SEARCH_MODE=postgres`. The server never installs
 extensions or changes PostgreSQL parameters. It validates extension presence,
 preload state, tokenization/query behavior, and operator classes, then
-reconciles five application-owned expression indexes under an advisory lock.
+reconciles three application-owned indexes for Proposal discovery and issue
+title/body matching under an advisory lock.
 If any required capability is missing, explicit postgres mode fails startup
 instead of silently degrading. Ordinary schema migrations remain independent
 from this optional capability.

@@ -25,10 +25,10 @@ func TestSearchRoutesAndScopes(t *testing.T) {
 	service := &fakeService{page: searchservice.Page{Items: []searchservice.Issue{{Number: 17, Title: "鉴权锁争用", Matches: []searchservice.Match{}}}, Page: 2, PerPage: 5}}
 	mux := searchMux(t, service)
 	orgID, repoID := uuid.New(), uuid.New()
-	response := searchRequest(mux, "/api/v1/orgs/"+orgID.String()+"/repos/"+repoID.String()+"/search/issues?q=%E9%94%81&state=open&source=comments&stage=implement&page=2&per_page=5", true)
+	response := searchRequest(mux, "/api/v1/orgs/"+orgID.String()+"/repos/"+repoID.String()+"/search/issues?q=%E9%94%81&state=open&source=all&stage=proposal&page=2&per_page=5", true)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"title":"鉴权锁争用"`) ||
 		service.repoScope != (models.RepoScope{OrgID: orgID, RepoID: repoID}) || service.options.Query != "锁" ||
-		service.options.State != "open" || service.options.Source != searchservice.SourceComments || service.options.Stage != "implement" || service.options.Page != 2 {
+		service.options.State != "open" || service.options.Source != searchservice.SourceIssue || service.options.Stage != "proposal" || service.options.Page != 2 {
 		t.Fatalf("response=%d scope=%+v options=%+v body=%s", response.Code, service.repoScope, service.options, response.Body.String())
 	}
 	contextResponse := searchRequest(mux, "/api/v1/context/repos/acme/widgets/search/issues?q=alpha", false)
@@ -51,7 +51,8 @@ func TestSearchRouteAuthenticationValidationAndConcealment(t *testing.T) {
 	}
 	assertProblem(t, searchRequest(mux, "/api/v1/orgs/"+orgID+"/search/issues?q=alpha", false), 401, "authentication_required")
 	for _, path := range []string{repoPath + "&unknown=x", strings.Replace(repoPath, "q=alpha", "q=", 1),
-		strings.Replace(repoPath, "q=alpha", "q=alpha&page=no", 1), "/api/v1/orgs/bad/repos/" + repoID + "/search/issues?q=x"} {
+		strings.Replace(repoPath, "q=alpha", "q=alpha&page=no", 1), repoPath + "&source=comments", repoPath + "&source=change",
+		repoPath + "&stage=design", repoPath + "&stage=implement", "/api/v1/orgs/bad/repos/" + repoID + "/search/issues?q=x"} {
 		assertProblem(t, searchRequest(mux, path, true), 422, "invalid_request")
 	}
 	for _, item := range []struct {

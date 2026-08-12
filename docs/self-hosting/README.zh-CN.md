@@ -55,12 +55,11 @@ Agent 会为每个阶段发布沙箱化的 `html-preview` 评审投影——提�
 
 ![设计评审简报投影](assets/self-hosted-review-design.zh-CN.png)
 
-### 检索按关联变更分组
+### 检索 canonical Proposal
 
-全文检索覆盖 issue 正文与评论，并按关联变更与阶段分组展示命中结果，
-评审者和 Agent 都能顺着关键词找到背后的历史 proposal、design、implement
-轨迹。同样的查询也可在 CLI 中执行：`issue-spec search issues --source change
---stage <stage>`。
+全文检索只覆盖 canonical Proposal 的标题和主体，并保留每条结果与关联变更的
+导航关系。评论、普通 Issue 及后续 Design/Implement 产物不属于该检索范围。
+同样的查询也可在 CLI 中执行：`issue-spec search issues --query <text> --state all`。
 
 ![按关联变更分组的检索结果](assets/self-hosted-search.zh-CN.png)
 
@@ -78,10 +77,10 @@ Change Board 把 Proposal、Design 和 Implement Issue 聚合成一个 Change，
 
 ### 在下一次改动前找回历史决策
 
-运维方启用 PostgreSQL 检索后，Web 工作台可以搜索当前身份可见的 Issue 正文与评论，
-包括已经关闭的讨论；结果按 Issue 聚合，并展示关联 Change Key 和阶段。权限过滤发生
-在匹配、排序、总数、摘要与分页之前。搜索请求最多接受 256 字节的查询和每页 50
-条结果；服务端对数据库查询应用 5 秒截止时间，同时保留调用方设置的更早截止时间。
+运维方启用 PostgreSQL 检索后，Web 工作台可以搜索当前身份可见的 canonical Proposal
+标题和主体，包括已经关闭的 Proposal；每条结果保留关联 Change 的导航信息。权限过滤
+和 Proposal 候选边界发生在标题/主体匹配之前。搜索请求最多接受 256 字节的查询和每页
+50 条结果；服务端对数据库查询应用 5 秒截止时间，同时保留调用方设置的更早截止时间。
 
 直接使用 Codex、Claude 或其他客户端对接 issue-spec 时，也使用同一个能力：
 

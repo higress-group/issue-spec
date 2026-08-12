@@ -24,23 +24,15 @@ var searchIndexes = []searchIndex{
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_bigm_v1
 			ON issues USING gin (lower(title || E'\n' || body) public.gin_bigm_ops)`,
 		`issues USING gin (lower(((title || '\n'::text) || body)) gin_bigm_ops)`},
-	{"issue_spec_search_comments_bigm_v1",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_bigm_v1
-			ON comments USING gin (lower(body) public.gin_bigm_ops)`,
-		`comments USING gin (lower(body) gin_bigm_ops)`},
 	{"issue_spec_search_issues_jieba_v1",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_jieba_v1
 			ON issues USING gin (to_tsvector('public.jiebacfg'::regconfig, title || E'\n' || body))`,
 		`issues USING gin (to_tsvector('jiebacfg'::regconfig, ((title || '\n'::text) || body)))`},
-	{"issue_spec_search_comments_jieba_v1",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_jieba_v1
-			ON comments USING gin (to_tsvector('public.jiebacfg'::regconfig, body))`,
-		`comments USING gin (to_tsvector('jiebacfg'::regconfig, body))`},
-	{"issue_spec_search_change_keys_v1",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_change_keys_v1
-			ON issue_spec_artifacts (organization_id, repository_id, lower(change_key), issue_id)
-			WHERE active AND issue_id IS NOT NULL`,
-		`issue_spec_artifacts USING btree (organization_id, repository_id, lower(change_key), issue_id) WHERE (active AND (issue_id IS NOT NULL))`},
+	{"issue_spec_search_proposals_v1",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_proposals_v1
+			ON issue_spec_artifacts (organization_id, repository_id, issue_id, change_key)
+			WHERE active AND artifact_type = 'proposal' AND issue_id IS NOT NULL`,
+		`issue_spec_artifacts USING btree (organization_id, repository_id, issue_id, change_key) WHERE (active AND (artifact_type = 'proposal'::text) AND (issue_id IS NOT NULL))`},
 }
 
 // Prepare validates the explicitly selected PostgreSQL search mode and

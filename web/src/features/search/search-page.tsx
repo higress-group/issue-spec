@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, Building2, ChevronLeft, ChevronRight, FileSearch, MessageSquareText, RotateCcw, Search, Workflow } from "lucide-react";
+import { ArrowRight, Building2, ChevronLeft, ChevronRight, FileSearch, RotateCcw, Search, Workflow } from "lucide-react";
 import { useRef, type FormEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -7,7 +7,7 @@ import { useCurrentContext, useMeta } from "../../auth/session";
 import { isApiProblem } from "../../lib/api/client";
 import type { OrganizationContext, RepositoryContext } from "../../lib/api/types";
 import { searchApi } from "./api";
-import { searchSourceSchema, searchStageSchema, searchStateSchema, type SearchFilters, type SearchIssueModel, type SearchPageModel } from "./types";
+import { searchStateSchema, type SearchFilters, type SearchIssueModel, type SearchPageModel } from "./types";
 
 const perPage = 12;
 
@@ -65,11 +65,8 @@ export function RepositorySearchPage() {
 
 function parseFilters(search: URLSearchParams): SearchFilters {
   const state = searchStateSchema.safeParse(search.get("state"));
-  const source = searchSourceSchema.safeParse(search.get("source"));
-  const stage = searchStageSchema.safeParse(search.get("stage"));
   const page = Number(search.get("page") ?? "1");
   return { query: (search.get("q") ?? "").trim(), state: state.success ? state.data : "all",
-    source: source.success ? source.data : "all", stage: stage.success ? stage.data : undefined,
     page: Number.isInteger(page) && page > 0 ? page : 1, perPage };
 }
 
@@ -93,9 +90,7 @@ export function SearchSurface({ organization, repositories, repository }: { orga
       <label className="search-scope-select"><span>{t("search.scope.label")}</span><select value={repository?.repository.id ?? ""} onChange={(event) => switchScope(event.target.value)}><option value="">{t("search.scope.allRepositories")}</option>{repositories.map((item) => <option key={item.repository.id} value={item.repository.id}>{item.repository.display_name}</option>)}</select></label></header>
     <form className="search-controls" role="search" onSubmit={submit}><label className="search-query"><span>{t("search.controls.queryLabel")}</span><div><Search aria-hidden="true" /><input key={filters.query} ref={queryRef} defaultValue={filters.query} maxLength={256} placeholder={t("search.controls.placeholder")} /><button type="submit">{t("search.controls.submit")}</button></div></label>
       <div className="search-filters"><label><span>{t("search.controls.state")}</span><select value={filters.state} onChange={(event) => update("state", event.target.value)}><option value="all">{t("search.controls.stateAll")}</option><option value="open">{t("search.controls.stateOpen")}</option><option value="closed">{t("search.controls.stateClosed")}</option></select></label>
-        <label><span>{t("search.controls.match")}</span><select value={filters.source} onChange={(event) => update("source", event.target.value)}><option value="all">{t("search.controls.matchAll")}</option><option value="issue">{t("search.controls.matchIssue")}</option><option value="comments">{t("search.controls.matchComments")}</option><option value="change">{t("search.controls.matchChange")}</option></select></label>
-        <label><span>{t("search.controls.stage")}</span><select value={filters.stage ?? ""} onChange={(event) => update("stage", event.target.value)}><option value="">{t("search.controls.stageAny")}</option><option value="proposal">{t("search.controls.stageProposal")}</option><option value="design">{t("search.controls.stageDesign")}</option><option value="implement">{t("search.controls.stageImplement")}</option></select></label>
-        <button className="search-reset" type="button" onClick={clear} disabled={!filters.query && filters.state === "all" && filters.source === "all" && !filters.stage}><RotateCcw aria-hidden="true" />{t("search.controls.reset")}</button></div></form>
+        <button className="search-reset" type="button" onClick={clear} disabled={!search.toString()}><RotateCcw aria-hidden="true" />{t("search.controls.reset")}</button></div></form>
     <SearchResults query={filters.query} page={results.data} loading={results.isLoading} error={results.error} goPage={goPage} />
   </div>;
 }
@@ -167,7 +162,7 @@ function SearchResultCard({ item }: { item: SearchIssueModel }) {
   return <article className="search-result-card"><header><div><span className={`search-state-pill ${item.state}`}>{t(`search.value.state.${item.state}`)}</span><span>{item.organization} / {item.repository} · #{item.number}</span></div><time dateTime={item.updated_at}>{new Intl.DateTimeFormat(i18n.resolvedLanguage, { dateStyle: "medium" }).format(new Date(item.updated_at))}</time></header>
     <h3><Link to={issuePath}>{item.title}</Link></h3>
     {item.changes.length ? <div className="search-changes">{item.changes.map((change) => <Link key={change.key} to={`/changes/${item.organization_id}/repos/${item.repository_id}/${encodeURIComponent(change.key)}`}><Workflow aria-hidden="true" />{change.key}<span>{t(`search.value.stage.${change.stage}`)}</span></Link>)}</div> : null}
-    <div className="search-matches">{item.matches.map((match, index) => <div className="search-match" key={`${match.source}:${match.comment_id ?? index}`}><span>{match.source === "comment" ? <MessageSquareText aria-hidden="true" /> : <FileSearch aria-hidden="true" />}{t(`search.value.source.${match.source}`)}</span><p>{match.excerpt}</p></div>)}</div>
+    <div className="search-matches">{item.matches.map((match, index) => <div className="search-match" key={`${match.source}:${index}`}><span><FileSearch aria-hidden="true" />{t(`search.value.source.${match.source}`)}</span><p>{match.excerpt}</p></div>)}</div>
     <Link className="search-open" to={issuePath}>{t("search.results.openDiscussion")}<ArrowRight aria-hidden="true" /></Link>
   </article>;
 }

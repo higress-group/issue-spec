@@ -567,13 +567,6 @@
       "node_modules/@mermaid-js/parser/dist/chunks/mermaid-parser.core/cynefin-VYW2F7L2.mjs"
     ]
   },
-  "_message-square-text-B3Guj26-.js": {
-    "file": "assets/message-square-text-B3Guj26-.js",
-    "name": "message-square-text",
-    "imports": [
-      "_session-DBWpYMYY.js"
-    ]
-  },
   "_ordinal-hYBb2elL.js": {
     "file": "assets/ordinal-hYBb2elL.js",
     "name": "ordinal",
@@ -706,7 +699,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-lXlFzgRM.js",
+    "file": "assets/index-bfeZeOUS.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -1717,7 +1710,7 @@
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-DYhIhBdM.js",
+    "file": "assets/detail-page-CX5gIaNP.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -1742,7 +1735,7 @@
     ]
   },
   "src/features/issues/list-page.tsx": {
-    "file": "assets/list-page-DuOkZXpH.js",
+    "file": "assets/list-page-DTu7XpDU.js",
     "name": "list-page",
     "src": "src/features/issues/list-page.tsx",
     "isDynamicEntry": true,
@@ -1751,7 +1744,6 @@
       "_session-DBWpYMYY.js",
       "_repository-notifications-njKAnWS6.js",
       "_circle-dot-ByhnaIxK.js",
-      "_message-square-text-B3Guj26-.js",
       "_search-BEPm00hA.js",
       "_repository-context-DO6G70wP.js",
       "_label-chips-BcpJx2-o.js"
@@ -1770,7 +1762,7 @@
     ]
   },
   "src/features/search/search-page.tsx": {
-    "file": "assets/search-page-D5Cz_eny.js",
+    "file": "assets/search-page-CF9lvDHm.js",
     "name": "search-page",
     "src": "src/features/search/search-page.tsx",
     "isDynamicEntry": true,
@@ -1779,7 +1771,6 @@
       "_session-DBWpYMYY.js",
       "_arrow-right-BlAe8cFk.js",
       "_building-2-Dr0BhAHR.js",
-      "_message-square-text-B3Guj26-.js",
       "_rotate-ccw-CYQdbwDE.js",
       "_search-BEPm00hA.js",
       "_workflow-Dqt-CxX_.js"

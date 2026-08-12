@@ -1,4 +1,4 @@
-// Package searchapi exposes permission-filtered issue and comment search.
+// Package searchapi exposes permission-filtered Proposal title/body search.
 package searchapi
 
 import (

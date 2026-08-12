@@ -50,7 +50,7 @@ describe("language configuration", () => {
     expect(i18n.t("changes.detail.diagnostics")).toBe("结构诊断");
     expect(i18n.t("changes.lifecycle.blocked")).toBe("受阻");
     expect(i18n.t("search.workspace.title")).toBe("前事不忘，后事之师。");
-    expect(i18n.t("search.controls.match")).toBe("匹配内容");
+    expect(i18n.t("search.controls.queryLabel")).toBe("检索 Proposal 标题和主体");
     expect(i18n.t("search.results.artifacts", { count: 2, stage: "实现" })).toBe("2 个匹配产物 · 实现");
     expect(i18n.t("personalTokens.title")).toBe("个人访问令牌");
     expect(i18n.t("personalTokens.repositoryAccess")).toBe("仓库范围");

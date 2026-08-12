@@ -3,7 +3,6 @@ package github
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -152,6 +151,9 @@ func githubIssueSearchQuery(repo string, options IssueSearchOptions) (string, Is
 	options.State = strings.ToLower(strings.TrimSpace(options.State))
 	options.Source = strings.ToLower(strings.TrimSpace(options.Source))
 	options.Stage = strings.ToLower(strings.TrimSpace(options.Stage))
+	if options.Source == "" {
+		options.Source = "all"
+	}
 	if options.Page == 0 {
 		options.Page = 1
 	}
@@ -161,29 +163,20 @@ func githubIssueSearchQuery(repo string, options IssueSearchOptions) (string, Is
 	if options.State != "all" && options.State != "open" && options.State != "closed" {
 		return "", IssueSearchOptions{}, errors.New("GitHub issue search state is invalid")
 	}
-	if options.Source == "change" {
-		return "", IssueSearchOptions{}, errors.New("GitHub issue search does not support --source change")
+	if options.Source != "all" && options.Source != "issue" {
+		return "", IssueSearchOptions{}, errors.New("GitHub issue search source must be all or issue; search is limited to Proposal titles and bodies")
 	}
-	if options.Source != "all" && options.Source != "issue" && options.Source != "comments" {
-		return "", IssueSearchOptions{}, errors.New("GitHub issue search source is invalid")
+	if options.Stage != "" && options.Stage != "proposal" {
+		return "", IssueSearchOptions{}, errors.New("GitHub issue search stage must be proposal")
 	}
-	if options.Stage != "" && options.Stage != "proposal" && options.Stage != "design" && options.Stage != "implement" {
-		return "", IssueSearchOptions{}, errors.New("GitHub issue search stage is invalid")
-	}
+	options.Source = "issue"
+	options.Stage = "proposal"
 
 	qualifiers := []string{options.Query, "repo:" + owner + "/" + repository, "is:issue"}
 	if options.State != "all" {
 		qualifiers = append(qualifiers, "is:"+options.State)
 	}
-	switch options.Source {
-	case "issue":
-		qualifiers = append(qualifiers, "in:title,body")
-	case "comments":
-		qualifiers = append(qualifiers, "in:comments")
-	}
-	if options.Stage != "" {
-		qualifiers = append(qualifiers, fmt.Sprintf("label:%q", "issue-spec/"+options.Stage))
-	}
+	qualifiers = append(qualifiers, "in:title,body", `label:"issue-spec/proposal"`)
 	return strings.Join(qualifiers, " "), options, nil
 }
 
@@ -198,13 +191,12 @@ func normalizeGitHubIssueSearch(repo string, options IssueSearchOptions, respons
 	for _, item := range response.Items {
 		if item.PullRequest != nil || !githubSearchRepositoryMatches(item.RepositoryURL, repo) ||
 			(options.State != "all" && !strings.EqualFold(item.State, options.State)) ||
-			(options.Stage != "" && !githubSearchHasLabel(item.Labels, "issue-spec/"+options.Stage)) {
+			!githubSearchHasLabel(item.Labels, "issue-spec/proposal") {
 			rejected = true
 			continue
 		}
 		matches := githubIssueMatches(item, options)
-		if options.Source == "comments" && len(matches) == 0 ||
-			options.Source == "issue" && len(item.TextMatches) > 0 && len(matches) == 0 {
+		if len(item.TextMatches) > 0 && len(matches) == 0 {
 			rejected = true
 			continue
 		}
@@ -256,19 +248,15 @@ func githubIssueMatches(item githubIssueSearchItem, options IssueSearchOptions) 
 		if len(matches) == maxIssueSearchMatches {
 			break
 		}
-		source := "issue"
-		if strings.EqualFold(match.ObjectType, "IssueComment") || strings.EqualFold(match.ObjectType, "Comment") {
-			source = "comment"
-		}
-		if options.Source == "issue" && source != "issue" || options.Source == "comments" && source != "comment" {
+		if !strings.EqualFold(match.ObjectType, "Issue") {
 			continue
 		}
 		excerpt := boundedIssueSearchExcerpt(match.Fragment, options.Query)
 		if excerpt != "" {
-			matches = append(matches, IssueSearchMatch{Source: source, Excerpt: excerpt})
+			matches = append(matches, IssueSearchMatch{Source: "issue", Excerpt: excerpt})
 		}
 	}
-	if len(matches) == 0 && options.Source != "comments" {
+	if len(matches) == 0 && len(item.TextMatches) == 0 {
 		if excerpt := boundedIssueSearchExcerpt(item.Title+"\n"+item.Body, options.Query); excerpt != "" {
 			matches = append(matches, IssueSearchMatch{Source: "issue", Excerpt: excerpt})
 		}

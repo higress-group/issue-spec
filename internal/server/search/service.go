@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -77,21 +76,11 @@ func (s *Service) ContextRepository(ctx context.Context, subject authz.Subject, 
 	return s.Repository(ctx, subject, scope, options)
 }
 
-type rawCommentMatch struct {
-	ID   uuid.UUID `json:"id"`
-	Body string    `json:"body"`
-}
-
 func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uuid.UUID, options Options) (Page, error) {
 	ctx, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
-	number := int64(0)
-	trimmedNumber := strings.TrimPrefix(options.Query, "#")
-	if parsed, err := strconv.ParseInt(trimmedNumber, 10, 64); err == nil && parsed > 0 {
-		number = parsed
-	}
-	rows, err := s.pool.Query(ctx, searchQuery, orgID, repositories, strings.ToLower(options.Query), number,
-		options.State, string(options.Source), options.Stage, options.PerPage+1, (options.Page-1)*options.PerPage)
+	rows, err := s.pool.Query(ctx, searchQuery, orgID, repositories, strings.ToLower(options.Query),
+		options.State, options.PerPage+1, (options.Page-1)*options.PerPage)
 	if err != nil {
 		return Page{}, fmt.Errorf("search: query issues: %w", err)
 	}
@@ -101,44 +90,18 @@ func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uui
 	for rows.Next() {
 		var item Issue
 		var issueBody string
-		var issueMatched, changeMatched bool
-		var changesJSON, commentsJSON []byte
+		var changesJSON []byte
 		var itemTotal int64
 		if err := rows.Scan(&item.OrganizationID, &item.Organization, &item.RepositoryID, &item.Repository, &item.ID, &item.Number,
 			&item.Title, &issueBody, &item.State, &item.UpdatedAt, &changesJSON, &item.Score,
-			&issueMatched, &changeMatched, &commentsJSON, &itemTotal); err != nil {
+			&itemTotal); err != nil {
 			return Page{}, fmt.Errorf("search: scan result: %w", err)
 		}
 		total = itemTotal
 		if err := json.Unmarshal(changesJSON, &item.Changes); err != nil {
 			return Page{}, fmt.Errorf("search: decode change matches: %w", err)
 		}
-		for index := range item.Changes {
-			item.Changes[index].Matched = changeMatched && strings.EqualFold(item.Changes[index].Key, options.Query)
-		}
-		item.Matches = make([]Match, 0, 4)
-		if issueMatched {
-			item.Matches = append(item.Matches, Match{Source: SourceIssue, Excerpt: excerpt(item.Title+"\n"+issueBody, options.Query)})
-		}
-		if changeMatched && len(item.Changes) > 0 {
-			keys := make([]string, 0, len(item.Changes))
-			for _, change := range item.Changes {
-				if change.Matched {
-					keys = append(keys, change.Key)
-				}
-			}
-			if len(keys) > 0 {
-				item.Matches = append(item.Matches, Match{Source: SourceChange, Excerpt: strings.Join(keys, ", ")})
-			}
-		}
-		var comments []rawCommentMatch
-		if err := json.Unmarshal(commentsJSON, &comments); err != nil {
-			return Page{}, fmt.Errorf("search: decode comment matches: %w", err)
-		}
-		for _, comment := range comments {
-			id := comment.ID
-			item.Matches = append(item.Matches, Match{Source: SourceComment, CommentID: &id, Excerpt: excerpt(comment.Body, options.Query)})
-		}
+		item.Matches = []Match{{Source: SourceIssue, Excerpt: excerpt(item.Title+"\n"+issueBody, options.Query)}}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {

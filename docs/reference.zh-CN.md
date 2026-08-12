@@ -172,17 +172,17 @@ issue；若其状态已符合目标则跳过更新，并在 JSON 的 `changed` �
 ### 在相关改动前先检索
 
 `search issues` 会根据当前 Issue Backend 选择实现。对 self-hosted Profile，它会先
-发现 Server 是否启用检索；能力关闭时给出明确错误，并返回命中的 Issue/评论摘要及
-关联 Change Key/阶段。对 GitHub Profile，它使用 GitHub Issue Search，强制限定仓库
-与 Issue，并在解码结果时再次排除 Pull Request，同时把输出限制在 `--limit` 以内。
-两个 Backend 都支持 `--state`。GitHub 会把 `--source issue` 映射为标题/正文检索，
-把 `--source comments` 映射为评论检索，并把 `--stage` 映射为 canonical 的
-`issue-spec/proposal`、`issue-spec/design` 或 `issue-spec/implement` Label。GitHub
-没有等价的 Change Key 索引，因此不支持 `--source change`。无匹配项时命令成功并
-返回零条结果；结果顺序与排序由 Backend 决定，不承诺保持一致。
+发现 Server 是否启用检索；能力关闭时给出明确错误，并只返回标题或主体命中的
+canonical Proposal Issue。对 GitHub Profile，它使用 GitHub Issue Search，强制限定
+仓库、`is:issue`、`in:title,body` 与 `issue-spec/proposal` Label，并在解码结果时再次
+排除 Pull Request 和非 Proposal 记录，同时把输出限制在 `--limit` 以内。两个 Backend
+都支持 `--state`。`--source all|issue` 与未设置或值为 `proposal` 的 `--stage` 作为固定
+Proposal 标题/主体范围的兼容参数继续接受；评论、Change、Design 和 Implement 筛选会
+被拒绝。无匹配项时命令成功并返回零条结果；结果顺序与排序由 Backend 决定，不承诺
+保持一致。
 
 两个适配器都只在请求的仓库中检索，并通过带随机 nonce 的不可信数据边界渲染同一组
-有界的 Issue 字段。GitHub 的文本匹配片段可能与 self-hosted 摘要不同，可选 Change
+有界的 Proposal 字段。GitHub 的标题/主体匹配片段可能与 self-hosted 摘要不同，可选 Change
 元数据也可能缺失。
 
 生成的 Codex 和 Claude 工作流会要求直接连接 issue-spec 的 Agent（不只 Runner

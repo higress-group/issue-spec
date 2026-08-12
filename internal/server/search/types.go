@@ -20,11 +20,8 @@ var ErrInvalidOptions = errors.New("search: invalid options")
 type Source string
 
 const (
-	SourceAll      Source = "all"
-	SourceIssue    Source = "issue"
-	SourceComment  Source = "comment"
-	SourceComments Source = "comments"
-	SourceChange   Source = "change"
+	SourceAll   Source = "all"
+	SourceIssue Source = "issue"
 )
 
 type Options struct {
@@ -51,16 +48,15 @@ func (o Options) normalize() (Options, error) {
 	if o.Source == "" {
 		o.Source = SourceAll
 	}
-	if o.Source == SourceComment {
-		o.Source = SourceComments
-	}
-	if o.Source != SourceAll && o.Source != SourceIssue && o.Source != SourceComments && o.Source != SourceChange {
+	if o.Source != SourceAll && o.Source != SourceIssue {
 		return Options{}, ErrInvalidOptions
 	}
+	o.Source = SourceIssue
 	o.Stage = strings.ToLower(strings.TrimSpace(o.Stage))
-	if o.Stage != "" && o.Stage != "proposal" && o.Stage != "design" && o.Stage != "implement" {
+	if o.Stage != "" && o.Stage != "proposal" {
 		return Options{}, ErrInvalidOptions
 	}
+	o.Stage = "proposal"
 	if o.Page == 0 {
 		o.Page = 1
 	}
