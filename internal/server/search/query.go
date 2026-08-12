@@ -68,7 +68,7 @@ const fullRepositorySearchQuery = `WITH eligible_issues AS NOT MATERIALIZED (
 		CASE WHEN lower(i.title) = $3 THEN 90000
 			WHEN lower(i.title) LIKE public.likequery($3) THEN 80000 ELSE 70000 END AS score
 	FROM issues i
-	WHERE $4::bigint = 0 AND i.organization_id = $1 AND i.repository_id = $2
+	WHERE $4::bigint = 0
 		AND lower(encode(uuid_send(i.organization_id), 'hex') || '/' ||
 			encode(uuid_send(i.repository_id), 'hex') || E'\n' || i.title || E'\n' || i.body)
 			LIKE lower(encode(uuid_send($1), 'hex') || '/' || encode(uuid_send($2), 'hex') || E'\n') || public.likequery($3)
@@ -88,7 +88,7 @@ const fullRepositorySearchQuery = `WITH eligible_issues AS NOT MATERIALIZED (
 ), scoped_comment_bigm_matches AS MATERIALIZED (
 	SELECT c.organization_id, c.repository_id, c.id, c.issue_id, c.body, c.updated_at, 50000 AS score
 	FROM comments c
-	WHERE $4::bigint = 0 AND c.organization_id = $1 AND c.repository_id = $2
+	WHERE $4::bigint = 0
 		AND lower(encode(uuid_send(c.organization_id), 'hex') || '/' ||
 			encode(uuid_send(c.repository_id), 'hex') || E'\n' || c.body)
 			LIKE lower(encode(uuid_send($1), 'hex') || '/' || encode(uuid_send($2), 'hex') || E'\n') || public.likequery($3)
