@@ -38,6 +38,30 @@ type WorkflowArtifact struct {
 	Action    string `json:"action,omitempty"`
 }
 
+// WorkflowArtifactKindURL is the decoder-assigned kind for artifacts that the
+// coordinator emitted as a bare URL string. It records only the entry shape;
+// no id, digest, or semantic classification is invented for such entries.
+const WorkflowArtifactKindURL = "url"
+
+func (a *WorkflowArtifact) UnmarshalJSON(data []byte) error {
+	var url string
+	if err := json.Unmarshal(data, &url); err == nil {
+		trimmed := strings.TrimSpace(url)
+		if trimmed == "" {
+			return fmt.Errorf("workflow artifact string entry must be a non-empty URL")
+		}
+		*a = WorkflowArtifact{Kind: WorkflowArtifactKindURL, URL: trimmed}
+		return nil
+	}
+	type workflowArtifactAlias WorkflowArtifact
+	var artifact workflowArtifactAlias
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		return err
+	}
+	*a = WorkflowArtifact(artifact)
+	return nil
+}
+
 type CLICommandSummary struct {
 	Name          string `json:"name"`
 	ExitCode      int    `json:"exit_code"`

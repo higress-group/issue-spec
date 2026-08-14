@@ -2635,19 +2635,29 @@ func TestSandboxedRunnerPreservesAdapterCommandEnv(t *testing.T) {
 }
 
 func testDispatcher(store *memoryStore, workspaces *fakeWorkspaces, coordinator *fakeCoordinator, writebacks *fakeWriteback, now time.Time) *Dispatcher {
+	return testDispatcherWithCoordinator(store, workspaces, coordinator, writebacks, now)
+}
+
+func testDispatcherWithCoordinator(store *memoryStore, workspaces *fakeWorkspaces, coordinator Coordinator, writebacks *fakeWriteback, now time.Time) *Dispatcher {
 	writebacks.store = store
 	return &Dispatcher{
 		Store:             store,
 		Repositories:      fakeRepoResolver{},
 		Workspaces:        workspaces,
 		Sandbox:           &fakeSandbox{},
-		Acpx:              fakeAcpxFactory{coordinator: coordinator},
+		Acpx:              acpxFactoryFunc(func(ExecutionEnvironment) (Coordinator, error) { return coordinator, nil }),
 		Writeback:         writebacks,
 		Clock:             fixedClock(now),
 		PublicSessionID:   func() (string, error) { return "ps-generated", nil },
 		TurnCorrelationID: func() (string, error) { return "turn-generated", nil },
 		IssueSpecBinary:   "issue-spec",
 	}
+}
+
+type acpxFactoryFunc func(ExecutionEnvironment) (Coordinator, error)
+
+func (f acpxFactoryFunc) NewCoordinator(env ExecutionEnvironment) (Coordinator, error) {
+	return f(env)
 }
 
 func seedQueuedJob(t *testing.T, store *memoryStore, job state.Job) {
@@ -3326,4 +3336,261 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type repairableCoordinator struct {
+	*fakeCoordinator
+	mu           sync.Mutex
+	repairResult acpx.DispatchResult
+	repairErr    error
+	repairCalls  int
+	repairReqs   []acpx.SummaryRepairRequest
+	onRepair     func(context.Context, acpx.SummaryRepairRequest) (acpx.DispatchResult, error)
+}
+
+func (f *repairableCoordinator) RepairSummary(ctx context.Context, req acpx.SummaryRepairRequest) (acpx.DispatchResult, error) {
+	f.mu.Lock()
+	f.repairCalls++
+	f.repairReqs = append(f.repairReqs, req)
+	onRepair := f.onRepair
+	result := f.repairResult
+	err := f.repairErr
+	f.mu.Unlock()
+	if onRepair != nil {
+		return onRepair(ctx, req)
+	}
+	return result, err
+}
+
+func seedSummaryRepairJob(t *testing.T, store *memoryStore, jobID, publicID string, now time.Time) {
+	t.Helper()
+	seedQueuedJob(t, store, state.Job{
+		ID:                    jobID,
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      336,
+		CommandID:             "cmd-" + jobID,
+		CommandName:           "new",
+		CommandPrompt:         "do work",
+		CommandIdempotencyKey: "cmd-key-" + jobID,
+		StatusWritebackKey:    "status-" + jobID,
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+}
+
+func TestRunNextInvalidSummaryRepairTurnRecoversStructuredResult(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 8, 15, 9, 0, 0, 0, time.UTC)
+	jobID := "job-repair-success"
+	publicID := "ps-repair-success"
+	recordID := "rec-repair-success"
+	seedSummaryRepairJob(t, store, jobID, publicID, now)
+
+	partial := dispatchResult(publicID, recordID, "turn-repair-original", runnercontext.CoordinatorSummary{})
+	partial.Output = acpx.TurnOutput{RawStdout: "done\n```issue_spec_coordinator_summary\n{\"status\":\"completed\",\"artifacts\":[123]}\n```"}
+	repairedSummary := runnercontext.CoordinatorSummary{
+		Status: "completed",
+		Artifacts: []runnercontext.WorkflowArtifact{{
+			Kind: runnercontext.WorkflowArtifactKindURL,
+			URL:  "https://github.com/o/r/pull/31",
+		}},
+	}
+	coordinator := &repairableCoordinator{
+		fakeCoordinator: &fakeCoordinator{newErr: &acpx.PartialDispatchError{
+			Result: partial,
+			Err:    &acpx.OutputSummaryError{Err: errors.New("json: cannot unmarshal number into Go value of type contextbundle.WorkflowArtifact")},
+		}},
+		repairResult: dispatchResult(publicID, recordID, "turn-repair-fixed", repairedSummary),
+	}
+	writebacks := &fakeWriteback{}
+	dispatcher := testDispatcherWithCoordinator(store, &fakeWorkspaces{binding: testBinding("ws-repair-success")}, coordinator, writebacks, now)
+	dispatcher.PublicSessionID = func() (string, error) { return publicID, nil }
+	dispatcher.TurnCorrelationID = func() (string, error) { return "turn-token-repair-success", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("RunNext returned error: %v", err)
+	}
+	if result.Status != state.StatusCompleted || result.JobID != jobID {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusCompleted)
+
+	job := loadState(t, store).Jobs[jobID]
+	if job.Status != state.StatusCompleted {
+		t.Fatalf("repaired job not completed: %+v", job)
+	}
+	if !strings.Contains(job.CoordinatorSummary, `"kind":"url"`) || !strings.Contains(job.CoordinatorSummary, "https://github.com/o/r/pull/31") {
+		t.Fatalf("repaired summary was not persisted as structured provenance: %q", job.CoordinatorSummary)
+	}
+	joined := strings.Join(job.Diagnostics, "\n")
+	if !strings.Contains(joined, "summary_repair_attempted") || !strings.Contains(joined, "summary_repair_succeeded") {
+		t.Fatalf("repair diagnostics missing: %+v", job.Diagnostics)
+	}
+	if coordinator.repairCalls != 1 {
+		t.Fatalf("repair turns = %d, want exactly 1", coordinator.repairCalls)
+	}
+	if len(coordinator.repairReqs) != 1 {
+		t.Fatalf("recorded %d repair requests", len(coordinator.repairReqs))
+	}
+	repairReq := coordinator.repairReqs[0]
+	if repairReq.PublicSessionID != publicID || repairReq.StableRecordID != recordID || repairReq.TurnCorrelationToken != "turn-token-repair-success" {
+		t.Fatalf("repair request did not target the same acpx session: %+v", repairReq)
+	}
+	if !strings.Contains(repairReq.Prompt, "Re-emit exactly one corrected fenced issue_spec_coordinator_summary block") ||
+		!strings.Contains(repairReq.Prompt, "Do not re-run work") ||
+		!strings.Contains(repairReq.Prompt, "cannot unmarshal number") {
+		t.Fatalf("repair prompt not bounded or missing rejection reason: %q", repairReq.Prompt)
+	}
+	lastWriteback := writebacks.requests[len(writebacks.requests)-1]
+	if lastWriteback.Status != state.StatusCompleted || lastWriteback.CoordinatorSummary == nil {
+		t.Fatalf("recovered summary was not rendered in the public writeback: %+v", lastWriteback)
+	}
+	if lastWriteback.CoordinatorSummary.Artifacts[0].URL != "https://github.com/o/r/pull/31" {
+		t.Fatalf("unexpected recovered summary in writeback: %+v", lastWriteback.CoordinatorSummary)
+	}
+}
+
+func TestRunNextRepairSecondFailureDowngradesWithDiagnostics(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 8, 15, 9, 5, 0, 0, time.UTC)
+	jobID := "job-repair-second-failure"
+	publicID := "ps-repair-second-failure"
+	recordID := "rec-repair-second-failure"
+	seedSummaryRepairJob(t, store, jobID, publicID, now)
+
+	partial := dispatchResult(publicID, recordID, "turn-repair-second", runnercontext.CoordinatorSummary{})
+	partial.Output = acpx.TurnOutput{RawStdout: "done\n```issue_spec_coordinator_summary\n{\"status\":\"queued\"}\n```"}
+	stillInvalid := dispatchResult(publicID, recordID, "turn-repair-still-bad", runnercontext.CoordinatorSummary{})
+	stillInvalid.Output = acpx.TurnOutput{RawStdout: "still no valid summary"}
+	coordinator := &repairableCoordinator{
+		fakeCoordinator: &fakeCoordinator{newErr: &acpx.PartialDispatchError{
+			Result: partial,
+			Err:    &acpx.OutputSummaryError{Err: errors.New("summary status must be completed, failed, or partial")},
+		}},
+		repairResult: stillInvalid,
+	}
+	writebacks := &fakeWriteback{}
+	dispatcher := testDispatcherWithCoordinator(store, &fakeWorkspaces{binding: testBinding("ws-repair-second-failure")}, coordinator, writebacks, now)
+	dispatcher.PublicSessionID = func() (string, error) { return publicID, nil }
+	dispatcher.TurnCorrelationID = func() (string, error) { return "turn-token-repair-second-failure", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("RunNext returned error: %v", err)
+	}
+	if result.Status != state.StatusCompleted {
+		t.Fatalf("second repair failure should downgrade to completed lifecycle: %+v", result)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusCompleted)
+
+	job := loadState(t, store).Jobs[jobID]
+	joined := strings.Join(job.Diagnostics, "\n")
+	if !strings.Contains(joined, "summary_repair_attempted") || !strings.Contains(joined, "summary_repair_failed") {
+		t.Fatalf("repair diagnostics missing: %+v", job.Diagnostics)
+	}
+	if !strings.Contains(joined, "summary_schema_invalid") || !strings.Contains(joined, "coordinator summary was malformed") {
+		t.Fatalf("downgrade diagnostic missing schema-invalid classification: %+v", job.Diagnostics)
+	}
+	if job.CoordinatorSummary != "" || len(job.CLIDirect) != 0 {
+		t.Fatalf("unrepaired summary must not be persisted as provenance: %q", job.CoordinatorSummary)
+	}
+	if coordinator.repairCalls != 1 {
+		t.Fatalf("repair turns = %d, want exactly 1 before downgrade", coordinator.repairCalls)
+	}
+	lastWriteback := writebacks.requests[len(writebacks.requests)-1]
+	if lastWriteback.CoordinatorSummary != nil {
+		t.Fatalf("downgraded writeback must not carry a structured summary: %+v", lastWriteback)
+	}
+	if len(lastWriteback.Diagnostics) != 1 || !strings.Contains(lastWriteback.Diagnostics[0], "summary_schema_invalid") {
+		t.Fatalf("downgrade writeback diagnostic incorrect: %+v", lastWriteback.Diagnostics)
+	}
+}
+
+func TestRunNextMissingSummarySkipsRepairTurn(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 8, 15, 9, 10, 0, 0, time.UTC)
+	jobID := "job-missing-summary-no-repair"
+	publicID := "ps-missing-summary-no-repair"
+	recordID := "rec-missing-summary-no-repair"
+	seedSummaryRepairJob(t, store, jobID, publicID, now)
+
+	partial := dispatchResult(publicID, recordID, "turn-missing-summary-no-repair", runnercontext.CoordinatorSummary{})
+	partial.Output = acpx.TurnOutput{RawStdout: "Tests are still running; I will finish when they complete."}
+	coordinator := &repairableCoordinator{
+		fakeCoordinator: &fakeCoordinator{newErr: &acpx.PartialDispatchError{
+			Result: partial,
+			Err:    &acpx.OutputSummaryError{Err: acpx.ErrSummaryNotFound},
+		}},
+		repairResult: dispatchResult(publicID, recordID, "turn-missing-summary-no-repair", completedSummary()),
+	}
+	writebacks := &fakeWriteback{}
+	dispatcher := testDispatcherWithCoordinator(store, &fakeWorkspaces{binding: testBinding("ws-missing-summary-no-repair")}, coordinator, writebacks, now)
+	dispatcher.PublicSessionID = func() (string, error) { return publicID, nil }
+	dispatcher.TurnCorrelationID = func() (string, error) { return "turn-token-missing-summary-no-repair", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err == nil || !errors.Is(err, ErrTerminalJobFailure) {
+		t.Fatalf("missing summary must keep the strict failure path: err=%v", err)
+	}
+	if result.Status != state.StatusFailed {
+		t.Fatalf("missing summary must fail the job: %+v", result)
+	}
+	if coordinator.repairCalls != 0 {
+		t.Fatalf("missing summary triggered %d repair turns, want 0", coordinator.repairCalls)
+	}
+	job := loadState(t, store).Jobs[jobID]
+	if len(job.Diagnostics) != 1 || !strings.Contains(job.Diagnostics[0], "summary_missing: coordinator summary not found") {
+		t.Fatalf("missing-summary classification missing: %+v", job.Diagnostics)
+	}
+}
+
+func TestSummaryErrorClassDistinguishesRejectionKinds(t *testing.T) {
+	if got := summaryErrorClass(acpx.ErrSummaryNotFound); got != summaryDiagnosticMissing {
+		t.Fatalf("missing class = %q", got)
+	}
+	if got := summaryErrorClass(nil); got != "" {
+		t.Fatalf("nil class = %q", got)
+	}
+	_, syntaxErr := runnercontext.ParseCoordinatorSummary([]byte(`{"status":"completed",}`), runnercontext.SummaryBounds{})
+	if syntaxErr == nil {
+		t.Fatal("expected truncated JSON to fail")
+	}
+	if got := summaryErrorClass(&acpx.OutputSummaryError{Err: syntaxErr}); got != summaryDiagnosticInvalidJSON {
+		t.Fatalf("syntax error class = %q (%v)", got, syntaxErr)
+	}
+	_, eofErr := runnercontext.ParseCoordinatorSummary([]byte(`{"status":`), runnercontext.SummaryBounds{})
+	if got := summaryErrorClass(&acpx.OutputSummaryError{Err: eofErr}); got != summaryDiagnosticInvalidJSON {
+		t.Fatalf("unexpected EOF class = %q (%v)", got, eofErr)
+	}
+	_, typeErr := runnercontext.ParseCoordinatorSummary([]byte(`{"status":"completed","commands":"not-an-array"}`), runnercontext.SummaryBounds{})
+	if got := summaryErrorClass(&acpx.OutputSummaryError{Err: typeErr}); got != summaryDiagnosticSchemaInvalid {
+		t.Fatalf("recognized field type class = %q (%v)", got, typeErr)
+	}
+	_, validationErr := runnercontext.ParseCoordinatorSummary([]byte(`{"status":"queued"}`), runnercontext.SummaryBounds{})
+	if got := summaryErrorClass(&acpx.OutputSummaryError{Err: validationErr}); got != summaryDiagnosticSchemaInvalid {
+		t.Fatalf("validation class = %q (%v)", got, validationErr)
+	}
+}
+
+func TestCoordinatorSummaryWarningCarriesClassification(t *testing.T) {
+	_, validationErr := runnercontext.ParseCoordinatorSummary([]byte(`{"status":"queued"}`), runnercontext.SummaryBounds{})
+	warning := coordinatorSummaryWarning(&acpx.OutputSummaryError{Err: validationErr})
+	if !strings.Contains(warning, "summary_schema_invalid") || !strings.Contains(warning, "coordinator summary was malformed") {
+		t.Fatalf("warning missing classification: %q", warning)
+	}
+	_, syntaxErr := runnercontext.ParseCoordinatorSummary([]byte(`{"status":"completed",}`), runnercontext.SummaryBounds{})
+	jsonWarning := coordinatorSummaryWarning(&acpx.OutputSummaryError{Err: syntaxErr})
+	if !strings.Contains(jsonWarning, "summary_invalid_json") {
+		t.Fatalf("warning missing invalid-json classification: %q", jsonWarning)
+	}
+	if !strings.Contains(classifiedSummaryCause(acpx.ErrSummaryNotFound).Error(), "summary_missing: coordinator summary not found") {
+		t.Fatalf("missing-summary cause not classified: %v", classifiedSummaryCause(acpx.ErrSummaryNotFound))
+	}
+	if classifiedSummaryCause(errNoWaitDispatchSummary) != errNoWaitDispatchSummary {
+		t.Fatal("no-wait dispatch error must not be classified as a summary rejection")
+	}
 }

@@ -64,11 +64,14 @@ func CoordinatorPrompt(bundle runnercontext.Bundle, opts CoordinatorPromptOption
 
 	b.WriteString("## Context Bundle\n\n```json\n")
 	b.Write(bundleJSON)
-	b.WriteString("\n```\n\n## Required Coordinator Summary\n\nReturn one JSON object in a fenced issue_spec_coordinator_summary block. The opening fence is alone; JSON begins on the next line. diagnostics items are strings or objects containing required message and optional code/severity only.\n\n")
+	b.WriteString("\n```\n\n## Required Coordinator Summary\n\nReturn one JSON object in a fenced issue_spec_coordinator_summary block. The opening fence is alone; JSON begins on the next line. artifacts entries are objects with a required kind plus at least one of id, url, issue, or comment_id; a bare URL string entry is also accepted as a url-only artifact, but objects are preferred. diagnostics items are strings or objects containing required message and optional code/severity only.\n\n")
 	b.WriteString("```issue_spec_coordinator_summary\n")
 	b.WriteString(`{
   "status": "completed",
-  "artifacts": [],
+  "artifacts": [
+    {"kind": "issue", "id": "36", "url": "https://github.com/owner/repo/issues/36", "action": "created"},
+    "https://github.com/owner/repo/pull/37"
+  ],
   "commands": [{"name":"go test ./...","exit_code":0,"stdout_summary":"focused tests passed","stderr_summary":""}],
   "children": [{"id":"child-1","native_id":"optional","role":"worker","status":"done","evidence":"focused tests passed"}],
   "processes": [],
