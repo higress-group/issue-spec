@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -108,6 +109,15 @@ type AcpxFactory interface {
 type Coordinator interface {
 	NewSession(context.Context, acpx.NewSessionRequest) (acpx.DispatchResult, error)
 	Resume(context.Context, acpx.ResumeRequest) (acpx.DispatchResult, error)
+}
+
+// SummaryRepairer is the optional coordinator capability behind the bounded
+// repair turn: when a present coordinator summary fails parsing or schema
+// validation after lenient decoding, exactly one follow-up prompt is sent to
+// the same acpx session asking for a corrected fenced summary only.
+// Coordinators that do not implement it keep the downgrade semantics.
+type SummaryRepairer interface {
+	RepairSummary(context.Context, acpx.SummaryRepairRequest) (acpx.DispatchResult, error)
 }
 
 type ArtifactProvider interface {
@@ -739,15 +749,28 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 
 	dispatch, err := d.dispatchAcpx(ctx, coordinator, command, publicID, session, prompt, token)
 	if err != nil {
-		releaseLock()
 		var partial *acpx.PartialDispatchError
 		if errors.As(err, &partial) && hasStableDispatchMetadata(partial.Result) {
+			// The repair turn reuses the same workspace, so the lock stays held
+			// while it runs and is released only by the terminal paths below.
 			if isRecoverableOutputSummaryError(err) {
-				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, err)
+				if repaired, repairedOK := d.repairCoordinatorSummary(ctx, job.ID, coordinator, publicID, partial.Result, token, err); repairedOK {
+					dispatch = repaired
+					err = nil
+				}
 			}
-			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, "coordinator-summary", err)
+			if err != nil {
+				releaseLock()
+				if isRecoverableOutputSummaryError(err) {
+					return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, err)
+				}
+				return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, "coordinator-summary", classifiedSummaryCause(err))
+			}
 		}
-		return d.fail(ctx, job.ID, "acpx", err)
+		if err != nil {
+			releaseLock()
+			return d.fail(ctx, job.ID, "acpx", err)
+		}
 	}
 	if err := validateDispatchSummary(dispatch); err != nil {
 		releaseLock()
@@ -755,9 +778,9 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 			if isRecoverableDispatchSummaryValidationError(err) {
 				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, err)
 			}
-			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, "coordinator-summary", err)
+			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, "coordinator-summary", classifiedSummaryCause(err))
 		}
-		return d.fail(ctx, job.ID, "coordinator-summary", err)
+		return d.fail(ctx, job.ID, "coordinator-summary", classifiedSummaryCause(err))
 	}
 	terminal := statusFromSummary(dispatch.Output.Summary)
 	if err := d.complete(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, terminal); err != nil {
@@ -3254,6 +3277,87 @@ func isRecoverableDispatchSummaryValidationError(err error) bool {
 	return err != nil && !errors.Is(err, errNoWaitDispatchSummary) && !errors.Is(err, acpx.ErrSummaryNotFound)
 }
 
+// repairCoordinatorSummary sends exactly one bounded repair prompt to the same
+// acpx session after a present coordinator summary failed parsing or schema
+// validation. A missing summary never triggers repair; it keeps the stricter
+// failure semantics. Coordinators without the repair capability, or a repair
+// turn that is unavailable or still invalid, fall back to the downgrade path.
+func (d *Dispatcher) repairCoordinatorSummary(ctx context.Context, jobID string, coordinator Coordinator, publicID string, original acpx.DispatchResult, token string, cause error) (acpx.DispatchResult, bool) {
+	repairer, ok := coordinator.(SummaryRepairer)
+	if !ok {
+		return acpx.DispatchResult{}, false
+	}
+	if err := d.appendDiagnostic(ctx, jobID, "coordinator-summary: summary_repair_attempted: requesting one corrected issue_spec_coordinator_summary block in the same acpx session"); err != nil {
+		return acpx.DispatchResult{}, false
+	}
+	repaired, err := repairer.RepairSummary(ctx, acpx.SummaryRepairRequest{
+		PublicSessionID:      publicID,
+		SessionName:          original.SessionName,
+		StableRecordID:       original.Metadata.StableRecordID,
+		Prompt:               coordinatorSummaryRepairPrompt(cause),
+		TurnCorrelationToken: token,
+	})
+	if err != nil {
+		_ = d.appendDiagnostic(ctx, jobID, "coordinator-summary: summary_repair_failed: "+safeError(err))
+		return acpx.DispatchResult{}, false
+	}
+	if err := validateDispatchSummary(repaired); err != nil {
+		_ = d.appendDiagnostic(ctx, jobID, "coordinator-summary: summary_repair_failed: "+safeError(err))
+		return acpx.DispatchResult{}, false
+	}
+	_ = d.appendDiagnostic(ctx, jobID, "coordinator-summary: summary_repair_succeeded: corrected coordinator summary accepted from the same acpx session")
+	return repaired, true
+}
+
+func coordinatorSummaryRepairPrompt(cause error) string {
+	var b strings.Builder
+	b.WriteString("Your previous issue_spec_coordinator_summary block was present but could not be accepted.\n\n")
+	b.WriteString("Re-emit exactly one corrected fenced issue_spec_coordinator_summary block with the same summary information. The opening fence is alone on its line; the JSON starts on the next line.\n")
+	b.WriteString("- status must be completed, failed, or partial.\n")
+	b.WriteString("- artifacts entries are objects with a kind plus an id, url, issue, or comment_id; a bare URL string entry is also accepted.\n")
+	b.WriteString("- diagnostics entries are strings or objects with a required message.\n")
+	b.WriteString("Do not re-run work, commands, or child processes, and do not add any commentary outside the block.\n\n")
+	b.WriteString("Rejection reason: ")
+	b.WriteString(safeString(safeError(cause), 600))
+	return b.String()
+}
+
+const (
+	summaryDiagnosticMissing       = "summary_missing"
+	summaryDiagnosticInvalidJSON   = "summary_invalid_json"
+	summaryDiagnosticSchemaInvalid = "summary_schema_invalid"
+)
+
+// summaryErrorClass distinguishes why a coordinator summary was rejected so
+// operator diagnostics do not collapse missing and malformed summaries.
+func summaryErrorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, acpx.ErrSummaryNotFound) {
+		return summaryDiagnosticMissing
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return summaryDiagnosticInvalidJSON
+	}
+	return summaryDiagnosticSchemaInvalid
+}
+
+// classifiedSummaryCause prefixes summary rejections with their class on the
+// strict failure paths; unrelated errors (for example no-wait dispatches) keep
+// their original message.
+func classifiedSummaryCause(err error) error {
+	switch {
+	case errors.Is(err, acpx.ErrSummaryNotFound):
+		return fmt.Errorf("%s: %w", summaryDiagnosticMissing, err)
+	case isRecoverableOutputSummaryError(err), isRecoverableDispatchSummaryValidationError(err):
+		return fmt.Errorf("%s: %w", summaryErrorClass(err), err)
+	default:
+		return err
+	}
+}
+
 func withoutCoordinatorSummary(dispatch acpx.DispatchResult) acpx.DispatchResult {
 	dispatch.Output.SummaryFound = false
 	dispatch.Output.SummaryJSON = ""
@@ -3262,7 +3366,7 @@ func withoutCoordinatorSummary(dispatch acpx.DispatchResult) acpx.DispatchResult
 }
 
 func coordinatorSummaryWarning(cause error) string {
-	msg := "coordinator-summary: coordinator summary was malformed; completed lifecycle without structured coordinator provenance"
+	msg := "coordinator-summary: " + summaryErrorClass(cause) + ": coordinator summary was malformed; completed lifecycle without structured coordinator provenance"
 	if cause != nil {
 		msg += ": " + safeError(cause)
 	}

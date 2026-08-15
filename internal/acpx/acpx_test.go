@@ -970,3 +970,162 @@ func e2eSessionShowWithAgentContentText(agentText string) string {
   ]
 }`
 }
+
+func TestParseTurnOutputDecodesPlainStringAndMixedArtifacts(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		artifacts  string
+		wantURL    string
+		wantObject bool
+	}{
+		{
+			name:      "plain-strings",
+			artifacts: `["https://github.com/higress-group/higress/pull/4485"]`,
+			wantURL:   "https://github.com/higress-group/higress/pull/4485",
+		},
+		{
+			name:       "mixed",
+			artifacts:  `["https://github.com/higress-group/higress/pull/4485",{"kind":"issue","id":"36","url":"https://github.com/higress-group/issue-spec/issues/36","action":"created"}]`,
+			wantURL:    "https://github.com/higress-group/higress/pull/4485",
+			wantObject: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := ParseTurnOutput([]byte("done\n```issue_spec_coordinator_summary\n{\"status\":\"completed\",\"artifacts\":"+tc.artifacts+"}\n```\n"), nil, contextbundle.SummaryBounds{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !output.SummaryFound {
+				t.Fatalf("summary not found: %+v", output)
+			}
+			wantArtifacts := 1
+			if tc.wantObject {
+				wantArtifacts = 2
+			}
+			if len(output.Summary.Artifacts) != wantArtifacts {
+				t.Fatalf("artifact count = %d, want %d: %+v", len(output.Summary.Artifacts), wantArtifacts, output.Summary.Artifacts)
+			}
+			first := output.Summary.Artifacts[0]
+			if first.Kind != contextbundle.WorkflowArtifactKindURL || first.URL != tc.wantURL || first.ID != "" {
+				t.Fatalf("plain-string artifact decoded incorrectly: %+v", first)
+			}
+			if tc.wantObject {
+				second := output.Summary.Artifacts[1]
+				if second.Kind != "issue" || second.ID != "36" || second.Action != "created" {
+					t.Fatalf("object artifact not preserved: %+v", second)
+				}
+			}
+		})
+	}
+}
+
+func TestParseTurnOutputStillRejectsInvalidArtifactEntryTypes(t *testing.T) {
+	_, err := ParseTurnOutput([]byte("done\n```issue_spec_coordinator_summary\n{\"status\":\"completed\",\"artifacts\":[42]}\n```\n"), nil, contextbundle.SummaryBounds{})
+	if err == nil {
+		t.Fatal("expected non-string non-object artifact entry to fail")
+	}
+}
+
+func TestAdapterRepairSummaryReusesSessionForCorrectedSummary(t *testing.T) {
+	corrected := "corrected\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```"
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: corrected},
+		{stdout: `{"acpxRecordId":"rec-1","acpxSessionId":"acpx-2","lastTurnId":"turn-repair","history":[{"id":"seed"},{"id":"turn-repair"}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.RepairSummary(context.Background(), SummaryRepairRequest{
+		PublicSessionID:      "pub-1",
+		StableRecordID:       "rec-1",
+		Prompt:               "re-emit the corrected summary block",
+		TurnCorrelationToken: "turn-token-1",
+	})
+	if err != nil {
+		t.Fatalf("RepairSummary returned error: %v", err)
+	}
+	if !result.Output.SummaryFound || result.Output.Summary.Status != "completed" {
+		t.Fatalf("repaired summary not parsed: %+v", result.Output)
+	}
+	if result.SessionName != "pub-1" || result.Metadata.StableRecordID != "rec-1" || result.Metadata.LastTurnID != "turn-repair" {
+		t.Fatalf("repair did not reuse session metadata: %+v", result.Metadata)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("recorded %d commands, want repair prompt and refresh", len(runner.commands))
+	}
+	assertArgs(t, runner.commands[0].Args, []string{"--cwd", "/workspace", "--format", "quiet", "--approve-reads", "codex", "--file", "-", "-s", "pub-1"})
+	if !strings.Contains(string(runner.commands[0].Stdin), "re-emit the corrected summary block") {
+		t.Fatalf("repair prompt stdin missing prompt: %q", runner.commands[0].Stdin)
+	}
+	if !strings.Contains(string(runner.commands[0].Stdin), "turn-token-1") {
+		t.Fatalf("repair prompt stdin missing correlation token: %q", runner.commands[0].Stdin)
+	}
+	assertArgs(t, runner.commands[1].Args, []string{"--cwd", "/workspace", "--format", "json", "--json-strict", "--approve-reads", "codex", "sessions", "show", "pub-1"})
+}
+
+func TestAdapterRepairSummaryStillInvalidReturnsPartialError(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: "still broken\n```issue_spec_coordinator_summary\n{\"status\":\"queued\"}\n```"},
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-repair"}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.RepairSummary(context.Background(), SummaryRepairRequest{
+		PublicSessionID: "pub-1",
+		StableRecordID:  "rec-1",
+		Prompt:          "re-emit the corrected summary block",
+	})
+	var partial *PartialDispatchError
+	if !errors.As(err, &partial) {
+		t.Fatalf("RepairSummary error = %v, want PartialDispatchError", err)
+	}
+	var summaryErr *OutputSummaryError
+	if !errors.As(err, &summaryErr) {
+		t.Fatalf("RepairSummary error = %v, want OutputSummaryError", err)
+	}
+	if result.SessionName != "pub-1" || partial.Result.Metadata.StableRecordID != "rec-1" {
+		t.Fatalf("unexpected partial result: %+v", partial.Result)
+	}
+}
+
+func TestAdapterRepairSummarySurfacesUnavailableSession(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stderr: "acpx daemon is not running", exitCode: 1},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	_, err := adapter.RepairSummary(context.Background(), SummaryRepairRequest{
+		PublicSessionID: "pub-1",
+		StableRecordID:  "rec-1",
+		Prompt:          "re-emit the corrected summary block",
+	})
+	if err == nil {
+		t.Fatal("expected unavailable session to fail the repair turn")
+	}
+	var summaryErr *OutputSummaryError
+	if errors.As(err, &summaryErr) {
+		t.Fatalf("unavailable session should not be classified as a summary error: %v", err)
+	}
+}
+
+func TestAdapterRepairSummaryValidatesRequest(t *testing.T) {
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, &fakeRunner{})
+	for _, tc := range []struct {
+		name string
+		req  SummaryRepairRequest
+	}{
+		{name: "missing-public-session", req: SummaryRepairRequest{StableRecordID: "rec-1", Prompt: "p"}},
+		{name: "missing-record", req: SummaryRepairRequest{PublicSessionID: "pub-1", Prompt: "p"}},
+		{name: "missing-prompt", req: SummaryRepairRequest{PublicSessionID: "pub-1", StableRecordID: "rec-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := adapter.RepairSummary(context.Background(), tc.req); !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("error = %v, want ErrInvalidConfig", err)
+			}
+		})
+	}
+	noWaitAdapter := newTestAdapter(t, Config{CWD: "/workspace", NoWait: true}, &fakeRunner{})
+	_, err := noWaitAdapter.RepairSummary(context.Background(), SummaryRepairRequest{PublicSessionID: "pub-1", StableRecordID: "rec-1", Prompt: "p"})
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("no-wait adapter error = %v, want ErrInvalidConfig", err)
+	}
+}

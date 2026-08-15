@@ -6,6 +6,67 @@ import (
 	"testing"
 )
 
+func TestParseCoordinatorSummaryAcceptsPlainURLStringArtifacts(t *testing.T) {
+	summary, err := ParseCoordinatorSummary([]byte(`{
+  "status": "completed",
+  "artifacts": ["https://github.com/higress-group/higress/pull/4485"]
+}`), SummaryBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Artifacts) != 1 {
+		t.Fatalf("artifact count = %d, want 1: %+v", len(summary.Artifacts), summary.Artifacts)
+	}
+	artifact := summary.Artifacts[0]
+	if artifact.Kind != WorkflowArtifactKindURL || artifact.URL != "https://github.com/higress-group/higress/pull/4485" {
+		t.Fatalf("plain-string artifact decoded incorrectly: %+v", artifact)
+	}
+	if artifact.ID != "" || artifact.Issue != 0 || artifact.CommentID != 0 || artifact.Action != "" {
+		t.Fatalf("plain-string artifact fabricated identity fields: %+v", artifact)
+	}
+}
+
+func TestParseCoordinatorSummaryAcceptsMixedStringAndObjectArtifacts(t *testing.T) {
+	summary, err := ParseCoordinatorSummary([]byte(`{
+  "status": "completed",
+  "artifacts": [
+    "https://github.com/higress-group/higress/pull/4485",
+    {"kind": "typed_comment", "id": "PROCESS-001", "url": "https://github.com/owner/repo/issues/1#issuecomment-1", "action": "updated"}
+  ]
+}`), SummaryBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Artifacts) != 2 {
+		t.Fatalf("artifact count = %d, want 2: %+v", len(summary.Artifacts), summary.Artifacts)
+	}
+	if summary.Artifacts[0].Kind != WorkflowArtifactKindURL || summary.Artifacts[0].URL != "https://github.com/higress-group/higress/pull/4485" {
+		t.Fatalf("string artifact decoded incorrectly: %+v", summary.Artifacts[0])
+	}
+	if summary.Artifacts[1].Kind != "typed_comment" || summary.Artifacts[1].ID != "PROCESS-001" || summary.Artifacts[1].Action != "updated" {
+		t.Fatalf("object artifact not preserved verbatim: %+v", summary.Artifacts[1])
+	}
+}
+
+func TestParseCoordinatorSummaryRejectsInvalidArtifactEntryTypes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+	}{
+		{name: "number", json: `{"status": "completed", "artifacts": [123]}`},
+		{name: "boolean", json: `{"status": "completed", "artifacts": [true]}`},
+		{name: "null", json: `{"status": "completed", "artifacts": [null]}`},
+		{name: "empty-string", json: `{"status": "completed", "artifacts": ["   "]}`},
+		{name: "nested-array", json: `{"status": "completed", "artifacts": [["https://example.com"]]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseCoordinatorSummary([]byte(tc.json), SummaryBounds{}); err == nil {
+				t.Fatal("expected invalid artifact entry to fail summary parsing")
+			}
+		})
+	}
+}
+
 func TestParseCoordinatorSummaryAcceptsProvenanceOnlySchema(t *testing.T) {
 	summary, err := ParseCoordinatorSummary([]byte(`{
   "status": "completed",

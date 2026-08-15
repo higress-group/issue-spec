@@ -109,6 +109,18 @@ type ResumeRequest struct {
 	TurnCorrelationToken string
 }
 
+// SummaryRepairRequest drives exactly one bounded repair turn in an existing
+// acpx session: the agent is asked to re-emit only a corrected fenced
+// coordinator summary. The session, conversation history, and workspace are
+// reused; no work is re-run.
+type SummaryRepairRequest struct {
+	PublicSessionID      string
+	SessionName          string
+	StableRecordID       string
+	Prompt               string
+	TurnCorrelationToken string
+}
+
 type SessionRef struct {
 	PublicSessionID string
 	SessionName     string
@@ -389,6 +401,52 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 			result.Output = output
 			return result, nil
 		}
+		return result, &PartialDispatchError{Result: result, Err: dispatchErr}
+	}
+	return result, nil
+}
+
+// RepairSummary dispatches one bounded repair prompt to the same acpx session
+// and returns the turn output plus refreshed session metadata. A summary
+// parse failure is surfaced as a PartialDispatchError so the caller can apply
+// its own downgrade semantics; any other failure means the repair turn itself
+// was not usable (for example the session or agent process is unavailable).
+func (a *Adapter) RepairSummary(ctx context.Context, req SummaryRepairRequest) (DispatchResult, error) {
+	sessionName := sessionName(req.PublicSessionID, req.SessionName)
+	if strings.TrimSpace(req.PublicSessionID) == "" {
+		return DispatchResult{}, fmt.Errorf("%w: public session id is required", ErrInvalidConfig)
+	}
+	if strings.TrimSpace(req.StableRecordID) == "" {
+		return DispatchResult{}, fmt.Errorf("%w: stable acpx record id is required", ErrInvalidConfig)
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		return DispatchResult{}, fmt.Errorf("%w: prompt is required", ErrInvalidConfig)
+	}
+	if a.cfg.NoWait {
+		return DispatchResult{}, fmt.Errorf("%w: summary repair requires a waiting dispatch", ErrInvalidConfig)
+	}
+	dispatch, dispatchErr := a.dispatchPrompt(ctx, sessionName, req.Prompt, false, req.TurnCorrelationToken)
+	if dispatchErr != nil {
+		var summaryErr *OutputSummaryError
+		if !errors.As(dispatchErr, &summaryErr) {
+			return DispatchResult{}, dispatchErr
+		}
+	}
+	snapshot, refreshErr := a.refreshSnapshot(ctx, SessionRef{
+		PublicSessionID: req.PublicSessionID,
+		SessionName:     sessionName,
+		StableRecordID:  req.StableRecordID,
+	})
+	if refreshErr != nil {
+		return DispatchResult{}, refreshErr
+	}
+	result := DispatchResult{
+		PublicSessionID: req.PublicSessionID,
+		SessionName:     sessionName,
+		Metadata:        snapshot.Metadata,
+		Output:          dispatch.output,
+	}
+	if dispatchErr != nil {
 		return result, &PartialDispatchError{Result: result, Err: dispatchErr}
 	}
 	return result, nil

@@ -313,3 +313,29 @@ func TestRunnerStatusCommentShowsConciseRejectedReason(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderRunnerStatusCommentRendersURLOnlyArtifacts(t *testing.T) {
+	body, err := RenderRunnerStatusComment(RunnerStatusComment{
+		Status: "completed",
+		CoordinatorSummary: &runnercontext.CoordinatorSummary{
+			Status: "completed",
+			Artifacts: []runnercontext.WorkflowArtifact{
+				{Kind: runnercontext.WorkflowArtifactKindURL, URL: "https://github.com/o/r/pull/31"},
+				{Kind: "issue", ID: "36", URL: "https://github.com/o/r/issues/36", Action: "created"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## Result",
+		"Completed the requested command.",
+		"url: https://github.com/o/r/pull/31",
+		"created issue 36: https://github.com/o/r/issues/36",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+}
