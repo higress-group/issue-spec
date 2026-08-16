@@ -25,7 +25,7 @@ func RenderMarker(commentType, id string, version int) string {
 }
 
 func FindMarker(body string) (Marker, bool, error) {
-	return findMarker(preview.SemanticView(body))
+	return findMarker(preview.SemanticView(CanonicalView(body)))
 }
 
 func findMarker(semanticBody string) (Marker, bool, error) {

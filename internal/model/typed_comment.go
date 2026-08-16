@@ -276,7 +276,7 @@ func decodeAcceptedReceiptIdentity(raw []byte) (map[string]json.RawMessage, erro
 
 func ParseTypedComment(body string) TypedComment {
 	tc := TypedComment{Links: map[string][]string{}, Body: body}
-	semanticBody := preview.SemanticView(body)
+	semanticBody := preview.SemanticView(CanonicalView(body))
 	marker, hasMarker, err := findMarker(semanticBody)
 	if err != nil {
 		tc.Errors = append(tc.Errors, err.Error())

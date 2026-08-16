@@ -330,7 +330,7 @@ func validatePhasePredecessor(ctx context.Context, client github.Operations, rep
 		return fmt.Errorf("read %s issue %d: %w", wantKind, issueNumber, err)
 	}
 	var markers [][]string
-	for _, line := range strings.Split(issue.Body, "\n") {
+	for _, line := range strings.Split(model.CanonicalView(issue.Body), "\n") {
 		if match := exactPhaseIssueMarkerLineRe.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
 			markers = append(markers, match)
 		}

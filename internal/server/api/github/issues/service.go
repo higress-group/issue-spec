@@ -418,7 +418,7 @@ func canonicalProposalContribution(input models.NewIssue) bool {
 	if len(input.Labels) != 1 || !strings.EqualFold(strings.TrimSpace(input.Labels[0]), proposalLabel) {
 		return false
 	}
-	matches := issueMarker.FindAllStringSubmatch(input.Body, -1)
+	matches := issueMarker.FindAllStringSubmatch(model.CanonicalView(input.Body), -1)
 	if len(matches) != 1 || !strings.EqualFold(strings.TrimSpace(matches[0][1]), "proposal") || strings.TrimSpace(matches[0][2]) == "" {
 		return false
 	}

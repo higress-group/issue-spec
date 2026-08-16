@@ -130,10 +130,13 @@ func sameLinkValues(left, right []string) bool {
 }
 
 // TypedSectionList returns the non-empty bullet values in one exact level-three
-// section of a typed artifact body. N/A is the canonical empty sentinel. The
-// function deliberately ignores relationship headers: planning authority lives
-// in the visible TASK/PROCESS sections, while legacy Links remain navigation.
+// section of a typed artifact body. N/A is the canonical empty sentinel. A
+// recognized machine-translation suffix is stripped first, so bullets repeated
+// in a translated copy are never collected. The function deliberately ignores
+// relationship headers: planning authority lives in the visible TASK/PROCESS
+// sections, while legacy Links remain navigation.
 func TypedSectionList(body, heading string) []string {
+	body = CanonicalView(body)
 	heading = strings.TrimSpace(heading)
 	if heading == "" {
 		return nil

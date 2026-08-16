@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/model"
 )
 
 var (
@@ -150,7 +151,7 @@ func Locate(ctx context.Context, backend Backend, repo string, proposal int) (Lo
 }
 
 func parseMarker(body string) (string, string, error) {
-	matches := issueMarker.FindAllStringSubmatch(body, -1)
+	matches := issueMarker.FindAllStringSubmatch(model.CanonicalView(body), -1)
 	if len(matches) == 0 {
 		return "", "", fmt.Errorf("canonical issue marker missing")
 	}
@@ -176,7 +177,7 @@ func exactIssue(ctx context.Context, backend Backend, repo string, number int, k
 }
 
 func exactPredecessor(body string, pattern *regexp.Regexp, label string) (int, error) {
-	matches := pattern.FindAllStringSubmatch(body, -1)
+	matches := pattern.FindAllStringSubmatch(model.CanonicalView(body), -1)
 	if len(matches) != 1 {
 		return 0, fmt.Errorf("canonical %s reference must appear exactly once, got %d", label, len(matches))
 	}
