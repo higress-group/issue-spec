@@ -558,6 +558,9 @@ func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, target Targ
 	}
 	conditional, ok := e.Backend.(github.ConditionalCommentBackend)
 	if ok && item.Version > 0 {
+		// A translation-bot edit between observation and mutation bumps the
+		// representation version; that conflict resolves through the existing
+		// retry/re-observe flow and is deliberately not silenced here.
 		_, err := conditional.UpdateCommentConditional(ctx, plan.Repo, item.Comment.ID, item.Version, body)
 		if err == nil {
 			confirmed, found, observeErr := e.observe(ctx, plan.Repo, target, true)
@@ -567,12 +570,12 @@ func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, target Targ
 			if !found || confirmed.Comment.ID != item.Comment.ID {
 				return observedConflictResult(op, "conditional update succeeded but the exact target could not be re-observed", item)
 			}
-			if confirmed.Body != body {
+			if !model.CanonicalBodyEqual(confirmed.Body, body) {
 				return OperationResult{ID: op.ID, Kind: op.Kind, Status: "conflicted", Atomic: true,
 					Guarantee: github.CommentMutationStrictConditional,
 					CommentID: confirmed.Comment.ID, URL: confirmed.Comment.HTMLURL,
 					BeforeDigest: model.RepresentationDigest(item.Body), AfterDigest: model.RepresentationDigest(confirmed.Body),
-					Message: fmt.Sprintf("conditional update returned but exact representation digest did not match: expected=%s current=%s",
+					Message: fmt.Sprintf("conditional update returned but canonical representation digest did not match: expected=%s current=%s",
 						model.RepresentationDigest(body), model.RepresentationDigest(confirmed.Body))}
 			}
 			return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: true,
@@ -585,11 +588,11 @@ func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, target Targ
 			if observeErr != nil {
 				return observedFailureResult(op, fmt.Errorf("conditional update outcome uncertain: %v; exact re-observation: %w", err, observeErr), true, item)
 			}
-			if found && current.Comment.ID == item.Comment.ID && current.Body == body {
+			if found && current.Comment.ID == item.Comment.ID && model.CanonicalBodyEqual(current.Body, body) {
 				return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: true,
 					Guarantee: github.CommentMutationStrictConditional, CommentID: current.Comment.ID, URL: current.Comment.HTMLURL,
 					BeforeDigest: model.RepresentationDigest(item.Body), AfterDigest: model.RepresentationDigest(current.Body),
-					Message: "conditional update response was lost; exact postcondition observed"}
+					Message: "conditional update response was lost; canonical postcondition observed"}
 			}
 			if found && current.Comment.ID == item.Comment.ID {
 				return observedPairFailureResult(op, err, true, item, current)
@@ -635,7 +638,7 @@ func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, target Targ
 		}
 		return observedFailureResult(op, fmt.Errorf("update succeeded but exact re-observation failed: %w", observeErr), false, item)
 	}
-	if confirmedFound && confirmed.Comment.ID == item.Comment.ID && confirmed.Body == body {
+	if confirmedFound && confirmed.Comment.ID == item.Comment.ID && model.CanonicalBodyEqual(confirmed.Body, body) {
 		return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: false,
 			Guarantee: github.CommentMutationNonAtomicSingleWriter,
 			CommentID: confirmed.Comment.ID, URL: confirmed.Comment.HTMLURL,
@@ -650,7 +653,7 @@ func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, target Targ
 	if !confirmedFound || confirmed.Comment.ID != item.Comment.ID {
 		return observedConflictResult(op, "update returned but the exact target could not be re-observed", item)
 	}
-	return observedPairConflictResult(op, fmt.Sprintf("update returned but exact representation digest did not match: expected=%s current=%s",
+	return observedPairConflictResult(op, fmt.Sprintf("update returned but canonical representation digest did not match: expected=%s current=%s",
 		model.RepresentationDigest(body), model.RepresentationDigest(confirmed.Body)), item, confirmed)
 }
 

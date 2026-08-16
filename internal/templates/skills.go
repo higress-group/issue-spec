@@ -97,6 +97,7 @@ func issueSpecWorkflows(repo string, options WorkflowAuthoringOptions) []Workflo
 - Legacy bare directory declarations remain readable, but workspace prepare may reject them; correct the PROCESS or pass an explicit recursive ownership value before allocation.`
 	const phaseProtocolAuthorityGuidance = "Built-in protocol overrides project text; never reorder/omit steps or move open decisions."
 	const typedIDAllocationGuidance = "Every new typed ID MUST be `<TYPE>-<issue><three-digit sequence>`: Issue 1 starts with `QUESTION-1001`, Issue 44 with `QUESTION-44001`. Allocate 001-999 only within the target Issue and type after reading that Issue's typed comments, and never renumber a legacy ID. New writes reject wrong Issue prefixes; `--allow-legacy-id` is only for intentional legacy-compatible creates."
+	const translationSuffixGuidance = "A translation bot may append a machine-translation copy after a divider line in an issue, title, or comment body. issue-spec reads, marker counting, and digests tolerate that suffix automatically: never hand-strip it from a provider body, and never author the divider literal on its own unfenced line when writing issues or comments."
 
 	workflows := []WorkflowTemplate{
 		{
@@ -106,7 +107,11 @@ func issueSpecWorkflows(repo string, options WorkflowAuthoringOptions) []Workflo
 
 ## Human Review Projections
 
-Before generating or updating any phase projection, read [Human Review Projection Generation](references/human-review-projections.md) completely. Build a coverage ledger from authoritative inputs, then produce a coverage-complete review surface rather than a delta, changelog, or executive summary. Use the reference to build the Markdown fallback, the single ` + "`html-preview`" + ` review surface, source digest, coverage audit, and validation checks before running ` + "`projection upsert`" + `.`,
+Before generating or updating any phase projection, read [Human Review Projection Generation](references/human-review-projections.md) completely. Build a coverage ledger from authoritative inputs, then produce a coverage-complete review surface rather than a delta, changelog, or executive summary. Use the reference to build the Markdown fallback, the single ` + "`html-preview`" + ` review surface, source digest, coverage audit, and validation checks before running ` + "`projection upsert`" + `.
+
+## Machine-Translation Suffixes
+
+` + translationSuffixGuidance,
 			Body: `# Issue Spec Workflow
 
 Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by implementation, validation, a human-facing rationale, PR/MR creation, and exact-head human review handoff. The human and code provider own approval and merge.

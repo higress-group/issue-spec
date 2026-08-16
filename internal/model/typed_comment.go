@@ -17,11 +17,14 @@ import (
 	"github.com/higress-group/issue-spec/internal/preview"
 )
 
-// RepresentationDigest returns the lowercase SHA-256 digest of the exact
-// remote Markdown representation. It intentionally performs no whitespace,
-// newline, or semantic normalization.
+// RepresentationDigest returns the lowercase SHA-256 digest of the stripped
+// raw body: CanonicalView removes a recognized machine-translation suffix
+// (divider-anchored, single-divider rule) and nothing else. There is no
+// preview masking and no other whitespace, newline, or semantic normalization,
+// so bodies without a recognized suffix keep their exact-bytes digest and
+// html-preview source edits remain digest-visible.
 func RepresentationDigest(body string) string {
-	sum := sha256.Sum256([]byte(body))
+	sum := sha256.Sum256([]byte(CanonicalView(body)))
 	return hex.EncodeToString(sum[:])
 }
 

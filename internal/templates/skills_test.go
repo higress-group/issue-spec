@@ -371,7 +371,7 @@ func TestGeneratedGuidanceDeterministicSizeBudgets(t *testing.T) {
 		maxItems    int
 	}
 	budgets := map[string]budget{
-		"issue-spec-workflow": {maxBytes: 12400, maxHeadings: 8, maxItems: 40},
+		"issue-spec-workflow": {maxBytes: 12800, maxHeadings: 8, maxItems: 40},
 		"issue-spec-propose":  {maxBytes: 5000, maxHeadings: 4, maxItems: 16},
 		"issue-spec-apply":    {maxBytes: 8900, maxHeadings: 5, maxItems: 12},
 	}
