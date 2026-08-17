@@ -45,3 +45,23 @@ func TestExecuteOwnerLinkNonAtomicPassesSuffixOnlyDrift(t *testing.T) {
 		t.Fatalf("result=%+v writes=%+v", result, strict.writes)
 	}
 }
+
+// Pins the digest-stability boundary: an owner body without a trailing LF
+// canonicalizes to the single-LF form when a suffix is stripped, so the
+// non-atomic digest guard fails closed instead of passing suffix-only drift.
+func TestExecuteOwnerLinkNonAtomicFailsClosedWithoutTrailingNewline(t *testing.T) {
+	strict := newLinkBackend()
+	strict.comments[3][0].Body = strings.TrimRight(strict.comments[3][0].Body, "\n")
+	strict.suffixOnOwnerList = 2
+	plain := struct{ github.IssueBackend }{IssueBackend: strict}
+	request := linkTargets{Version: 1, Owner: linkTarget{Issue: 3, Type: "TASK", ID: "TASK-001"},
+		Add: []linkTarget{{Issue: 1, Type: "SPEC", ID: "SPEC-001"}}}
+	digest := model.RepresentationDigest(strict.comments[3][0].Body)
+	if _, err := executeOwnerLink(context.Background(), plain, "o/r", request, false, true, digest); err == nil ||
+		!strings.Contains(err.Error(), "drifted") {
+		t.Fatalf("no-trailing-LF owner must fail closed, err=%v", err)
+	}
+	if strict.writes[31] != 0 {
+		t.Fatalf("writes=%+v", strict.writes)
+	}
+}

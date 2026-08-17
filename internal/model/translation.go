@@ -19,7 +19,19 @@ const translationDivider = "<!--This is a translation content dividing line, the
 // masking and no other normalization beyond collapsing the trailing blank
 // lines the suffix join introduced. Bodies without a recognized suffix are
 // returned byte-identical with stripped=false.
+//
+// Digest-stability boundary: the stripped view ends in exactly one "\n"
+// whenever the prefix is non-empty, so RepresentationDigest(body) equals
+// RepresentationDigest(body+suffix) only when the pre-suffix body itself ends
+// in exactly one LF. A pre-suffix body ending in zero or two-plus LFs keeps a
+// different digest after stripping (the join byte count is not recoverable);
+// digest-guarded sites fail closed in that case. Making digests stable for
+// all bodies would require always normalizing trailing newlines, which would
+// change digests of untranslated bodies and is deliberately not done.
 func StripTranslationSuffix(body string) (string, bool) {
+	if !strings.Contains(body, translationDivider) {
+		return body, false
+	}
 	lines := strings.Split(body, "\n")
 	qualifying := qualifyingDividerLines(lines)
 	if len(qualifying) != 1 {

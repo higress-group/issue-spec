@@ -226,7 +226,7 @@ func CodeChangeRationaleGateEligible(marker CodeChangeRationaleMarker) bool {
 // duplicate marker is reported as present plus an error so callers fail closed
 // instead of silently treating it as ordinary prose.
 func FindCodeChangeRationaleMarker(body string) (CodeChangeRationaleMarker, bool, error) {
-	matches := codeChangeRationaleMarkerRe.FindAllStringSubmatch(body, -1)
+	matches := codeChangeRationaleMarkerRe.FindAllStringSubmatch(CanonicalView(body), -1)
 	if len(matches) == 0 {
 		return CodeChangeRationaleMarker{}, false, nil
 	}

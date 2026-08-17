@@ -38,6 +38,10 @@ func TestStripTranslationSuffix(t *testing.T) {
 		{name: "crlf body without suffix is passthrough", body: "Agent: Coordinator\r\nType: SPEC\r\n", want: "Agent: Coordinator\r\nType: SPEC\r\n", stripped: false},
 		{name: "crlf body with suffix", body: "Agent: Coordinator\r\n\r\n" + testTranslationDivider + "\r\n\r\ntranslated", want: "Agent: Coordinator\n", stripped: true},
 		{name: "divider mid-body only strips tail", body: "head line\n\n" + testTranslationDivider + "\n\ntail", want: "head line\n", stripped: true},
+		{name: "blockquoted divider does not qualify", body: original + "\n\n> " + testTranslationDivider + "\n\nquoted", want: original + "\n\n> " + testTranslationDivider + "\n\nquoted", stripped: false},
+		{name: "mixed fence chars leave fence unclosed", body: original + "\n\n```\ncode\n~~~\n\n" + testTranslationDivider + "\n\ncopy", want: original + "\n\n```\ncode\n~~~\n\n" + testTranslationDivider + "\n\ncopy", stripped: false},
+		{name: "divider as last line without trailing newline still strips", body: original + "\n\n" + testTranslationDivider, want: original, stripped: true},
+		{name: "four-space indented divider qualifies by design", body: original + "\n\n    " + testTranslationDivider + "  \n\ncopy", want: original, stripped: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -60,6 +64,43 @@ func TestCanonicalViewMatchesStripOnly(t *testing.T) {
 	stripped, ok := StripTranslationSuffix(body)
 	if !ok || CanonicalView(body) != stripped {
 		t.Fatalf("CanonicalView must equal the strip-only view: %q vs %q", CanonicalView(body), stripped)
+	}
+}
+
+func TestRepresentationDigestStabilityBoundaryOnTrailingNewlines(t *testing.T) {
+	oneLF := "## Requirement\n\nThe system MUST work.\n"
+	suffix := "\n\n" + testTranslationDivider + "\n\nmachine copy"
+	if RepresentationDigest(oneLF) != RepresentationDigest(oneLF+suffix) {
+		t.Fatal("original ending in exactly one LF must keep its digest across a suffix")
+	}
+	noLF := strings.TrimRight(oneLF, "\n")
+	if RepresentationDigest(noLF) == RepresentationDigest(noLF+suffix) {
+		t.Fatal("original with zero trailing LF must fail closed: digest changed by the suffix")
+	}
+	twoLF := oneLF + "\n"
+	if RepresentationDigest(twoLF) == RepresentationDigest(twoLF+suffix) {
+		t.Fatal("original with two trailing LFs must fail closed: digest changed by the suffix")
+	}
+	stripped, ok := StripTranslationSuffix(noLF + suffix)
+	if !ok || stripped != oneLF {
+		t.Fatalf("strip canonicalizes to the single-LF form: stripped=%q ok=%v", stripped, ok)
+	}
+}
+
+func TestCanonicalViewWithoutDividerIsAllocationFree(t *testing.T) {
+	body := strings.Repeat("ordinary provider text line\n", 256)
+	if strings.Contains(body, testTranslationDivider) {
+		t.Fatal("fixture must not contain the divider")
+	}
+	allocs := testing.AllocsPerRun(200, func() {
+		CanonicalView(body)
+	})
+	if allocs != 0 {
+		t.Fatalf("CanonicalView no-divider allocations = %v, want 0", allocs)
+	}
+	stripped, ok := StripTranslationSuffix(body)
+	if ok || stripped != body {
+		t.Fatalf("no-divider passthrough broken: ok=%v", ok)
 	}
 }
 

@@ -171,7 +171,7 @@ func ObserveAcceptedReceiptAuthority(body string, role assignment.Role) (Accepte
 	if !ok {
 		return AcceptedReceiptAuthority{}, false, fmt.Errorf("unsupported accepted receipt role %q", role)
 	}
-	body = preview.SemanticView(body)
+	body = preview.SemanticView(CanonicalView(body))
 	if !strings.Contains(body, marker.token) {
 		return AcceptedReceiptAuthority{}, false, nil
 	}
