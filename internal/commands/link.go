@@ -310,7 +310,7 @@ func executeOwnerLink(ctx context.Context, backend github.IssueBackend, repo str
 			}
 			return linkResult{}, fmt.Errorf("conditional update exact re-observation: %w", observeErr)
 		}
-		if observed.Comment.Body == frozen.DesiredBody {
+		if model.CanonicalBodyEqual(observed.Comment.Body, frozen.DesiredBody) {
 			result.Action, result.RepresentationAfter = "updated", observed.RepresentationVersion
 			return result, nil
 		}
@@ -318,7 +318,7 @@ func executeOwnerLink(ctx context.Context, backend github.IssueBackend, repo str
 			return linkResult{}, fmt.Errorf("conditional owner update failed: %w (current digest %s)", updateErr,
 				model.RepresentationDigest(observed.Comment.Body))
 		}
-		return linkResult{}, fmt.Errorf("conditional owner update returned version %d but exact bytes differ (response version %d)",
+		return linkResult{}, fmt.Errorf("conditional owner update returned version %d but canonical representation differs (response version %d)",
 			observed.RepresentationVersion, updated.RepresentationVersion)
 	}
 
@@ -332,7 +332,7 @@ func executeOwnerLink(ctx context.Context, backend github.IssueBackend, repo str
 	if err != nil {
 		return linkResult{}, fmt.Errorf("pre-update exact observation: %w", err)
 	}
-	if model.RepresentationDigest(fresh.Body) != expectedDigest || fresh.Body != before.Body {
+	if model.RepresentationDigest(fresh.Body) != expectedDigest || !model.CanonicalBodyEqual(fresh.Body, before.Body) {
 		return linkResult{}, fmt.Errorf("owner representation drifted before non-atomic update: expected=%s current=%s",
 			expectedDigest, model.RepresentationDigest(fresh.Body))
 	}
@@ -344,7 +344,7 @@ func executeOwnerLink(ctx context.Context, backend github.IssueBackend, repo str
 		}
 		return linkResult{}, fmt.Errorf("non-atomic update exact re-observation: %w", observeErr)
 	}
-	if confirmed.Body == frozen.DesiredBody {
+	if model.CanonicalBodyEqual(confirmed.Body, frozen.DesiredBody) {
 		result.Action = "updated"
 		return result, nil
 	}
@@ -352,7 +352,7 @@ func executeOwnerLink(ctx context.Context, backend github.IssueBackend, repo str
 		return linkResult{}, fmt.Errorf("non-atomic owner update failed: %w (current digest %s)", updateErr,
 			model.RepresentationDigest(confirmed.Body))
 	}
-	return linkResult{}, fmt.Errorf("non-atomic owner update returned but exact bytes differ: expected=%s current=%s",
+	return linkResult{}, fmt.Errorf("non-atomic owner update returned but canonical representation differs: expected=%s current=%s",
 		frozen.AfterDigest, model.RepresentationDigest(confirmed.Body))
 }
 

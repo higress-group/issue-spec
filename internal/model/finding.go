@@ -49,7 +49,7 @@ func RenderFindingMarker(id, severity, process, spec, status, path string, line 
 }
 
 func FindFindingMarker(body string) (FindingMarker, bool, error) {
-	matches := findingMarkerRe.FindAllStringSubmatch(body, -1)
+	matches := findingMarkerRe.FindAllStringSubmatch(CanonicalView(body), -1)
 	for _, match := range matches {
 		attrs := parseMarkerAttrs(match[1])
 		if attrs["id"] == "" {
@@ -137,7 +137,7 @@ func RenderFindingReplyMarker(finding, process, status string) string {
 }
 
 func FindFindingReplyMarker(body string) (FindingReplyMarker, bool, error) {
-	matches := findingReplyMarkerRe.FindAllStringSubmatch(body, -1)
+	matches := findingReplyMarkerRe.FindAllStringSubmatch(CanonicalView(body), -1)
 	for _, match := range matches {
 		attrs := parseMarkerAttrs(match[1])
 		if attrs["finding"] == "" {

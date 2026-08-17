@@ -25,7 +25,7 @@ func RenderRationaleMarker(process, spec, path string, line int) string {
 }
 
 func FindRationaleMarker(body string) (RationaleMarker, bool, error) {
-	matches := rationaleMarkerRe.FindAllStringSubmatch(body, -1)
+	matches := rationaleMarkerRe.FindAllStringSubmatch(CanonicalView(body), -1)
 	for _, match := range matches {
 		attrs := parseMarkerAttrs(match[1])
 		if attrs["process"] == "" && attrs["spec"] == "" {

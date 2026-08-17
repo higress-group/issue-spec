@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/model"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
@@ -631,7 +632,7 @@ func referenceEqual(existing Reference, input UpsertReferenceInput) bool {
 	if err != nil {
 		return false
 	}
-	return existing.CanonicalURL == input.CanonicalURL && equalOptional(existing.Title, input.Title) &&
+	return existing.CanonicalURL == input.CanonicalURL && equalOptionalTitle(existing.Title, input.Title) &&
 		existing.LifecycleState == input.LifecycleState && existing.Visibility == input.Visibility &&
 		bytes.Equal(existingMetadata, input.Metadata)
 }
@@ -641,6 +642,13 @@ func equalOptional(left, right *string) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
+}
+
+func equalOptionalTitle(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return model.CanonicalTitle(*left) == model.CanonicalTitle(*right)
 }
 
 func canonicalObject(raw json.RawMessage) (json.RawMessage, error) {

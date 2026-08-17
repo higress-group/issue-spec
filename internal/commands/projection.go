@@ -552,7 +552,7 @@ func findUniqueProjection(comments []github.Comment, phase string, owner int) (p
 }
 
 func parseProjectionMarkers(body string) ([]projectionMarker, error) {
-	matches := projectionMarkerPattern.FindAllStringSubmatch(preview.SemanticView(body), -1)
+	matches := projectionMarkerPattern.FindAllStringSubmatch(preview.SemanticView(model.CanonicalView(body)), -1)
 	markers := make([]projectionMarker, 0, len(matches))
 	for _, match := range matches {
 		attrs := map[string]string{}

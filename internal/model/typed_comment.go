@@ -17,11 +17,14 @@ import (
 	"github.com/higress-group/issue-spec/internal/preview"
 )
 
-// RepresentationDigest returns the lowercase SHA-256 digest of the exact
-// remote Markdown representation. It intentionally performs no whitespace,
-// newline, or semantic normalization.
+// RepresentationDigest returns the lowercase SHA-256 digest of the stripped
+// raw body: CanonicalView removes a recognized machine-translation suffix
+// (divider-anchored, single-divider rule) and nothing else. There is no
+// preview masking and no other whitespace, newline, or semantic normalization,
+// so bodies without a recognized suffix keep their exact-bytes digest and
+// html-preview source edits remain digest-visible.
 func RepresentationDigest(body string) string {
-	sum := sha256.Sum256([]byte(body))
+	sum := sha256.Sum256([]byte(CanonicalView(body)))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -168,7 +171,7 @@ func ObserveAcceptedReceiptAuthority(body string, role assignment.Role) (Accepte
 	if !ok {
 		return AcceptedReceiptAuthority{}, false, fmt.Errorf("unsupported accepted receipt role %q", role)
 	}
-	body = preview.SemanticView(body)
+	body = preview.SemanticView(CanonicalView(body))
 	if !strings.Contains(body, marker.token) {
 		return AcceptedReceiptAuthority{}, false, nil
 	}
@@ -276,7 +279,7 @@ func decodeAcceptedReceiptIdentity(raw []byte) (map[string]json.RawMessage, erro
 
 func ParseTypedComment(body string) TypedComment {
 	tc := TypedComment{Links: map[string][]string{}, Body: body}
-	semanticBody := preview.SemanticView(body)
+	semanticBody := preview.SemanticView(CanonicalView(body))
 	marker, hasMarker, err := findMarker(semanticBody)
 	if err != nil {
 		tc.Errors = append(tc.Errors, err.Error())

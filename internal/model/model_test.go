@@ -8,7 +8,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
-func TestRepresentationDigestUsesExactMarkdownBytes(t *testing.T) {
+func TestRepresentationDigestUsesStrippedCanonicalBytes(t *testing.T) {
 	withoutNewline := RepresentationDigest("body")
 	withNewline := RepresentationDigest("body\n")
 	if withoutNewline != "230d8358dc8e8890b4c58deeb62912ee2f20357ae92a5cc861b98e68fe31acb5" {
@@ -19,6 +19,31 @@ func TestRepresentationDigestUsesExactMarkdownBytes(t *testing.T) {
 	}
 	if withoutNewline == withNewline {
 		t.Fatal("digest normalized the trailing newline")
+	}
+}
+
+func TestRepresentationDigestIsStableAcrossTranslationSuffixes(t *testing.T) {
+	original := "<!-- issue-spec:type=SPEC id=SPEC-001 version=1 -->\nAgent: Coordinator\n\n## Requirement: Beta\n\nThe system MUST work.\n"
+	firstTranslation := original + "\n\n" + testTranslationDivider + "\n\n" + strings.ReplaceAll(original, "Beta", "Alpha")
+	secondTranslation := original + "\n\n" + testTranslationDivider + "\n\n" + strings.ToUpper(original)
+	want := RepresentationDigest(original)
+	if got := RepresentationDigest(firstTranslation); got != want {
+		t.Fatalf("first translation digest %q, want original digest %q", got, want)
+	}
+	if got := RepresentationDigest(secondTranslation); got != want {
+		t.Fatalf("re-translated digest %q, want original digest %q", got, want)
+	}
+	changed := strings.Replace(original, "MUST work", "MUST NOT work", 1)
+	if RepresentationDigest(changed) == want {
+		t.Fatal("canonical content change must change the digest")
+	}
+}
+
+func TestRepresentationDigestStaysVisibleToPreviewSourceEdits(t *testing.T) {
+	body := "## Requirement: Preview\n\nThe system MUST work.\n\n```html-preview id=demo\n<p>one</p>\n```\n"
+	edited := strings.Replace(body, "<p>one</p>", "<p>two</p>", 1)
+	if RepresentationDigest(body) == RepresentationDigest(edited) {
+		t.Fatal("html-preview source edits must remain digest-visible")
 	}
 }
 

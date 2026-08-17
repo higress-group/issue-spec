@@ -330,9 +330,15 @@ func removeSemanticAuthority(body string, rule OwnerRule, targetID string) (stri
 	}
 	raw := strings.Split(body, "\n")
 	semantic := strings.Split(preview.SemanticView(body), "\n")
-	headingIndex, end := -1, len(semantic)
-	for index, line := range semantic {
-		trimmed := strings.TrimSpace(line)
+	end := len(semantic)
+	// A machine-translation suffix repeats section lines; semantic authority
+	// never lives there, so the scan stops at the divider line.
+	if divider := model.TranslationDividerLine(body); divider >= 0 && divider < end {
+		end = divider
+	}
+	headingIndex := -1
+	for index := 0; index < end; index++ {
+		trimmed := strings.TrimSpace(semantic[index])
 		if headingIndex < 0 {
 			if trimmed == heading {
 				headingIndex = index

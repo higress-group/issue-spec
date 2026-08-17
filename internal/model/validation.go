@@ -29,11 +29,13 @@ type specElement struct {
 }
 
 // LogicalBody returns the logical content of a typed comment body after
-// stripping the typed marker comment and the visible metadata header
-// (Agent/Type/ID/Status/Scope/Links block). Raw generated bodies and
-// already-wrapped bodies therefore reduce to the same logical representation so
-// every validation surface validates the same text.
+// stripping any recognized machine-translation suffix, the typed marker
+// comment, and the visible metadata header (Agent/Type/ID/Status/Scope/Links
+// block). Raw generated bodies and already-wrapped bodies therefore reduce to
+// the same logical representation so every validation surface validates the
+// same text.
 func LogicalBody(body string) string {
+	body = CanonicalView(body)
 	stripped := strings.TrimLeft(markerRe.ReplaceAllString(body, ""), "\n")
 	lines := strings.Split(stripped, "\n")
 
