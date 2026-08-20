@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
+	runnerrepository "github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
@@ -211,10 +213,37 @@ func TestReconcilerFailsClosedOnWrongDurableLink(t *testing.T) {
 	}
 }
 
+func TestReconcilerRecordsIneligibleRepositoryAsTerminalIgnored(t *testing.T) {
+	fixture := newReconcileFixture(t, "/new must not dispatch")
+	fixture.registry = reconcileRegistry{err: fmt.Errorf("%w: missing binding", runnerrepository.ErrRepositoryIneligible)}
+	reconciler, _, store := fixture.open(t, nil)
+	defer store.Close()
+	result, err := reconciler.ProcessOne(t.Context())
+	if err != nil || !result.Completed || result.Outcome != state.DeliveryOutcomeIgnored || result.Reason != "repository_ineligible" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	loaded, _ := store.Load(t.Context())
+	if len(loaded.Jobs) != 0 || fixture.backend.addCalls != 0 {
+		t.Fatalf("ineligible repository created effects: jobs=%d addCalls=%d", len(loaded.Jobs), fixture.backend.addCalls)
+	}
+}
+
+func TestReconcilerRetriesTransientRepositoryAuthorityFailure(t *testing.T) {
+	fixture := newReconcileFixture(t, "/new retry authority")
+	fixture.registry = reconcileRegistry{err: errors.New("server temporarily unavailable")}
+	reconciler, _, store := fixture.open(t, nil)
+	defer store.Close()
+	result, err := reconciler.ProcessOne(t.Context())
+	if err != nil || !result.Retried || result.Reason != "repository_authority_unavailable" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 type reconcileFixture struct {
 	delivery state.WebhookDelivery
 	backend  *reconcileBackend
 	scopes   RepositoryScopes
+	registry runnerrepository.Registry
 	runner   commentrunner.Config
 	policy   commentrunner.AuthorizationPolicy
 	clock    *mutableReconcileClock
@@ -275,12 +304,24 @@ func (f *reconcileFixture) open(t *testing.T, faults *faultStateStore) (*Reconci
 	if _, err := queue.Accept(t.Context(), f.delivery); err != nil {
 		t.Fatal(err)
 	}
-	reconciler, err := NewReconciler(ReconcilerConfig{Queue: queue, Store: store, Backend: f.backend, Scopes: f.scopes,
+	reconciler, err := NewReconciler(ReconcilerConfig{Queue: queue, Store: store, Backend: f.backend, Scopes: f.scopes, Registry: f.registry,
 		Runner: f.runner, AuthorizationPolicy: f.policy, WorkerID: "test-worker", LeaseDuration: time.Minute, Clock: f.clock})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return reconciler, queue, store
+}
+
+type reconcileRegistry struct {
+	entry runnerrepository.RegistryEntry
+	err   error
+}
+
+func (r reconcileRegistry) ResolveScope(context.Context, models.RepoScope) (runnerrepository.RegistryEntry, error) {
+	return r.entry, r.err
+}
+func (r reconcileRegistry) ResolveRepository(context.Context, string) (runnerrepository.RegistryEntry, error) {
+	return r.entry, r.err
 }
 
 type mutableReconcileClock struct{ now time.Time }

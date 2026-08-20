@@ -241,6 +241,9 @@ type Dispatcher struct {
 	CoordinatorExtraEnv map[string]string
 	OperatorSkillDirs   []string
 	CredentialBroker    CredentialBroker
+	// CredentialScopes retains startup-authoritative scopes for explicit-repository
+	// runners so pre-upgrade cleanup intents can revoke after live binding removal.
+	// Normal dispatch and all new cleanup intents still resolve Repositories live.
 	CredentialScopes    map[string]models.RepoScope
 	CapabilityPreflight CapabilityPreflight
 	CapabilityHost      string
@@ -559,9 +562,6 @@ func (d *Dispatcher) validate() error {
 	if d.Writeback == nil {
 		return fmt.Errorf("job dispatcher writeback service is required")
 	}
-	if d.CredentialBroker != nil && len(d.CredentialScopes) == 0 {
-		return fmt.Errorf("job dispatcher credential scopes are required")
-	}
 	return nil
 }
 
@@ -569,8 +569,27 @@ func (d *Dispatcher) revokeJobCredentials(ctx context.Context, job state.Job) er
 	if d == nil || d.CredentialBroker == nil {
 		return nil
 	}
-	scope, ok := d.CredentialScopes[job.Repo]
-	if !ok || scope.Validate() != nil {
+	if persisted := job.CredentialCleanup.RepositoryScope; persisted != nil && persisted.Validate() == nil {
+		return d.CredentialBroker.RevokeJob(ctx, *persisted, job.ID)
+	}
+	// Legacy cleanup intents predate the persisted secret-free scope. Explicit
+	// runners retain their startup-authoritative scope map specifically so
+	// privilege-reducing cleanup does not depend on a still-active binding.
+	if scope, ok := d.configuredCredentialScope(job.Repo); ok {
+		return d.CredentialBroker.RevokeJob(ctx, scope, job.ID)
+	}
+	// Dynamic registries have no pre-feature organization intent. Keep live
+	// resolution as a compatibility fallback for external constructors.
+	var repo RepositoryInfo
+	var err error
+	if d.Repositories != nil {
+		repo, err = d.Repositories.ResolveRepository(ctx, job.Repo)
+		if err != nil {
+			return fmt.Errorf("credential broker repository scope is unavailable: %w", err)
+		}
+	}
+	scope, ok := d.repositoryScope(job.Repo, repo)
+	if !ok {
 		return fmt.Errorf("credential broker repository scope is unavailable")
 	}
 	return d.CredentialBroker.RevokeJob(ctx, scope, job.ID)
@@ -627,19 +646,31 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 	if err != nil {
 		return d.fail(ctx, job.ID, "repository-binding", err)
 	}
-	if err := d.preflightRequiredOperations(ctx, job); err != nil {
+	if err := d.preflightRequiredOperations(ctx, job, repo); err != nil {
 		return d.fail(ctx, job.ID, "capability-preflight", err)
+	}
+	if len(normalizedRequiredOperations(d.RequiredOperations)) > 0 {
+		current, err := d.Repositories.ResolveRepository(ctx, job.Repo)
+		if err != nil {
+			return d.fail(ctx, job.ID, "repository-binding", err)
+		}
+		if err := validatePostPreflightRepository(repo, current); err != nil {
+			return d.fail(ctx, job.ID, "repository-binding", err)
+		}
+		// Carry the post-preflight resolution forward so pinning, credentials and
+		// workspace preparation all consume the same authoritative snapshot.
+		repo = current
 	}
 	if err := d.pinJobRepositoryBinding(ctx, job.ID, repo.Binding); err != nil {
 		return d.fail(ctx, job.ID, "repository-binding", err)
 	}
 	var credentialLease *credentials.Lease
 	if d.CredentialBroker != nil {
-		scope, ok := d.CredentialScopes[job.Repo]
-		if !ok || scope.Validate() != nil {
+		scope, ok := d.repositoryScope(job.Repo, repo)
+		if !ok {
 			return d.fail(ctx, job.ID, "credentials", fmt.Errorf("credential broker repository scope is unavailable"))
 		}
-		if err := d.beginCredentialCleanup(ctx, job.ID); err != nil {
+		if err := d.beginCredentialCleanup(ctx, job.ID, scope); err != nil {
 			return d.fail(ctx, job.ID, "credentials", fmt.Errorf("persist credential cleanup intent: %w", err))
 		}
 		jobID := job.ID
@@ -813,6 +844,37 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		return Result{Executed: true, JobID: job.ID, Status: terminal, Error: safeError(err)}, err
 	}
 	return Result{Executed: true, JobID: job.ID, Status: terminal}, nil
+}
+
+func validatePostPreflightRepository(before, current RepositoryInfo) error {
+	beforeScopeValid, currentScopeValid := before.Scope.Validate() == nil, current.Scope.Validate() == nil
+	if beforeScopeValid != currentScopeValid || (beforeScopeValid && before.Scope != current.Scope) ||
+		!strings.EqualFold(strings.TrimSpace(before.Repo), strings.TrimSpace(current.Repo)) {
+		return resolver.DriftError()
+	}
+	return resolver.ValidatePinned(before.Binding, current.Binding)
+}
+
+func (d *Dispatcher) repositoryScope(repository string, resolved RepositoryInfo) (models.RepoScope, bool) {
+	if resolved.Scope.Validate() == nil {
+		return resolved.Scope, true
+	}
+	// Compatibility for external constructors that have not yet populated the
+	// trusted scope on their RepositoryInfo result.
+	return d.configuredCredentialScope(repository)
+}
+
+func (d *Dispatcher) configuredCredentialScope(repository string) (models.RepoScope, bool) {
+	repository = strings.TrimSpace(repository)
+	if scope, ok := d.CredentialScopes[repository]; ok && scope.Validate() == nil {
+		return scope, true
+	}
+	for configured, scope := range d.CredentialScopes {
+		if strings.EqualFold(strings.TrimSpace(configured), repository) && scope.Validate() == nil {
+			return scope, true
+		}
+	}
+	return models.RepoScope{}, false
 }
 
 func (d *Dispatcher) resolveRepositoryForCommand(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string) (RepositoryInfo, state.PublicSession, error) {

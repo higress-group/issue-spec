@@ -79,7 +79,8 @@ func TestDispatcherCredentialOrderRotationSandboxAndTerminalRevoke(t *testing.T)
 				return nil
 			}},
 	}
-	dispatcher.CredentialScopes = map[string]models.RepoScope{"o/r": repoScope}
+	dispatcher.Repositories = fixedRepositoryResolver{info: RepositoryInfo{Repo: "o/r", Scope: repoScope,
+		CloneURL: "https://github.com/o/r.git", DefaultBranch: "main", Ref: "main", Binding: testRepositoryBinding()}}
 
 	result, err := dispatcher.RunNext(context.Background())
 	if err != nil || result.Status != state.StatusCompleted {
@@ -116,7 +117,8 @@ func TestDispatcherCredentialOrderRotationSandboxAndTerminalRevoke(t *testing.T)
 		t.Fatalf("credential leaked into runner state: %s", persisted)
 	}
 	cleanup := loadState(t, store).Jobs["job-credential"].CredentialCleanup
-	if cleanup.Status != state.CredentialCleanupComplete || cleanup.Attempt != 1 || cleanup.CompletedAt.IsZero() {
+	if cleanup.Status != state.CredentialCleanupComplete || cleanup.Attempt != 1 || cleanup.CompletedAt.IsZero() ||
+		cleanup.RepositoryScope == nil || *cleanup.RepositoryScope != repoScope {
 		t.Fatalf("terminal credential cleanup was not durably confirmed: %+v", cleanup)
 	}
 }

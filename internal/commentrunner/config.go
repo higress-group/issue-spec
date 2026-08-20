@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/gitidentity"
@@ -34,6 +35,8 @@ type Config struct {
 	Profile                 string                 `json:"profile,omitempty"`
 	Hostname                string                 `json:"hostname"`
 	Repositories            []string               `json:"repositories"`
+	Organization            string                 `json:"organization,omitempty"`
+	SubscriptionID          string                 `json:"subscription_id,omitempty"`
 	RunnerIdentity          string                 `json:"runner_identity"`
 	NotificationIdentity    string                 `json:"notification_identity,omitempty"`
 	NotificationTokenEnv    string                 `json:"notification_token_env,omitempty"`
@@ -211,6 +214,8 @@ func (c Config) Normalized() Config {
 	c.Agent.Model = strings.TrimSpace(c.Agent.Model)
 	c.Agent.ClaudeAllowedTools = normalizeStringList(c.Agent.ClaudeAllowedTools)
 	c.Repositories = normalizeStringList(c.Repositories)
+	c.Organization = strings.TrimSpace(c.Organization)
+	c.SubscriptionID = strings.TrimSpace(c.SubscriptionID)
 	c.AllowedUsers = normalizeLoginList(c.AllowedUsers)
 	return c
 }
@@ -225,12 +230,20 @@ func (c Config) Validate() error {
 	if _, err := auth.ParseGitHubBackendMode(string(c.GitHubBackend)); err != nil {
 		return err
 	}
-	if len(c.Repositories) == 0 {
-		return fmt.Errorf("at least one --repo is required")
+	if (len(c.Repositories) == 0) == (c.Organization == "") {
+		return fmt.Errorf("exactly one of --organization or one-or-more --repo is required")
 	}
 	for _, repo := range c.Repositories {
 		if _, err := github.ParseRepo(repo); err != nil {
 			return err
+		}
+	}
+	if c.Organization != "" {
+		if strings.ContainsAny(c.Organization, "/\\\r\n\t") {
+			return fmt.Errorf("--organization must be one organization name")
+		}
+		if _, err := uuid.Parse(c.SubscriptionID); err != nil {
+			return fmt.Errorf("--subscription-id must be a UUID in organization mode")
 		}
 	}
 	if c.RunnerIdentity == "" {
@@ -295,9 +308,21 @@ func runnerScopeSegments(cfg Config) ([]string, error) {
 	if strings.TrimSpace(cfg.RunnerIdentity) == "" {
 		return nil, fmt.Errorf("--runner is required")
 	}
+	organization := strings.TrimSpace(cfg.Organization)
 	repos := normalizeStringList(cfg.Repositories)
-	if len(repos) == 0 {
-		return nil, fmt.Errorf("at least one --repo is required")
+	if (len(repos) == 0) == (organization == "") {
+		return nil, fmt.Errorf("exactly one of --organization or one-or-more --repo is required")
+	}
+	if organization != "" {
+		if _, err := uuid.Parse(strings.TrimSpace(cfg.SubscriptionID)); err != nil {
+			return nil, fmt.Errorf("--subscription-id must be a UUID in organization mode")
+		}
+		segments := []string{host}
+		if realmSegment != "" {
+			segments = append(segments, realmSegment)
+		}
+		return append(segments, "organization", safePathSegment(strings.ToLower(organization)),
+			safePathSegment(strings.ToLower(cfg.SubscriptionID)), runner), nil
 	}
 	canonicalRepos, err := canonicalReposForScope(repos)
 	if err != nil {

@@ -213,3 +213,30 @@ idempotent re-answer.
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/75#issuecomment-4882860225
+
+### Requirement: Organization Runner state remains stable as repositories change
+
+An organization-scoped Runner MUST bind its durable state and managed storage identity to the self-hosted realm, organization, subscription, and Runner identity rather than to a changing repository enumeration, while preserving recovery and isolation for every repository session.
+
+#### Scenario: new repository does not move Runner state
+
+- **WHEN** a repository is created, removed, enrolled, or becomes temporarily ineligible in the configured organization
+- **THEN** the default organization Runner state path, workspace root, credential root, diagnostics root, and storage owner identity remain unchanged
+
+#### Scenario: restart resolves queued repository authority
+
+- **WHEN** an organization Runner restarts with queued, interrupted, cancellable, or resumable work for an enrolled repository
+- **THEN** it reloads the same state, re-resolves repository eligibility and binding authority, and preserves the existing job and session recovery contract
+
+#### Scenario: discovery does not adopt local working copies
+
+- **WHEN** the registry enrolls a repository or a valid `/new` job reaches workspace preparation
+- **THEN** enrollment creates no repository checkout and dispatch continues to create an isolated Runner-owned session clone beneath the configured managed workspace root
+
+#### Scenario: organization and explicit roots cannot alias accidentally
+
+- **WHEN** operators use default paths for organization mode and explicit repository mode on the same host
+- **THEN** their deterministic scope segments remain distinct and the existing one-owner-per-canonical-root protection prevents unsafe concurrent cleanup ownership
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/456#issuecomment-5352636685

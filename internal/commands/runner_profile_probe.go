@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
+	runnerrepository "github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
@@ -23,14 +24,18 @@ type runnerProfileCapabilityProbe struct {
 	native        github.NativeContextOperations
 	compatibility github.AgentCapabilityBackend
 	runnerLogin   string
+	registry      runnerrepository.Registry
 	repositories  map[string]models.RepoScope
 }
 
 func (p runnerProfileCapabilityProbe) ProbeProfileCredential(ctx context.Context, request credentials.PreflightRequest) capability.Report {
 	req := request.Request
-	repository, scope, configured := p.configuredRepository(req.Repository)
+	repository, scope, configured, resolveErr := p.configuredRepository(ctx, req.Repository)
 	if p.native == nil || p.compatibility == nil || !configured || scope.Validate() != nil || request.Repo != scope ||
 		strings.TrimSpace(p.runnerLogin) == "" {
+		if resolveErr != nil {
+			return runnerProfileProbeError(req, resolveErr, "runner profile repository authority probe failed")
+		}
 		return runnerProfileProbeFailure(req, "unknown", capability.FailureInvalidRequest,
 			"runner profile capability probe is not configured for this repository")
 	}
@@ -75,14 +80,21 @@ func (p runnerProfileCapabilityProbe) ProbeProfileCredential(ctx context.Context
 	})
 }
 
-func (p runnerProfileCapabilityProbe) configuredRepository(requested string) (string, models.RepoScope, bool) {
+func (p runnerProfileCapabilityProbe) configuredRepository(ctx context.Context, requested string) (string, models.RepoScope, bool, error) {
+	if p.registry != nil {
+		entry, err := p.registry.ResolveRepository(ctx, requested)
+		if err != nil {
+			return "", models.RepoScope{}, false, err
+		}
+		return entry.Repository, entry.Scope, true, nil
+	}
 	requested = strings.TrimSpace(requested)
 	for repository, scope := range p.repositories {
 		if strings.EqualFold(strings.TrimSpace(repository), requested) {
-			return repository, scope, true
+			return repository, scope, true, nil
 		}
 	}
-	return "", models.RepoScope{}, false
+	return "", models.RepoScope{}, false, nil
 }
 
 func (p runnerProfileCapabilityProbe) repositoryAllowed(ctx context.Context, current github.NativeContext,

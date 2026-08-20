@@ -5,15 +5,16 @@ import {
   Activity, Bell, Bot, Cable, CheckCircle2, Clock3, ExternalLink, Filter, GitBranch,
   LockKeyhole, PauseCircle, PlayCircle, Plus, RefreshCw, RotateCw, Send, ShieldCheck, Trash2,
 } from "lucide-react";
-import { EmptyState, ErrorNotice, Field, Loading, Panel, SecretDialog, SelectInput, StatusBadge, TextInput } from "../app/components";
+import { EmptyState, ErrorNotice, Field, Loading, PageHeader, Panel, SecretDialog, SelectInput, StatusBadge, TextInput } from "../app/components";
 import { useInspector } from "../app/problem-inspector";
-import { queryKeys, useMeta } from "../auth/session";
+import { queryKeys, useCurrentContext, useMeta } from "../auth/session";
 import { webhookValidationFromError, type WebhookValidationMetadata } from "../lib/api/client";
 import { api } from "../lib/api/resources";
 import type { AdminRepository, SourceBinding, WebhookContentPolicy, WebhookDelivery, WebhookDeliveryFormat, WebhookRetry, WebhookSecret, WebhookSigningMode, WebhookSubscription } from "../lib/api/types";
 import { RepositoryHeader, useRepositoryContext } from "./repository-header";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import { useParams } from "react-router-dom";
 import "./integrations.css";
 
 type IntegrationKind = "source" | "webhooks";
@@ -54,6 +55,21 @@ export function IntegrationsPage({ kind }: { kind: IntegrationKind }) {
   const canManage = repositoryAccess?.allowed_actions.includes("integrations.manage") ?? false;
   if (kind === "webhooks" && !canManage) return <div className="page integrations-page"><IntegrationHeader kind={kind} repository={repository.data} /><Panel><EmptyState title={t("integrations.requiredTitle")} description={t("integrations.requiredDescription")} action={<StatusBadge tone="coral">{t("common.restricted")}</StatusBadge>} /></Panel></div>;
   return <div className="page integrations-page"><IntegrationHeader kind={kind} repository={repository.data} />{kind === "source" ? <SourceWorkspace orgId={orgId} repoId={repoId} canManage={canManage} /> : <WebhookWorkspace orgId={orgId} repoId={repoId} />}</div>;
+}
+
+export function OrganizationWebhooksPage() {
+  const { t } = useTranslation();
+  const { orgId = "" } = useParams();
+  const meta = useMeta();
+  const context = useCurrentContext();
+  if (meta.isLoading || context.isLoading) return <Loading label={t("integrations.opening")} />;
+  if (meta.error) return <ErrorNotice error={meta.error} />;
+  if (context.error) return <ErrorNotice error={context.error} />;
+  const organization = context.data?.organizations.find((item) => item.id === orgId);
+  const header = <PageHeader eyebrow={organization?.name ?? t("common.organization")} title={t("integrations.webhooksTitle")} description={t("integrations.webhooksDescription")} />;
+  if (!meta.data?.features.webhooks) return <div className="page integrations-page">{header}<Panel><EmptyState title={t("integrations.unavailableTitle")} description={t("integrations.unavailableDescription")} action={<StatusBadge tone="coral">{t("common.notMounted")}</StatusBadge>} /></Panel></div>;
+  if (!organization?.allowed_actions.includes("integrations.manage")) return <div className="page integrations-page">{header}<Panel><EmptyState title={t("integrations.requiredTitle")} description={t("integrations.requiredDescription")} action={<StatusBadge tone="coral">{t("common.restricted")}</StatusBadge>} /></Panel></div>;
+  return <div className="page integrations-page">{header}<WebhookWorkspace orgId={orgId} /></div>;
 }
 
 function IntegrationHeader({ kind, repository }: { kind: IntegrationKind; repository: AdminRepository }) {
@@ -103,7 +119,7 @@ function SourceWorkspace({ orgId, repoId, canManage }: { orgId: string; repoId: 
   </>;
 }
 
-function WebhookWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) {
+function WebhookWorkspace({ orgId, repoId }: { orgId: string; repoId?: string }) {
   const { t, i18n } = useTranslation();
   const inspector = useInspector();
   const client = useQueryClient();
@@ -129,7 +145,7 @@ function WebhookWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) 
     onSuccess: () => { setConfirmRevoke(undefined); setEditing(undefined); inspector.note(t("integrations.revoked")); void refresh(); },
     onError: inspector.report,
   });
-  const items = subscriptions.data?.subscriptions ?? [];
+  const items = (subscriptions.data?.subscriptions ?? []).filter((item) => repoId ? item.repository_id === repoId : item.scope_type === "organization" && !item.repository_id);
   return <>
     <section className="integration-hero webhook-hero" aria-label={t("integrations.overview")}><div className="integration-hero-mark"><Activity aria-hidden="true" /></div><div><span className="eyebrow">{t("integrations.transport")}</span><h2>{t("integrations.activeRoutes", { count: items.filter((item) => item.active).length })}</h2><p>{t("integrations.transportHelp")}</p></div><button className="button primary" type="button" onClick={() => setCreating((value) => !value)}><Plus size={16} />{creating ? t("integrations.closeForm") : t("integrations.newWebhook")}</button></section>
     {creating ? <WebhookEditor orgId={orgId} repoId={repoId} onSaved={(created) => { setCreating(false); if ("secret" in created && created.signing_mode !== "none") setSecret({ value: created.secret, title: t("integrations.secretTitle", { version: created.secret_version }), subscriptionId: created.id }); void refresh(); }} /> : null}
@@ -153,12 +169,12 @@ function WebhookWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) 
         </article>;
       })}</div>
     </Panel>
-    <DeliveryConsole orgId={orgId} repoId={repoId} />
+    {repoId ? <DeliveryConsole orgId={orgId} repoId={repoId} /> : null}
     {secret ? <SecretDialog secret={secret.value} title={secret.title} details={[{ label: t("integrations.subscriptionId"), value: secret.subscriptionId }]} onClose={() => setSecret(undefined)} /> : null}
   </>;
 }
 
-function WebhookEditor({ orgId, repoId, subscription, onSaved }: { orgId: string; repoId: string; subscription?: WebhookSubscription; onSaved: (result: WebhookSubscription | WebhookSecret) => void }) {
+function WebhookEditor({ orgId, repoId, subscription, onSaved }: { orgId: string; repoId?: string; subscription?: WebhookSubscription; onSaved: (result: WebhookSubscription | WebhookSecret) => void }) {
   const { t } = useTranslation();
   const inspector = useInspector();
   const defaults = useMemo(() => subscription ? webhookDraft(subscription) : emptyWebhookDraft, [subscription]);
@@ -178,7 +194,7 @@ function WebhookEditor({ orgId, repoId, subscription, onSaved }: { orgId: string
       const event_types = draft.delivery_format === "issue-spec.v1" ? draft.event_types : [];
       return subscription
         ? api.updateWebhookSubscription(orgId, subscription.id, { url: draft.url, event_types, delivery_format: draft.delivery_format, signing_mode: signingMode(draft), content_policy, retry, active: subscription.active, expected_version: subscription.representation_version, clear_destination_query: shouldClearDestinationQuery(subscription, draft) })
-        : api.createWebhookSubscription(orgId, { repository_id: repoId, url: draft.url, event_types, delivery_format: draft.delivery_format, signing_mode: signingMode(draft), content_policy, retry });
+        : api.createWebhookSubscription(orgId, { ...(repoId ? { repository_id: repoId } : {}), url: draft.url, event_types, delivery_format: draft.delivery_format, signing_mode: signingMode(draft), content_policy, retry });
     },
     onSuccess: (result) => { setServerValidation(undefined); inspector.note(t(subscription ? "integrations.configSaved" : "integrations.createdSaveSecret")); onSaved(result); },
     onError: (error) => { setServerValidation(webhookValidationFromError(error)); inspector.report(error); },

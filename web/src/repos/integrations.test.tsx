@@ -6,7 +6,8 @@ import { Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../../tests/render";
 import { server } from "../../tests/server";
-import { IntegrationsPage, shouldClearDestinationQuery } from "./integrations-page";
+import { IntegrationsPage, OrganizationWebhooksPage, shouldClearDestinationQuery } from "./integrations-page";
+import { fixtureContext } from "../../tests/server";
 
 const orgId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -293,11 +294,53 @@ describe("repository integrations workspace", () => {
   });
 });
 
+describe("organization webhook workspace", () => {
+  it("filters to organization routes, omits repository_id, shares lifecycle controls, and hides the repository ledger", async () => {
+    let created: Record<string, unknown> | undefined;
+    let updated: Record<string, unknown> | undefined;
+    let deliveryReads = 0;
+    const organizationRoute = webhookFixture({ repository_id: null, scope_type: "organization", url: "http://127.0.0.1:19090/organization-runner" });
+    server.use(
+      metaHandler(), organizationContextHandler(["organization.read", "integrations.manage"]),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [webhookFixture({ url: "https://repo-only.example.test/hook" }), organizationRoute] })),
+      http.post(webhookCollectionPath(), async ({ request }) => { created = await request.json() as Record<string, unknown>; return HttpResponse.json(webhookFixture({ repository_id: null, scope_type: "organization", secret: "organization-show-once", secret_version: 1 }), { status: 201 }); }),
+      http.patch(`${webhookCollectionPath()}/${webhookId}`, async ({ request }) => { updated = await request.json() as Record<string, unknown>; return HttpResponse.json({ ...organizationRoute, active: false, representation_version: 4 }); }),
+      http.get(deliveryCollectionPath(), () => { deliveryReads += 1; return HttpResponse.json({ deliveries: [] }); }),
+    );
+    renderOrganizationWebhooks();
+    expect(await screen.findByText("http://127.0.0.1:19090/organization-runner")).toBeVisible();
+    expect(screen.queryByText("https://repo-only.example.test/hook")).not.toBeInTheDocument();
+    expect(screen.queryByText("Delivery ledger")).not.toBeInTheDocument();
+    expect(deliveryReads).toBe(0);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(updated).toMatchObject({ active: false, expected_version: 3 }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "New webhook" }));
+    await userEvent.setup().type(screen.getByRole("textbox", { name: /^Receiver URL/ }), "http://127.0.0.1:19090/api/v1/runner/webhooks");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Create route" }));
+    await waitFor(() => expect(created).toMatchObject({ delivery_format: "issue-spec.v1", signing_mode: "bearer" }));
+    expect(created).not.toHaveProperty("repository_id");
+    expect(await screen.findByRole("dialog", { name: "Webhook secret v1" })).toHaveTextContent("organization-show-once");
+  });
+
+  it("does not read organization subscriptions without integrations.manage", async () => {
+    let reads = 0;
+    server.use(metaHandler(), organizationContextHandler(["organization.read"]),
+      http.get(webhookCollectionPath(), () => { reads += 1; return HttpResponse.json({ subscriptions: [] }); }));
+    renderOrganizationWebhooks();
+    expect(await screen.findByText("Integration management required")).toBeVisible();
+    expect(reads).toBe(0);
+  });
+});
+
 function renderIntegration(kind: "source" | "webhooks", allowedActions?: string[]) {
   server.use(repositoryHandler(), repositoryAccessHandler(allowedActions));
   const route = `/orgs/${orgId}/repos/${repoId}/integrations/${kind === "source" ? "source" : "webhooks"}`;
   return renderApp(<Routes><Route path="/orgs/:orgId/repos/:repoId/integrations/source" element={<IntegrationsPage kind="source" />} /><Route path="/orgs/:orgId/repos/:repoId/integrations/webhooks" element={<IntegrationsPage kind="webhooks" />} /></Routes>, route);
 }
+function renderOrganizationWebhooks() {
+  return renderApp(<Routes><Route path="/admin/orgs/:orgId/integrations/webhooks" element={<OrganizationWebhooksPage />} /></Routes>, `/admin/orgs/${orgId}/integrations/webhooks`);
+}
+function organizationContextHandler(allowedActions: string[]) { return http.get("http://localhost/api/v1/context", () => HttpResponse.json({ ...fixtureContext, organizations: [{ ...fixtureContext.organizations[0], id: orgId, allowed_actions: allowedActions }] })); }
 function repositoryHandler() { return http.get(`http://localhost/api/v1/orgs/${orgId}/repos/${repoId}`, () => HttpResponse.json({ id: repoId, organization_id: orgId, name: "issue-spec", display_name: "Issue Spec", description: "Issue-native specifications", visibility: "private", default_branch: "main", contribution_policy: "members", representation_version: 1 })); }
 function repositoryAccessHandler(allowed_actions = ["read", "integrations.manage"]) { return http.get(`http://localhost/api/v1/context/orgs/${orgId}/repos`, () => HttpResponse.json({ repositories: [{ repository: { id: repoId, organization_id: orgId, name: "issue-spec", display_name: "Issue Spec", visibility: "private", contribution_policy: "members" }, effective_permission: allowed_actions.includes("integrations.manage") ? "maintain" : "read", allowed_actions }] })); }
 function metaHandler() { return http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: true, webhooks: true, change_boards: true, runner: true, recovery_exchange: true } })); }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
 const (
@@ -17,7 +18,7 @@ const (
 	credentialCleanupCallTimeout    = 20 * time.Second
 )
 
-func (d *Dispatcher) beginCredentialCleanup(ctx context.Context, jobID string) error {
+func (d *Dispatcher) beginCredentialCleanup(ctx context.Context, jobID string, scope models.RepoScope) error {
 	if d == nil || d.CredentialBroker == nil {
 		return nil
 	}
@@ -32,9 +33,21 @@ func (d *Dispatcher) beginCredentialCleanup(ctx context.Context, jobID string) e
 			return errors.New("credential cleanup was already completed before acquisition")
 		}
 		if job.CredentialCleanup.Pending() {
+			if scope.Validate() == nil {
+				if job.CredentialCleanup.RepositoryScope != nil && *job.CredentialCleanup.RepositoryScope != scope {
+					return errors.New("credential cleanup repository scope changed")
+				}
+				persisted := scope
+				job.CredentialCleanup.RepositoryScope = &persisted
+				return st.UpsertJob(job)
+			}
 			return nil
 		}
 		job.CredentialCleanup = state.CredentialCleanup{Status: state.CredentialCleanupPending, RequestedAt: now}
+		if scope.Validate() == nil {
+			persisted := scope
+			job.CredentialCleanup.RepositoryScope = &persisted
+		}
 		return st.UpsertJob(job)
 	})
 }
@@ -161,7 +174,7 @@ func (d *Dispatcher) cleanupTerminalCredentials(ctx context.Context, job state.J
 			!job.RepositoryBinding.Complete() {
 			return nil
 		}
-		if err := d.beginCredentialCleanup(ctx, job.ID); err != nil {
+		if err := d.beginCredentialCleanup(ctx, job.ID, models.RepoScope{}); err != nil {
 			return err
 		}
 		var err error

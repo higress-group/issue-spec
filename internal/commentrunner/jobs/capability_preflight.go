@@ -12,7 +12,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 )
 
-func (d *Dispatcher) preflightRequiredOperations(ctx context.Context, job state.Job) error {
+func (d *Dispatcher) preflightRequiredOperations(ctx context.Context, job state.Job, repository RepositoryInfo) error {
 	operations := normalizedRequiredOperations(d.RequiredOperations)
 	if len(operations) == 0 {
 		return nil
@@ -23,8 +23,8 @@ func (d *Dispatcher) preflightRequiredOperations(ctx context.Context, job state.
 		report = capability.FailureReport(request, "", "", "unknown", capability.DecisionDenied,
 			capability.FailureOperationNotProvable, "operator credential issuer preflight is not configured")
 	} else {
-		scope, ok := d.CredentialScopes[job.Repo]
-		if !ok || scope.Validate() != nil {
+		scope, ok := d.repositoryScope(job.Repo, repository)
+		if !ok {
 			report = capability.FailureReport(request, "", "", "unknown", capability.DecisionDenied,
 				capability.FailureInvalidRequest, "repository credential scope is unavailable")
 		} else {

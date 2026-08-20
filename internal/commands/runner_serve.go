@@ -28,6 +28,7 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 	var repos, allowedUsers, previousFiles, previousEnvs, gitCredentialArgs, operatorSkillDirs stringListFlag
 	listen := fs.String("listen", "127.0.0.1:9876", "dedicated webhook listen address")
 	runner := fs.String("runner", "", "self-hosted runner identity")
+	organization := fs.String("organization", "", "organization name dynamically served by this subscription")
 	statePath := fs.String("state", "", "durable runner state path")
 	workspaceRoot := fs.String("workspace-root", "", "runner workspace root")
 	workspaceRetention := fs.Duration("workspace-retention", 7*24*time.Hour, "non-active workspace retention")
@@ -104,8 +105,9 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 		a.errorf("runner serve production mode requires an explicit --listen address\n")
 		return 2
 	}
-	if len(repos.Values()) == 0 || strings.TrimSpace(*runner) == "" {
-		a.errorf("runner serve requires at least one --repo and --runner\n")
+	organizationName := strings.TrimSpace(*organization)
+	if (len(repos.Values()) == 0) == (organizationName == "") || strings.TrimSpace(*runner) == "" {
+		a.errorf("runner serve requires exactly one of --organization or one-or-more --repo, and --runner\n")
 		return 2
 	}
 	if _, err := gitidentity.Normalize(*gitAuthorName, *gitAuthorEmail); err != nil {
@@ -209,7 +211,12 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 	}
 	defer clearSecrets(previous)
 	credentials, err := webhook.NewCredentials(*subscriptionID, webhook.Secret{Value: current}, previous)
+	var subscriptionSecret []byte
+	if organizationName != "" {
+		subscriptionSecret = append([]byte(nil), current...)
+	}
 	clear(current)
+	defer clear(subscriptionSecret)
 	clearSecrets(previous)
 	if err != nil {
 		a.errorf("runner serve credentials: %v\n", err)
@@ -225,7 +232,8 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 		return 2
 	}
 	runnerConfig.Profile, runnerConfig.Hostname = scopeProfile, profile.Hostname
-	runnerConfig.Repositories, runnerConfig.RunnerIdentity = repos.Values(), *runner
+	runnerConfig.Repositories, runnerConfig.Organization, runnerConfig.SubscriptionID, runnerConfig.RunnerIdentity =
+		repos.Values(), organizationName, credentials.SubscriptionID(), *runner
 	runnerConfig.AllowedUsers, runnerConfig.StatePath, runnerConfig.WorkspaceRoot = allowedUsers.Values(), strings.TrimSpace(*statePath), strings.TrimSpace(*workspaceRoot)
 	runnerConfig.MaxConcurrentJobs, runnerConfig.AcpxPath = *maxConcurrentJobs, strings.TrimSpace(*acpxPath)
 	runnerConfig.Agent.Kind, runnerConfig.Agent.Model = strings.TrimSpace(*agentKind), strings.TrimSpace(*model)
@@ -362,10 +370,12 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 	}
 	storageLifecycle := runnerStorageLifecycle(ctx, runnerConfig, store)
 	runtime, err := runnerServeBuildRuntime(ctx, runnerServeRuntimeInput{Profile: profile, ProfileToken: profileToken.Value,
-		Runner: runnerConfig, Queue: queue, Store: store, HTTP: service, Storage: storageLifecycle, GitCredentialCommand: *gitCredentialCommand,
+		SubscriptionSecret: subscriptionSecret,
+		Runner:             runnerConfig, Queue: queue, Store: store, HTTP: service, Storage: storageLifecycle, GitCredentialCommand: *gitCredentialCommand,
 		GitCredentialArgs: gitCredentialArgs.Values(), GitCredentialTimeout: *gitCredentialTimeout,
 		GitCredentialMaxOutput: *gitCredentialMaxOutput, GitCredentialConcurrency: *gitCredentialConcurrency,
 		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease, Diagnostics: logger})
+	clear(subscriptionSecret)
 	if err != nil {
 		a.errorf("runner serve runtime: %v\n", err)
 		return 2

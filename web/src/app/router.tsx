@@ -14,7 +14,7 @@ import { MembersPage } from "../orgs/members-page";
 import { RepositoriesPage } from "../repos/repositories-page";
 import { RepositorySettingsPage } from "../repos/repository-settings-page";
 import { CollaboratorsPage } from "../repos/collaborators-page";
-import { IntegrationsPage } from "../repos/integrations-page";
+import { IntegrationsPage, OrganizationWebhooksPage } from "../repos/integrations-page";
 import { LegacyUserIssuesRedirect, ProfilePage } from "../users/profile-page";
 import { useTranslation } from "react-i18next";
 
@@ -43,6 +43,7 @@ export const router = createBrowserRouter([
       { path: "admin/orgs/:orgId/members", element: <MembersPage /> },
       { path: "admin/orgs/:orgId/service-accounts", element: <ServiceAccountsPage /> },
       { path: "admin/orgs/:orgId/managed-tokens", element: <ManagedTokensPage /> },
+      { path: "admin/orgs/:orgId/integrations/webhooks", element: <OrganizationWebhooksPage /> },
       { path: "orgs/:orgId/repos", element: <RepositoriesPage /> },
       { path: "orgs/:orgId/repos/:repoId/settings", element: <RepositorySettingsPage /> },
       { path: "orgs/:orgId/repos/:repoId/collaborators", element: <CollaboratorsPage /> },

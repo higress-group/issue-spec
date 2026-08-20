@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { ArrowRight, Plus, Settings2 } from "lucide-react";
+import { ArrowRight, Plus, RadioTower, Settings2 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { EmptyState, ErrorNotice, Field, PageHeader, Panel, SelectInput, StatusBadge, TextInput } from "../app/components";
 import { useInspector } from "../app/problem-inspector";
 import { api } from "../lib/api/resources";
-import { queryKeys, useCurrentContext } from "../auth/session";
+import { queryKeys, useCurrentContext, useMeta } from "../auth/session";
 import { useTranslation } from "react-i18next";
 
 type RepositoryVisibility = "public" | "internal" | "private";
@@ -23,8 +23,10 @@ export function RepositoriesPage() {
   const { orgId = "" } = useParams();
   const repositories = useQuery({ queryKey: queryKeys.repoContext(orgId), queryFn: ({ signal }) => api.repositoriesContext(orgId, signal) });
   const context = useCurrentContext();
+  const meta = useMeta();
   const organization = context.data?.organizations.find((org) => org.id === orgId);
   const canCreate = organization?.allowed_actions.includes("organization.admin");
+  const canManageWebhooks = meta.data?.features.webhooks && organization?.allowed_actions.includes("integrations.manage");
   const { register, handleSubmit, reset, getValues, setValue, formState: { errors } } = useForm<RepoForm>({ defaultValues: { name: "", display_name: "", description: "", visibility: "private", default_branch: "main", contribution_policy: "members" } });
   const [contributionPolicyExplicit, setContributionPolicyExplicit] = useState(false);
   const inspector = useInspector();
@@ -35,7 +37,7 @@ export function RepositoriesPage() {
   } });
   const contributionPolicyInput = register("contribution_policy", { onChange: () => { setContributionPolicyExplicit(true); } });
   const publicContributionHint = `${t("common.visibilityValue.public")} → ${t("common.contribution.public")} · ${t("common.action.contribute")}`;
-  return <div className="page"><PageHeader eyebrow={t("repositories.eyebrow", { name: organization?.name ?? t("common.organization") })} title={t("repositories.title")} description={t("repositories.description")} actions={canCreate ? <a className="button secondary" href="#create-repository"><Plus size={16} />{t("repositories.new")}</a> : undefined} />
+  return <div className="page"><PageHeader eyebrow={t("repositories.eyebrow", { name: organization?.name ?? t("common.organization") })} title={t("repositories.title")} description={t("repositories.description")} actions={canCreate || canManageWebhooks ? <div className="button-row">{canManageWebhooks ? <Link className="button secondary" to={`/admin/orgs/${orgId}/integrations/webhooks`}><RadioTower size={16} />{t("common.webhooks")}</Link> : null}{canCreate ? <a className="button secondary" href="#create-repository"><Plus size={16} />{t("repositories.new")}</a> : null}</div> : undefined} />
     {repositories.error ? <ErrorNotice error={repositories.error} /> : null}
     <div className="repo-grid">{repositories.data?.repositories.map((access) => <Link className="repo-card" to={`/orgs/${orgId}/repos/${access.repository.id}/settings`} key={access.repository.id}><div className="repo-card-top"><span className={`visibility-mark ${access.repository.visibility}`} /><StatusBadge tone={access.effective_permission === "admin" ? "purple" : "teal"}>{t(`common.permission.${access.effective_permission}`)}</StatusBadge></div><h2>{access.repository.display_name}</h2><p className="mono">{access.repository.name}</p><div className="scope-list">{access.allowed_actions.slice(0, 3).map((action) => <span key={action}>{t(`common.action.${action.replaceAll(".", "_")}`, { defaultValue: action })}</span>)}</div><div className="card-foot"><span>{t(`common.visibilityValue.${access.repository.visibility}`)}</span><ArrowRight size={18} /></div></Link>)}</div>
     {!repositories.isLoading && repositories.data?.repositories.length === 0 ? <EmptyState title={t("repositories.emptyTitle")} description={t("repositories.emptyDescription")} /> : null}

@@ -2,6 +2,8 @@ package subscriptions
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -193,6 +195,36 @@ func (s *Service) Get(ctx context.Context, subject authz.Subject, orgID, id uuid
 		return Subscription{}, err
 	}
 	if err := s.validateStoredDestination(item); err != nil {
+		return Subscription{}, err
+	}
+	return item, nil
+}
+
+// VerifyRunnerCredential proves possession of one currently accepted delivery
+// secret for exactly one subscription. It intentionally performs no user or
+// integration-management authorization and returns only to the dedicated
+// redacted verification route; possession grants no mutation capability.
+func (s *Service) VerifyRunnerCredential(ctx context.Context, orgID, id uuid.UUID,
+	presented []byte, at time.Time) (Subscription, error) {
+	if orgID == uuid.Nil || id == uuid.Nil || at.IsZero() {
+		return Subscription{}, ErrInvalidInput
+	}
+	presentedHash := sha256.Sum256(presented)
+	accepted, err := s.AcceptedSecrets(ctx, orgID, id, at)
+	if err != nil {
+		return Subscription{}, err
+	}
+	matched := 0
+	for index := range accepted {
+		candidateHash := sha256.Sum256(accepted[index].Secret)
+		matched |= subtle.ConstantTimeCompare(presentedHash[:], candidateHash[:])
+		clear(accepted[index].Secret)
+	}
+	if matched != 1 || len(presented) == 0 {
+		return Subscription{}, ErrNotFound
+	}
+	item, err := s.load(ctx, s.database.Pool(), orgID, id, false)
+	if err != nil {
 		return Subscription{}, err
 	}
 	return item, nil

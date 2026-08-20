@@ -12,8 +12,10 @@ import (
 )
 
 // AccessAction is the stable, frontend-safe spelling of an authorization
-// decision. Conditional operations such as runner trigger and evidence publish
-// are deliberately omitted because they require an additional policy fact.
+// decision. Runner trigger is included because organization-mode Runners use
+// the live repository projection as an eligibility check. Other conditional
+// operations, such as evidence publish, remain omitted when they require an
+// additional policy fact that this projection does not carry.
 type AccessAction string
 
 const (
@@ -25,6 +27,7 @@ const (
 	AccessContribute         AccessAction = "contribute"
 	AccessTriage             AccessAction = "triage"
 	AccessWrite              AccessAction = "write"
+	AccessTriggerRunner      AccessAction = "runner.trigger"
 	AccessManageIntegrations AccessAction = "integrations.manage"
 	AccessRepositoryAdmin    AccessAction = "repository.admin"
 )
@@ -165,6 +168,14 @@ func (s *Service) ListAccessibleOrganizations(ctx context.Context, subject Subje
 			access.EffectivePermission = adminDecision.EffectivePermission.String()
 			access.AllowedActions = append(access.AllowedActions, AccessOrganizationAdmin, AccessCredentialAdmin)
 		}
+		integrationsDecision, err := s.EvaluateOrganization(ctx, subject, scope, OperationManageIntegrations)
+		if err != nil {
+			return nil, err
+		}
+		if integrationsDecision.Allowed {
+			access.AllowedActions = append(access.AllowedActions, AccessManageIntegrations)
+			access.EffectivePermission = integrationsDecision.EffectivePermission.String()
+		}
 		result = append(result, access)
 	}
 	return result, nil
@@ -206,6 +217,7 @@ func (s *Service) ListRepositoryAccess(ctx context.Context, subject Subject, sco
 			{OperationContribute, AccessContribute},
 			{OperationTriage, AccessTriage},
 			{OperationWrite, AccessWrite},
+			{OperationTriggerRunner, AccessTriggerRunner},
 			{OperationManageIntegrations, AccessManageIntegrations},
 			{OperationAdminRepository, AccessRepositoryAdmin},
 		} {

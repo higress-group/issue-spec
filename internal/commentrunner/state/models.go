@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/capability"
+	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
 const SchemaVersion = 6
@@ -316,22 +317,26 @@ const (
 // source-provider job lease and the server delegation tombstone all confirm
 // revocation. Pending records survive terminal job retention and restarts.
 type CredentialCleanup struct {
-	Status        CredentialCleanupStatus `json:"status,omitempty"`
-	RequestedAt   time.Time               `json:"requested_at,omitempty"`
-	Attempt       int                     `json:"attempt,omitempty"`
-	LastAttemptAt time.Time               `json:"last_attempt_at,omitempty"`
-	NextAttemptAt time.Time               `json:"next_attempt_at,omitempty"`
-	CompletedAt   time.Time               `json:"completed_at,omitempty"`
-	LastError     string                  `json:"last_error,omitempty"`
+	Status          CredentialCleanupStatus `json:"status,omitempty"`
+	RepositoryScope *models.RepoScope       `json:"repository_scope,omitempty"`
+	RequestedAt     time.Time               `json:"requested_at,omitempty"`
+	Attempt         int                     `json:"attempt,omitempty"`
+	LastAttemptAt   time.Time               `json:"last_attempt_at,omitempty"`
+	NextAttemptAt   time.Time               `json:"next_attempt_at,omitempty"`
+	CompletedAt     time.Time               `json:"completed_at,omitempty"`
+	LastError       string                  `json:"last_error,omitempty"`
 }
 
 func (c CredentialCleanup) Pending() bool { return c.Status == CredentialCleanupPending }
 
 func (c CredentialCleanup) Valid() bool {
+	if c.RepositoryScope != nil && c.RepositoryScope.Validate() != nil {
+		return false
+	}
 	switch c.Status {
 	case "":
 		return c.Attempt == 0 && c.RequestedAt.IsZero() && c.LastAttemptAt.IsZero() && c.NextAttemptAt.IsZero() &&
-			c.CompletedAt.IsZero() && c.LastError == ""
+			c.CompletedAt.IsZero() && c.LastError == "" && c.RepositoryScope == nil
 	case CredentialCleanupPending:
 		return !c.RequestedAt.IsZero() && c.CompletedAt.IsZero() && c.Attempt >= 0
 	case CredentialCleanupComplete:

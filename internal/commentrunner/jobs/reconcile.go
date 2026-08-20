@@ -12,6 +12,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/storage"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
+	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
@@ -67,7 +68,7 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 	var result ReconcileResult
 	for _, job := range st.ListJobs() {
 		if d.CredentialBroker != nil && job.CredentialCleanup.Status == "" && job.Status != state.StatusQueued {
-			if err := d.beginCredentialCleanup(ctx, job.ID); err != nil {
+			if err := d.beginCredentialCleanup(ctx, job.ID, models.RepoScope{}); err != nil {
 				return result, err
 			}
 			job, err = d.loadJob(ctx, job.ID)
@@ -201,9 +202,6 @@ func (d *Dispatcher) validateReconcile() error {
 	}
 	if d.Writeback == nil {
 		return fmt.Errorf("job dispatcher writeback service is required")
-	}
-	if d.CredentialBroker != nil && len(d.CredentialScopes) == 0 {
-		return fmt.Errorf("job dispatcher credential scopes are required")
 	}
 	return nil
 }

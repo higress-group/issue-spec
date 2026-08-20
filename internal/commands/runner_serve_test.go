@@ -106,6 +106,50 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	}
 }
 
+func TestRunnerServeOrganizationSeparatesSubscriptionAndProfileCredentials(t *testing.T) {
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	profile := auth.Profile{Name: "runner-organization", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	subscriptionSecret := strings.Repeat("s", 32)
+	profileToken := "repository-scoped-profile-token"
+	t.Setenv("RUNNER_ORGANIZATION_SECRET", subscriptionSecret)
+	t.Setenv("ISSUE_SPEC_TOKEN", profileToken)
+	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
+	var verificationCopy []byte
+	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
+		if input.ProfileToken != profileToken || input.Runner.Organization != "acme" || len(input.Runner.Repositories) != 0 ||
+			string(input.SubscriptionSecret) != subscriptionSecret {
+			t.Fatalf("runtime credential separation failed: profile_match=%t organization=%q repositories=%v secret_match=%t",
+				input.ProfileToken == profileToken, input.Runner.Organization, input.Runner.Repositories,
+				string(input.SubscriptionSecret) == subscriptionSecret)
+		}
+		verificationCopy = input.SubscriptionSecret
+		return runnerServeRuntimeFunc(func(context.Context) error { return nil }), nil
+	}
+	runnerServeRun = func(ctx context.Context, runtime runnerServeRuntime) error { return runtime.Run(ctx) }
+	t.Cleanup(func() { runnerServeBuildRuntime, runnerServeRun = originalBuild, originalRun })
+	var stdout, stderr bytes.Buffer
+	app := newApp(strings.NewReader(""), &stdout, &stderr)
+	app.profileName = profile.Name
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	code := app.runRunner(context.Background(), []string{"serve", "--organization", "acme", "--runner", "runner-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--workspace-root", t.TempDir(),
+		"--subscription-id", uuid.NewString(), "--secret-env", "RUNNER_ORGANIZATION_SECRET",
+		"--git-credential-command", "/usr/bin/true"})
+	if code != 0 {
+		t.Fatalf("serve code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.Trim(string(verificationCopy), "\x00") != "" {
+		t.Fatal("startup subscription verification credential copy was retained after runtime construction")
+	}
+}
+
 func TestRunnerServeDiagnosticsInitializationFailsClosed(t *testing.T) {
 	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
 	profile := auth.Profile{Name: "runner-diagnostics-init", Kind: auth.ProfileKindHosted,
@@ -202,6 +246,28 @@ func TestRunnerServeRejectsGitHubProfilesAndPlaintextSecretArguments(t *testing.
 	}
 }
 
+func TestRunnerServeRequiresExactlyOneRepositoryOrOrganizationMode(t *testing.T) {
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	profile := auth.Profile{Name: "runner-scope-mode", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"serve", "--runner", "bot"},
+		{"serve", "--runner", "bot", "--repo", "o/r", "--organization", "o"},
+	} {
+		var stdout, stderr bytes.Buffer
+		app := newApp(strings.NewReader(""), &stdout, &stderr)
+		app.profileName = profile.Name
+		if code := app.runRunner(context.Background(), args); code != 2 ||
+			!strings.Contains(stderr.String(), "exactly one of --organization or one-or-more --repo") {
+			t.Fatalf("args=%v code=%d stderr=%q", args, code, stderr.String())
+		}
+	}
+}
+
 func TestPreviousSecretAbsoluteExpiryDoesNotExtendAcrossRestart(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	expiry := now.Add(30 * time.Minute)
@@ -229,7 +295,7 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 	if code := app.runRunner(context.Background(), []string{"serve", "--help"}); code != 0 {
 		t.Fatalf("help code=%d stderr=%q", code, stderr.String())
 	}
-	for _, required := range []string{"--listen", "--tls-cert", "--tls-key", "--subscription-id",
+	for _, required := range []string{"--listen", "--tls-cert", "--tls-key", "--subscription-id", "--organization",
 		"--secret-file", "--previous-secrets-valid-until", "--timestamp-window", "--max-body-bytes",
 		"--max-header-bytes", "--max-queue-deliveries", "--max-queue-bytes", "--shutdown-timeout",
 		"--workspace-root", "--max-concurrent-jobs", "--reconcile-workers", "--git-credential-command",

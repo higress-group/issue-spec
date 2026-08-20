@@ -8,9 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/acpx"
+	"github.com/higress-group/issue-spec/internal/capability"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	resolver "github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
 func TestDispatcherResumeRejectsBindingDriftBeforeWorkspace(t *testing.T) {
@@ -96,6 +100,44 @@ func TestDispatcherNewFailsClosedWithoutBinding(t *testing.T) {
 	}
 	if workspaces.prepareNewCalled || workspaces.resolveResumeCalled {
 		t.Fatal("workspace was touched without a binding")
+	}
+}
+
+func TestDispatcherRejectsBindingChangeAcrossCapabilityPreflight(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 11, 5, 22, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{ID: "job-preflight-drift", Repo: "o/r", IssueNumber: 1,
+		CommandName: "new", CommandPrompt: "work", CommandIdempotencyKey: "preflight-drift", Status: state.StatusQueued})
+	scope := models.RepoScope{OrgID: uuid.New(), RepoID: uuid.New()}
+	before := repositoryInfo(testRepositoryBinding())
+	before.Scope = scope
+	after := before
+	after.Binding.BindingID = "binding-after-preflight"
+	after.Binding.Version++
+	after.Binding.CloneURL = "https://code.example/o/r-after-preflight.git"
+	after.CloneURL = after.Binding.CloneURL
+	repositories := &sequenceRepositoryResolver{results: []RepositoryInfo{before, after}}
+	workspaces := &fakeWorkspaces{binding: testBinding("ws-preflight-drift")}
+	dispatcher := testDispatcher(store, workspaces, &fakeCoordinator{}, &fakeWriteback{}, now)
+	dispatcher.Repositories = repositories
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-preflight-drift", nil }
+	dispatcher.CapabilityHost = "issues.example.test"
+	dispatcher.RequiredOperations = []capability.Operation{capability.OperationIssueRead}
+	dispatcher.CapabilityPreflight = capabilityPreflightFunc(func(_ context.Context, request credentials.PreflightRequest) capability.Report {
+		report := capability.Report{OK: true, Host: request.Request.Host, Repository: request.Request.Repository,
+			Backend: "profile-credential", Credential: capability.CredentialSummary{SourceClass: "private-file"},
+			Network: capability.NetworkSummary{Status: "reachable"}, Operations: []capability.OperationResult{{
+				Operation: capability.OperationIssueRead, Decision: capability.DecisionAllowed,
+			}}}
+		report.Finish()
+		return report
+	})
+	result, err := dispatcher.RunNext(t.Context())
+	if err == nil || resolver.DiagnosticCode(err) != resolver.DiagnosticBindingDrift || result.Status != state.StatusFailed {
+		t.Fatalf("RunNext preflight drift result=%+v err=%v", result, err)
+	}
+	if repositories.calls != 2 || workspaces.prepareNewCalled || workspaces.resolveResumeCalled {
+		t.Fatalf("drift side effects calls=%d workspace=%+v", repositories.calls, workspaces)
 	}
 }
 
@@ -215,6 +257,20 @@ type countingRepositoryResolver struct {
 	info  RepositoryInfo
 	err   error
 	calls int
+}
+
+type sequenceRepositoryResolver struct {
+	results []RepositoryInfo
+	calls   int
+}
+
+func (r *sequenceRepositoryResolver) ResolveRepository(context.Context, string) (RepositoryInfo, error) {
+	if r.calls >= len(r.results) {
+		return RepositoryInfo{}, errors.New("unexpected repository resolution")
+	}
+	result := r.results[r.calls]
+	r.calls++
+	return result, nil
 }
 
 func (r *countingRepositoryResolver) ResolveRepository(context.Context, string) (RepositoryInfo, error) {

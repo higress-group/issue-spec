@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
 const (
@@ -24,6 +25,7 @@ var ErrNoBinding = errors.New("trusted repository binding unavailable")
 
 type Resolution struct {
 	Repo          string                          `json:"repo"`
+	Scope         models.RepoScope                `json:"scope"`
 	CloneURL      string                          `json:"clone_url"`
 	DefaultBranch string                          `json:"default_branch"`
 	Ref           string                          `json:"ref"`

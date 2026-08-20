@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
-import { Bot, KeyRound, Save, Users, Workflow } from "lucide-react";
+import { Bot, KeyRound, RadioTower, Save, Users, Workflow } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { ErrorNotice, Field, Loading, PageHeader, Panel, SelectInput, TextInput } from "../app/components";
 import { useInspector } from "../app/problem-inspector";
 import { api } from "../lib/api/resources";
 import type { AdminOrganization, BasePermission } from "../lib/api/types";
-import { queryKeys } from "../auth/session";
+import { queryKeys, useCurrentContext, useMeta } from "../auth/session";
 import { useTranslation } from "react-i18next";
 
 type OrgSettings = { display_name: string; description: string; base_permission: BasePermission };
@@ -15,9 +15,14 @@ export function OrganizationPage() {
   const { t } = useTranslation();
   const { orgId = "" } = useParams();
   const organization = useQuery({ queryKey: queryKeys.organization(orgId), queryFn: ({ signal }) => api.organization(orgId, signal) });
-  if (organization.isLoading) return <Loading label={t("organization.loading")} />;
+  const context = useCurrentContext();
+  const meta = useMeta();
+  if (organization.isLoading || context.isLoading || meta.isLoading) return <Loading label={t("organization.loading")} />;
   if (organization.error) return <ErrorNotice error={organization.error} />;
-  return <div className="page"><PageHeader eyebrow={t("organization.eyebrow", { name: organization.data?.name })} title={organization.data?.display_name ?? t("common.organization")} description={organization.data?.description || t("common.noDescription")} actions={<div className="button-row"><Link className="button secondary" to={`/admin/orgs/${orgId}/members`}><Users size={16} />{t("common.members")}</Link><Link className="button secondary" to={`/admin/orgs/${orgId}/service-accounts`}><Bot size={16} />{t("common.serviceAccounts")}</Link><Link className="button secondary" to={`/admin/orgs/${orgId}/managed-tokens`}><KeyRound size={16} />{t("common.managedTokens")}</Link><Link className="button secondary" to={`/orgs/${orgId}/repos`}><Workflow size={16} />{t("common.repositories")}</Link></div>} />{organization.data ? <OrganizationSettings organization={organization.data} /> : null}</div>;
+  if (context.error) return <ErrorNotice error={context.error} />;
+  if (meta.error) return <ErrorNotice error={meta.error} />;
+  const canManageWebhooks = meta.data?.features.webhooks && context.data?.organizations.find((item) => item.id === orgId)?.allowed_actions.includes("integrations.manage");
+  return <div className="page"><PageHeader eyebrow={t("organization.eyebrow", { name: organization.data?.name })} title={organization.data?.display_name ?? t("common.organization")} description={organization.data?.description || t("common.noDescription")} actions={<div className="button-row"><Link className="button secondary" to={`/admin/orgs/${orgId}/members`}><Users size={16} />{t("common.members")}</Link><Link className="button secondary" to={`/admin/orgs/${orgId}/service-accounts`}><Bot size={16} />{t("common.serviceAccounts")}</Link><Link className="button secondary" to={`/admin/orgs/${orgId}/managed-tokens`}><KeyRound size={16} />{t("common.managedTokens")}</Link>{canManageWebhooks ? <Link className="button secondary" to={`/admin/orgs/${orgId}/integrations/webhooks`}><RadioTower size={16} />{t("common.webhooks")}</Link> : null}<Link className="button secondary" to={`/orgs/${orgId}/repos`}><Workflow size={16} />{t("common.repositories")}</Link></div>} />{organization.data ? <OrganizationSettings organization={organization.data} /> : null}</div>;
 }
 
 function OrganizationSettings({ organization }: { organization: AdminOrganization }) {

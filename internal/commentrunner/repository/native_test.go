@@ -23,7 +23,7 @@ func TestNativeResolverPinsAuthorizedServerBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resolution.Binding.Source != SourceServer || resolution.Binding.BindingID != bindingID ||
-		resolution.Binding.IssueRepositoryKey != "owner/repo" || resolution.CloneURL != "https://code.example/acme/widgets.git" {
+		resolution.Binding.IssueRepositoryKey != "owner/repo" || resolution.CloneURL != "https://code.example/acme/widgets.git" || resolution.Scope != scope {
 		t.Fatalf("resolution=%+v", resolution)
 	}
 }

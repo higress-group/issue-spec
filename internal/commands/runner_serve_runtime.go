@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
@@ -18,6 +19,7 @@ import (
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
 type runnerServeRuntime interface{ Run(context.Context) error }
@@ -25,6 +27,7 @@ type runnerServeRuntime interface{ Run(context.Context) error }
 type runnerServeRuntimeInput struct {
 	Profile                  auth.Profile
 	ProfileToken             string
+	SubscriptionSecret       []byte
 	Runner                   commentrunner.Config
 	Queue                    *webhook.Queue
 	Store                    crstate.StateStore
@@ -71,7 +74,19 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	if err != nil {
 		return nil, err
 	}
-	scopes, err := webhook.ResolveRepositoryScopes(ctx, native, input.Runner.Repositories, nil)
+	var subscriptionVerifier *github.Client
+	if strings.TrimSpace(input.Runner.Organization) != "" {
+		if len(input.SubscriptionSecret) == 0 {
+			return nil, fmt.Errorf("organization runner requires its webhook subscription secret for startup verification")
+		}
+		subscriptionVerifier, err = github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname,
+			BaseURL: profile.NativeAPIURL, Token: string(input.SubscriptionSecret), CAFile: profile.CAFile})
+		if err != nil {
+			return nil, err
+		}
+		defer func() { subscriptionVerifier.Token = "" }()
+	}
+	registry, legacyCredentialScopes, err := buildRunnerRepositoryRegistry(ctx, native, subscriptionVerifier, input.Runner)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +110,7 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 		reconcileObserver = input.Diagnostics
 	}
 	reconciler, err := webhook.NewReconciler(webhook.ReconcilerConfig{Queue: input.Queue, Store: input.Store,
-		Backend: compatibility, Scopes: scopes, Runner: input.Runner,
+		Backend: compatibility, Registry: registry, Runner: input.Runner,
 		AuthorizationPolicy: commentrunner.AuthorizationPolicy{RunnerLogin: input.Runner.RunnerIdentity,
 			AllowedUsers: input.Runner.AllowedUsers}, WorkerID: "runner-serve", Workers: input.ReconcileWorkers,
 		LeaseDuration: input.ReconcileLease, Observer: reconcileObserver})
@@ -114,7 +129,7 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	broker := &credentials.Broker{Profile: profile, ProfileToken: &profileToken,
 		Materializer: materializer, GitProvider: gitProvider,
 		ProfileProbe: runnerProfileCapabilityProbe{native: native, compatibility: compatibility,
-			runnerLogin: input.Runner.RunnerIdentity, repositories: scopes.ByRepository}}
+			runnerLogin: input.Runner.RunnerIdentity, registry: registry}}
 	workspaces := jobs.WorkspaceManager(runnerWorkspaceManager(input.Runner))
 	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandboxConfig})
 	acpxFactory := jobs.AcpxFactory(jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner), RunnerConfig: input.Runner})
@@ -149,10 +164,11 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 		return nil, fmt.Errorf("runner runtime identity: %w", err)
 	}
 	dispatcher := &jobs.Dispatcher{Store: input.Store, Storage: input.Storage,
-		Repositories: repository.NativeResolver{Bindings: native, Scopes: scopes.ByRepository},
+		Repositories: repository.NativeResolver{Registry: registry},
 		Workspaces:   workspaces, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,
 		AcpxBinary: input.Runner.AcpxPath, IssueSpecBinary: issueSpecBinary, CredentialBroker: broker,
-		CredentialScopes: scopes.ByRepository, CapabilityPreflight: broker, CapabilityHost: profile.Hostname,
+		CredentialScopes:    legacyCredentialScopes,
+		CapabilityPreflight: broker, CapabilityHost: profile.Hostname,
 		OperatorSkillDirs: input.Runner.OperatorSkillDirs,
 		RuntimeIdentity:   runtimeIdentity,
 		RequiredOperations: []capability.Operation{capability.OperationIssueRead, capability.OperationIssueCommentWrite,
@@ -160,6 +176,85 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	}
 	return runnerserver.NewRuntime(runnerserver.RuntimeConfig{HTTP: input.HTTP, Reconciler: reconciler,
 		Dispatcher: dispatcher, MaxConcurrentJobs: input.Runner.MaxConcurrentJobs})
+}
+
+func buildRunnerRepositoryRegistry(ctx context.Context, native, subscriptionVerifier *github.Client,
+	config commentrunner.Config) (repository.Registry, map[string]models.RepoScope, error) {
+	if organization := strings.TrimSpace(config.Organization); organization != "" {
+		if subscriptionVerifier == nil {
+			return nil, nil, fmt.Errorf("organization runner subscription verifier is required")
+		}
+		current, err := native.GetNativeContext(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve runner organization: %w", err)
+		}
+		var matches []github.NativeOrganizationContext
+		for _, candidate := range current.Organizations {
+			if strings.EqualFold(strings.TrimSpace(candidate.Name), organization) {
+				matches = append(matches, candidate)
+			}
+		}
+		if len(matches) != 1 {
+			return nil, nil, fmt.Errorf("configured organization %q resolved to %d visible organizations", organization, len(matches))
+		}
+		organizationID, err := uuid.Parse(strings.TrimSpace(matches[0].ID))
+		if err != nil || organizationID == uuid.Nil {
+			return nil, nil, fmt.Errorf("configured organization %q returned an invalid UUID", organization)
+		}
+		subscriptionID, err := uuid.Parse(strings.TrimSpace(config.SubscriptionID))
+		if err != nil || subscriptionID == uuid.Nil {
+			return nil, nil, fmt.Errorf("organization runner subscription id is invalid")
+		}
+		subscription, err := subscriptionVerifier.VerifyNativeRunnerSubscription(ctx, organizationID, subscriptionID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read organization runner subscription: %w", err)
+		}
+		if err := validateOrganizationRunnerSubscription(subscription, organizationID, subscriptionID); err != nil {
+			return nil, nil, err
+		}
+		registry, err := repository.NewOrganizationRegistry(native, native, organizationID, matches[0].Name)
+		return registry, nil, err
+	}
+	scopes, err := webhook.ResolveRepositoryScopes(ctx, native, config.Repositories, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	registryScopes := cloneRunnerRepositoryScopes(scopes.ByRepository)
+	return &repository.StaticRegistry{Bindings: native, Scopes: registryScopes},
+		cloneRunnerRepositoryScopes(scopes.ByRepository), nil
+}
+
+func cloneRunnerRepositoryScopes(input map[string]models.RepoScope) map[string]models.RepoScope {
+	if len(input) == 0 {
+		return nil
+	}
+	result := make(map[string]models.RepoScope, len(input))
+	for repository, scope := range input {
+		result[repository] = scope
+	}
+	return result
+}
+
+func validateOrganizationRunnerSubscription(subscription github.NativeWebhookSubscription,
+	organizationID, subscriptionID uuid.UUID) error {
+	if subscription.ID != subscriptionID || subscription.OrganizationID != organizationID || subscription.RepositoryID != nil ||
+		!strings.EqualFold(strings.TrimSpace(subscription.ScopeType), "organization") || !subscription.Active ||
+		subscription.RevokedAt != nil || !strings.EqualFold(strings.TrimSpace(subscription.DeliveryFormat), "issue-spec.v1") ||
+		!strings.EqualFold(strings.TrimSpace(subscription.SigningMode), "bearer") {
+		return fmt.Errorf("configured webhook subscription is not an active organization-scoped issue-spec.v1 bearer subscription")
+	}
+	wanted := map[string]bool{"issue_comment.created": false, "issue_comment.edited": false}
+	for _, eventType := range subscription.EventTypes {
+		key := strings.ToLower(strings.TrimSpace(eventType))
+		if _, ok := wanted[key]; !ok {
+			return fmt.Errorf("configured organization runner subscription contains unsupported event type %q", eventType)
+		}
+		wanted[key] = true
+	}
+	if !wanted["issue_comment.created"] || !wanted["issue_comment.edited"] {
+		return fmt.Errorf("configured organization runner subscription must include comment created and edited events")
+	}
+	return nil
 }
 
 func runnerServeCredentialRoot(statePath string) (string, error) {

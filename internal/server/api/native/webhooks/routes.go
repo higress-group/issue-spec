@@ -4,6 +4,7 @@ package webhooks
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +37,12 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 			next(w, r)
 		})))
 	}
+	verifyRunner := func(next http.HandlerFunc) http.Handler {
+		return adminapi.WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			next(w, r)
+		}))
+	}
 	set := routeset.RouteSet{Name: "native-webhooks", Routes: []routeset.Route{
 		{Name: "native.webhooks.list", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/webhooks", Handler: protect(h.list)},
 		{Name: "native.webhooks.create", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/webhooks", Handler: protect(h.create)},
@@ -44,6 +51,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "native.webhooks.revoke", Method: http.MethodDelete, Pattern: "/api/v1/orgs/{org}/webhooks/{webhook}", Handler: protect(h.revoke)},
 		{Name: "native.webhooks.rotate_secret", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/webhooks/{webhook}/rotate-secret", Handler: protect(h.rotate)},
 		{Name: "native.webhooks.suppressions", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/webhooks/{webhook}/suppressions", Handler: protect(h.suppressions)},
+		{Name: "native.webhooks.verify_runner", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/webhooks/{webhook}/runner-verification", Handler: verifyRunner(h.verifyRunner)},
 	}}
 	return set, set.Validate()
 }
@@ -198,6 +206,21 @@ func (h handlers) rotate(w http.ResponseWriter, r *http.Request) {
 	adminapi.WriteJSON(w, http.StatusCreated, secretView(result))
 }
 
+func (h handlers) verifyRunner(w http.ResponseWriter, r *http.Request) {
+	orgID, id, ok := pathIDs(w, r)
+	if !ok {
+		return
+	}
+	credential := runnerBearerCredential(r.Header.Values("Authorization"))
+	item, err := h.service.VerifyRunnerCredential(r.Context(), orgID, id, credential, time.Now().UTC())
+	clear(credential)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	adminapi.WriteJSON(w, http.StatusOK, runnerVerificationView(item))
+}
+
 func (h handlers) revoke(w http.ResponseWriter, r *http.Request) {
 	orgID, id, ok := pathIDs(w, r)
 	if !ok {
@@ -247,6 +270,24 @@ func subscriptionView(item subscriptions.Subscription) map[string]any {
 		"retry": map[string]any{"max_attempts": item.Retry.MaxAttempts,
 			"initial_backoff": item.Retry.InitialBackoff.String(), "max_backoff": item.Retry.MaxBackoff.String()},
 		"representation_version": item.RepresentationVersion, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt}
+}
+
+func runnerVerificationView(item subscriptions.Subscription) map[string]any {
+	return map[string]any{"id": item.ID, "organization_id": item.OrganizationID,
+		"repository_id": item.RepositoryID, "scope_type": item.ScopeType, "active": item.Active,
+		"revoked_at": item.RevokedAt, "event_types": item.EventTypes,
+		"delivery_format": item.DeliveryFormat, "signing_mode": item.SigningMode}
+}
+
+func runnerBearerCredential(values []string) []byte {
+	if len(values) != 1 || !strings.HasPrefix(values[0], "Bearer ") || strings.Count(values[0], " ") != 1 {
+		return nil
+	}
+	value := strings.TrimPrefix(values[0], "Bearer ")
+	if value == "" || len(value) > 64<<10 {
+		return nil
+	}
+	return []byte(value)
 }
 
 func secretView(result subscriptions.SecretResult) map[string]any {
