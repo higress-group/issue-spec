@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -158,6 +159,105 @@ func TestLiveDispatcherRetriesPendingTerminalCredentialCleanup(t *testing.T) {
 	}
 }
 
+func TestRestartCleanupUsesPersistedScopeAfterRepositoryPermissionRemoval(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "runner-state.json")
+	store, err := state.OpenFileStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 11, 13, 0, 0, 0, time.UTC)
+	scope := models.RepoScope{OrgID: uuid.New(), RepoID: uuid.New()}
+	if err := store.Update(t.Context(), func(st *state.RunnerState) error {
+		persisted := scope
+		return st.UpsertJob(state.Job{ID: "job-scope-cleanup", Repo: "o/r", Status: state.StatusInterrupted,
+			CreatedAt: now.Add(-time.Hour), FinishedAt: now.Add(-time.Minute),
+			CredentialCleanup: state.CredentialCleanup{Status: state.CredentialCleanupPending,
+				RepositoryScope: &persisted, RequestedAt: now.Add(-time.Minute)}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := state.OpenFileStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	reloaded, err := restarted.Load(t.Context())
+	if err != nil || reloaded.Jobs["job-scope-cleanup"].CredentialCleanup.RepositoryScope == nil ||
+		*reloaded.Jobs["job-scope-cleanup"].CredentialCleanup.RepositoryScope != scope {
+		t.Fatalf("persisted cleanup scope did not survive restart: state=%+v err=%v",
+			reloaded.Jobs["job-scope-cleanup"].CredentialCleanup, err)
+	}
+	broker := &recordingCleanupBroker{}
+	repositories := &countingRepositoryResolver{err: errors.New("repository permission removed")}
+	dispatcher := cleanupTestDispatcher(restarted, broker, models.RepoScope{})
+	dispatcher.Clock = fixedClock(now)
+	dispatcher.Repositories = repositories
+	result, err := dispatcher.Reconcile(t.Context())
+	if err != nil || result.CredentialCleanupComplete != 1 {
+		t.Fatalf("reconcile=%+v err=%v", result, err)
+	}
+	current, err := restarted.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup, retained := current.Jobs["job-scope-cleanup"]
+	if retained && cleanup.CredentialCleanup.Status != state.CredentialCleanupComplete {
+		t.Fatalf("retained cleanup did not complete: %+v", cleanup.CredentialCleanup)
+	}
+	if broker.scope != scope || broker.jobID != "job-scope-cleanup" || repositories.calls != 0 {
+		t.Fatalf("broker=%+v resolver_calls=%d", broker, repositories.calls)
+	}
+}
+
+func TestUpgradeCleanupUsesExplicitStaticScopeAfterBindingRemoval(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "runner-state.json")
+	store, err := state.OpenFileStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.Update(t.Context(), func(st *state.RunnerState) error {
+		return st.UpsertJob(state.Job{ID: "job-legacy-scope-cleanup", Repo: "Owner/Repo", Status: state.StatusInterrupted,
+			CreatedAt: now.Add(-time.Hour), FinishedAt: now.Add(-time.Minute),
+			CredentialCleanup: state.CredentialCleanup{Status: state.CredentialCleanupPending,
+				RequestedAt: now.Add(-time.Minute)}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(`"repository_scope"`)) {
+		t.Fatalf("base-format cleanup fixture unexpectedly contains repository_scope: %s", raw)
+	}
+	restarted, err := state.OpenFileStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	scope := models.RepoScope{OrgID: uuid.New(), RepoID: uuid.New()}
+	broker := &recordingCleanupBroker{}
+	repositories := &countingRepositoryResolver{err: errors.New("active source binding removed")}
+	dispatcher := cleanupTestDispatcher(restarted, broker, models.RepoScope{})
+	dispatcher.Clock = fixedClock(now)
+	dispatcher.Repositories = repositories
+	dispatcher.CredentialScopes = map[string]models.RepoScope{"owner/repo": scope}
+	result, err := dispatcher.Reconcile(t.Context())
+	if err != nil || result.CredentialCleanupComplete != 1 {
+		t.Fatalf("reconcile=%+v err=%v", result, err)
+	}
+	if broker.scope != scope || broker.jobID != "job-legacy-scope-cleanup" || repositories.calls != 0 {
+		t.Fatalf("broker=%+v resolver_calls=%d", broker, repositories.calls)
+	}
+}
+
 func cleanupTestDispatcher(store state.StateStore, broker CredentialBroker, scope models.RepoScope) *Dispatcher {
 	return &Dispatcher{Store: store, Workspaces: &fakeWorkspaces{}, Sandbox: &fakeSandbox{},
 		Acpx: fakeAcpxFactory{coordinator: &fakeCoordinator{}}, Writeback: &fakeWriteback{},
@@ -187,5 +287,19 @@ func (b *sequenceCleanupBroker) RevokeJob(context.Context, models.RepoScope, str
 	if b.attempts.Add(1) == 1 {
 		return errors.New("retry cleanup")
 	}
+	return nil
+}
+
+type recordingCleanupBroker struct {
+	scope models.RepoScope
+	jobID string
+}
+
+func (*recordingCleanupBroker) Acquire(context.Context, credentials.AcquireRequest) (*credentials.Lease, error) {
+	return nil, errors.New("unexpected acquire")
+}
+
+func (b *recordingCleanupBroker) RevokeJob(_ context.Context, scope models.RepoScope, jobID string) error {
+	b.scope, b.jobID = scope, jobID
 	return nil
 }

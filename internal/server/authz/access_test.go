@@ -70,7 +70,7 @@ func TestAccessibleOrganizationAndRepositoryProjection(t *testing.T) {
 		byID[organization.Organization.ID] = organization
 	}
 	if owned := byID[ownedOrg]; owned.ContainerOnly || !containsAccess(owned.AllowedActions, AccessOrganizationAdmin) ||
-		!containsAccess(owned.AllowedActions, AccessCredentialAdmin) {
+		!containsAccess(owned.AllowedActions, AccessCredentialAdmin) || !containsAccess(owned.AllowedActions, AccessManageIntegrations) {
 		t.Fatalf("owned organization = %+v", owned)
 	}
 	if container := byID[containerOrg]; !container.ContainerOnly || len(container.AllowedActions) != 0 {
@@ -98,7 +98,8 @@ func TestAccessibleOrganizationAndRepositoryProjection(t *testing.T) {
 	}
 	if len(repositories) != 1 || repositories[0].Repository.ID != ownedRepo ||
 		!containsAccess(repositories[0].AllowedActions, AccessRepositoryAdmin) ||
-		!containsAccess(repositories[0].AllowedActions, AccessManageIntegrations) {
+		!containsAccess(repositories[0].AllowedActions, AccessManageIntegrations) ||
+		!containsAccess(repositories[0].AllowedActions, AccessTriggerRunner) {
 		t.Fatalf("owned repositories = %+v", repositories)
 	}
 	if encoded, err := json.Marshal(repositories[0]); err != nil {

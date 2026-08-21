@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
+	runnerrepository "github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
@@ -48,6 +49,25 @@ func TestRunnerProfileCapabilityProbeValidatesLivePATForEachConfiguredRepository
 		results[capability.OperationIssueCommentWrite].Decision != capability.DecisionDenied ||
 		results[capability.OperationArtifactWrite].Decision != capability.DecisionDenied || compatibility.permissionCalls != 3 {
 		t.Fatalf("permission drift report=%+v compatibility=%+v", report, compatibility)
+	}
+}
+
+func TestRunnerProfileCapabilityProbeUsesDynamicRegistryAtJobBoundary(t *testing.T) {
+	orgID, repoID := uuid.New(), uuid.New()
+	scope := models.RepoScope{OrgID: orgID, RepoID: repoID}
+	native := &fakeRunnerProfileNative{current: github.NativeContext{
+		User:          github.NativeContextUser{ID: uuid.NewString(), Login: "runner"},
+		Credential:    github.NativeContextCredential{Kind: "pat", Scopes: append([]string(nil), runnerProfileScopes...)},
+		Organizations: []github.NativeOrganizationContext{{ID: orgID.String(), Name: "owner"}},
+	}, page: github.NativeRepositoriesContext{Repositories: []github.NativeRepositoryContext{{
+		Repository: github.NativeRepositorySummary{ID: repoID.String(), OrganizationID: orgID.String(), Name: "repo"},
+	}}}}
+	registry := &fakeProfileRegistry{entry: runnerrepository.RegistryEntry{Repository: "owner/repo", Scope: scope}}
+	compatibility := &fakeRunnerProfileCompatibility{user: github.User{Login: "runner"},
+		scopes: append([]string(nil), runnerProfileScopes...), permission: "write"}
+	probe := runnerProfileCapabilityProbe{native: native, compatibility: compatibility, runnerLogin: "runner", registry: registry}
+	if report := probe.ProbeProfileCredential(t.Context(), runnerProfileRequest("owner/repo", scope)); !report.OK || registry.calls != 1 {
+		t.Fatalf("report=%+v registry_calls=%d", report, registry.calls)
 	}
 }
 
@@ -137,6 +157,21 @@ type fakeRunnerProfileCompatibility struct {
 	permissionErr   error
 	userCalls       int
 	permissionCalls int
+}
+
+type fakeProfileRegistry struct {
+	entry runnerrepository.RegistryEntry
+	err   error
+	calls int
+}
+
+func (f *fakeProfileRegistry) ResolveRepository(context.Context, string) (runnerrepository.RegistryEntry, error) {
+	f.calls++
+	return f.entry, f.err
+}
+func (f *fakeProfileRegistry) ResolveScope(context.Context, models.RepoScope) (runnerrepository.RegistryEntry, error) {
+	f.calls++
+	return f.entry, f.err
 }
 
 func (f *fakeRunnerProfileCompatibility) GetUser(context.Context) (github.User, []string, error) {

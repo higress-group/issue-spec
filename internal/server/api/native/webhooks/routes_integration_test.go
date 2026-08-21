@@ -139,6 +139,46 @@ func TestNativeWebhookLifecycleRejectsURLSecretsAndExposesTerminalRevocation(t *
 	if err := json.Unmarshal(created.Body.Bytes(), &createdBody); err != nil || createdBody.ID == uuid.Nil || createdBody.Secret == "" {
 		t.Fatalf("created body=%s error=%v", created.Body.String(), err)
 	}
+	organizationCreated := serveWebhook(t, mux, http.MethodPost, collection, map[string]any{
+		"url":         "https://organization-runner.example.test/hook",
+		"event_types": []string{"issue_comment.created", "issue_comment.edited"},
+	})
+	var organizationBody struct {
+		ID     uuid.UUID `json:"id"`
+		Secret string    `json:"secret"`
+	}
+	if organizationCreated.Code != http.StatusCreated ||
+		json.Unmarshal(organizationCreated.Body.Bytes(), &organizationBody) != nil ||
+		organizationBody.ID == uuid.Nil || organizationBody.Secret == "" {
+		t.Fatalf("organization create status=%d body=%s", organizationCreated.Code, organizationCreated.Body.String())
+	}
+	verificationPath := collection + "/" + organizationBody.ID.String() + "/runner-verification"
+	verified := serveWebhookWithAuthorization(t, mux, http.MethodPost, verificationPath,
+		"Bearer "+organizationBody.Secret)
+	if verified.Code != http.StatusOK || verified.Header().Get("Cache-Control") != "no-store" ||
+		!strings.Contains(verified.Body.String(), `"scope_type":"organization"`) ||
+		strings.Contains(verified.Body.String(), organizationBody.Secret) ||
+		strings.Contains(verified.Body.String(), "organization-runner.example.test") ||
+		strings.Contains(verified.Body.String(), `"url"`) {
+		t.Fatalf("runner verification status=%d body=%s", verified.Code, verified.Body.String())
+	}
+	for _, test := range []struct {
+		name          string
+		path          string
+		authorization string
+	}{
+		{name: "wrong secret", path: verificationPath, authorization: "Bearer profile-pat-must-not-authorize"},
+		{name: "wrong organization", path: "/api/v1/orgs/" + uuid.NewString() + "/webhooks/" +
+			organizationBody.ID.String() + "/runner-verification", authorization: "Bearer " + organizationBody.Secret},
+		{name: "missing bearer", path: verificationPath},
+	} {
+		t.Run("runner verification "+test.name, func(t *testing.T) {
+			response := serveWebhookWithAuthorization(t, mux, http.MethodPost, test.path, test.authorization)
+			if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), organizationBody.Secret) {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
 	itemPath := collection + "/" + createdBody.ID.String()
 	updateBase := map[string]any{"expected_version": createdBody.RepresentationVersion,
 		"url": "https://public.example.test/hook", "active": true,
@@ -273,6 +313,17 @@ func serveWebhook(t *testing.T, handler http.Handler, method, path string, body 
 	request := httptest.NewRequest(method, path, bytes.NewReader(encoded))
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func serveWebhookWithAuthorization(t *testing.T, handler http.Handler, method, path, authorization string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, nil)
+	if authorization != "" {
+		request.Header.Set("Authorization", authorization)
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

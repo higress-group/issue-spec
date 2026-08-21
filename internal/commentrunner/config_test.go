@@ -7,8 +7,62 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 )
+
+func TestOrganizationRunnerScopePathsAreStableAndIsolatedFromRepositoryMode(t *testing.T) {
+	home := t.TempDir()
+	setDefaultConfigPathEnv(t, home, filepath.Join(t.TempDir(), "config"), filepath.Join(t.TempDir(), "cache"))
+	subscriptionID := uuid.NewString()
+	organization := Config{Hostname: "issues.example.test", Organization: "Owner", SubscriptionID: subscriptionID,
+		RunnerIdentity: "Bot"}
+	stateA, workspaceA, err := DefaultRunnerScopePaths(organization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateB, workspaceB, err := DefaultRunnerScopePaths(organization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryState, _, err := DefaultRunnerScopePaths(Config{Hostname: "issues.example.test",
+		Repositories: []string{"owner/repo"}, RunnerIdentity: "Bot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stateA != stateB || workspaceA != workspaceB || stateA == repositoryState ||
+		!strings.Contains(stateA, filepath.Join("organization", "owner", subscriptionID, "bot")) {
+		t.Fatalf("organization paths state=%q/%q workspace=%q/%q repository=%q", stateA, stateB, workspaceA, workspaceB, repositoryState)
+	}
+}
+
+func TestConfigRequiresExactlyOneRunnerIntakeScope(t *testing.T) {
+	base := Config{RunnerIdentity: "bot", StatePath: "/tmp/state", WorkspaceRoot: "/tmp/workspaces",
+		PollInterval: NewDuration(time.Second), FallbackInterval: NewDuration(time.Second),
+		WorkspaceRetention: NewDuration(time.Hour), MaxConcurrentJobs: 1, Agent: DefaultAgentConfig()}
+	for _, test := range []struct {
+		name string
+		cfg  Config
+		ok   bool
+	}{
+		{name: "repository", cfg: func() Config { c := base; c.Repositories = []string{"o/r"}; return c }(), ok: true},
+		{name: "organization", cfg: func() Config { c := base; c.Organization = "o"; c.SubscriptionID = uuid.NewString(); return c }(), ok: true},
+		{name: "neither", cfg: base},
+		{name: "both", cfg: func() Config {
+			c := base
+			c.Repositories = []string{"o/r"}
+			c.Organization = "o"
+			c.SubscriptionID = uuid.NewString()
+			return c
+		}()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.cfg.Validate(); (err == nil) != test.ok {
+				t.Fatalf("Validate() err=%v ok=%v", err, test.ok)
+			}
+		})
+	}
+}
 
 func TestDefaultConfigFromEnvUsesUnifiedIssueSpecHomeDir(t *testing.T) {
 	home := t.TempDir()

@@ -205,6 +205,28 @@ Store the secret in a file readable only by the runner user. Never put it in a
 command-line argument, repository, or systemd unit. Production mode requires a
 `0600` secret file and rejects environment-based webhook secrets.
 
+### One Runner for an organization
+
+An organization administrator can instead open **Administration → Organization
+→ Webhooks** and create the same Runner intake contract without selecting a
+repository. Start that Runner with `--organization acme` instead of `--repo`.
+Exactly one organization or one-or-more explicit repositories is allowed per
+process, and the subscription ID must name the active organization-scoped route.
+Startup proves that exact route with the webhook secret through a redacted,
+read-only verification endpoint. Its startup verification copy is cleared after
+the proof and the intake credential is never mounted into jobs; the Runner
+profile PAT keeps the existing minimum repository scopes and does not need
+`admin:org`.
+
+Organization mode discovers repositories lazily when events arrive. An event is
+only a discovery hint: before a job or workspace exists, Runner re-reads the
+authenticated organization repository projection, requires `runner.trigger`,
+and reads an active Source Binding. New repositories are enrolled without a
+restart once their Source Binding and Runner permission are active. Missing,
+invisible, unauthorized, archived, or unbound repositories are ignored as
+`repository_ineligible`; transient Server failures remain retryable. Runner
+never creates Source Bindings or derives clone URLs from webhook bodies.
+
 ## 5. Connect the code host
 
 ### Recommended: job-scoped credentials
@@ -274,8 +296,9 @@ read-only SSH mount above, or a job-scoped credential command.
 
 This mode has no per-job expiry or revocation. Every agent job receives all
 repository authority available to that dedicated runner SSH identity. Use a
-dedicated OS account and SSH identity, retain one `runner serve` process per
-repository, and do not mount a developer's everyday SSH identity.
+dedicated OS account and SSH identity, keep each process within its configured
+repository set or single organization, and do not mount a developer's everyday
+SSH identity.
 
 ## 6. Run preflight and start in the foreground
 
@@ -358,13 +381,19 @@ issue-spec --profile team runner serve \
   --agent codex
 ```
 
+For an organization-scoped subscription, replace `--repo acme/workflow` with
+`--organization acme`. When `--state` and `--workspace-root` are omitted,
+organization-mode defaults are stable for the profile realm, host, organization,
+subscription ID, and Runner identity. They remain separate from explicit
+repository-mode defaults.
+
 For the internal SSH mode, replace the example's
 `--git-credential-command /usr/local/libexec/issue-spec-git-credential` with
 `--allow-host-ssh`, and add `--allow-host-ssh` to the preflight command too. On
 macOS, use the same explicit `--unsafe-no-sandbox --allow-host-ssh`
 combination in both commands.
 
-Repeat `--allowed-user` and `--repo` as needed. A self-hosted profile PAT may
+Repeat `--allowed-user` and, in explicit mode, `--repo` as needed. A self-hosted profile PAT may
 cover all repositories site-wide or any selected set, but the Runner preflights
 each configured repository independently. The default maximum is three
 concurrent jobs.
@@ -576,7 +605,7 @@ team workflow:
 | Webhook returns `401` | Subscription ID, current secret, and server/runner clocks |
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
-| Profile PAT authentication fails | Confirm the origin-bound profile still resolves the intended Runner identity and includes `read:user`, `issues:read`, and `issues:write` |
+| Profile PAT authentication fails | Confirm the origin-bound profile still resolves the intended Runner identity and includes `read:user`, `issues:read`, and `issues:write`; organization subscription verification separately uses the configured webhook secret |
 | Legacy audit evidence publication returns `403` | This path is audit-only. If retained during a pinned rollback window, confirm the active PAT explicitly includes `evidence:write`, allows the exact repository, and its authenticated identity still has live `write`-or-higher permission |
 | Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
 | Commit reports an unknown author | Configure both `--git-author-name` and `--git-author-email` with values accepted by the code host; do not restore the host global Git config |
@@ -591,8 +620,8 @@ new value.
 ## Security boundaries
 
 - the webhook secret authenticates delivery only; it grants no issue or source authority;
-- the origin-bound profile PAT is reused by every job and revalidated before dispatch for the current explicitly configured repository and minimum Runner scopes;
+- the origin-bound profile PAT is reused by every job and revalidated before dispatch for the current repository and minimum Runner scopes;
 - source bindings contain no credentials; prefer short-lived, binding-specific Git credentials;
 - `--allow-host-ssh` exposes the dedicated runner user's SSH authority to the sandboxed agent and is only for an explicitly trusted internal boundary;
-- the runner handles only explicit `--repo` values, and authors must pass both allowlist and repository authorization;
+- the runner handles only explicit `--repo` values or eligible repositories in one configured `--organization`, and authors must pass both allowlist and repository authorization;
 - runner state, workspaces, and credential leases should feed centralized logs and audit.

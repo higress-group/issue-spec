@@ -114,3 +114,35 @@ A native GitHub polling runner MUST resolve every explicitly configured reposito
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/377#issuecomment-5151525429
+
+### Requirement: Organization runners enroll repositories from authoritative bindings
+
+An organization-scoped self-hosted Runner MUST discover repositories through a concurrency-safe authenticated registry, MUST require live repository eligibility and one active credential-free Source Binding before command dispatch, and MUST never derive repository or clone authority from webhook payload content.
+
+#### Scenario: new repository enrolls on its first valid command
+
+- **WHEN** an organization delivery references a repository created after Runner startup and the Runner identity can authoritatively resolve the repository, required live permission, and active Source Binding
+- **THEN** the registry admits the repository without process restart and the existing authoritative comment, authorization, credential, workspace, and job path handles the command
+
+#### Scenario: concurrent first events share one trusted resolution
+
+- **WHEN** multiple deliveries concurrently reference the same previously unseen repository
+- **THEN** the Runner coalesces or safely serializes authoritative discovery, publishes one consistent UUID/name/binding entry, and preserves delivery and command idempotency
+
+#### Scenario: ineligible repository never dispatches
+
+- **WHEN** a delivery references a cross-organization, invisible, missing, ambiguous, permission-ineligible, PAT-excluded, or unbound repository
+- **THEN** the Runner records a bounded terminal non-dispatch reason, creates no job or workspace, requests no Git credential, and does not use the payload to construct a clone target
+
+#### Scenario: job boundaries recheck changing authority
+
+- **WHEN** an enrolled repository later loses permission, leaves PAT scope, or changes or removes its active Source Binding
+- **THEN** per-job capability and binding checks fail closed, existing sessions retain their pinned snapshot semantics, and resume never writes a different repository
+
+#### Scenario: explicit repository mode remains compatible
+
+- **WHEN** `runner serve` is configured with one or more explicit `--repo` values instead of organization mode
+- **THEN** the Runner retains exact configured-scope resolution and rejects repositories outside that allow-list without enabling dynamic enrollment
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/456#issuecomment-5352636245

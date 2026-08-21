@@ -196,6 +196,21 @@ unset RUNNER_WEBHOOK_SECRET
 
 生产模式只接受权限为 `0600` 的 Secret File，不接受环境变量中的 Webhook 密钥。
 
+### 一个 Runner 服务整个组织
+
+组织管理员也可以进入 **管理 → 组织 → Webhook**，创建不指定仓库、但使用相同 Runner
+Intake 协议的组织级订阅。启动时用 `--organization acme` 替换 `--repo`。一个进程只能配置
+一个组织，或一个及以上显式仓库；`--subscription-id` 必须对应这个有效的组织级订阅。
+启动时会使用 Webhook Secret 通过只读、脱敏的端点证明它正是该订阅的凭据；验证完成后
+即清除用于验证的副本，Webhook Intake 凭据也绝不挂载到 Job。Runner 的 Profile PAT
+继续只需现有的最小仓库权限，组织模式也不需要 `admin:org`。
+
+组织模式在事件到达时按需发现仓库。事件只作为发现提示；在创建 Job 或 Workspace 前，
+Runner 会重新读取已认证的组织仓库权限投影，要求 `runner.trigger`，并读取有效 Source
+Binding。因此新仓库在 Source Binding 和 Runner 权限生效后会自动纳管，无需重启 Runner。
+缺失、不可见、无权、已归档或未绑定的仓库会以 `repository_ineligible` 终态忽略；Server
+临时故障仍会重试。Runner 不会自动创建 Source Binding，也不会从 Webhook Body 推导 Clone URL。
+
 ## 5. 接入代码平台
 
 ### 推荐：任务级短期凭据
@@ -263,7 +278,7 @@ SSH 身份，不能用于共享或生产 Runner。Linux 生产环境仍应使用
 
 这是面向可信内网的兼容模式，不具备任务级凭据的过期和撤销能力。Agent 会继承该
 Runner 系统用户 SSH Key 或 Agent 能访问的全部仓库权限，因此应使用专用系统账号和
-专用 SSH 身份，并继续保持“一仓库一个 `runner serve` 进程”的隔离方式。不要挂载
+专用 SSH 身份，并让每个进程只覆盖其配置的仓库集合或单个组织。不要挂载
 个人日常账号的整个 SSH 身份。
 
 ## 6. Preflight 与前台启动
@@ -342,12 +357,16 @@ issue-spec --profile team runner serve \
   --agent codex
 ```
 
+若订阅为组织级，把 `--repo acme/workflow` 替换为 `--organization acme`。未显式提供
+`--state` 和 `--workspace-root` 时，组织模式会按 Profile Realm、Host、组织、订阅 ID
+与 Runner 身份生成稳定默认目录，并与显式仓库模式的默认目录隔离。
+
 内部 SSH 模式只需把上例中的
 `--git-credential-command /usr/local/libexec/issue-spec-git-credential` 替换为
 `--allow-host-ssh`，并在 preflight 命令中也添加 `--allow-host-ssh`。macOS 上两个命令都应使用
 相同的显式 `--unsafe-no-sandbox --allow-host-ssh` 组合。
 
-`--allowed-user` 和 `--repo` 都可以重复。self-hosted Profile PAT 可以覆盖全站全部仓库或指定的
+`--allowed-user` 可以重复；显式仓库模式下 `--repo` 也可以重复。self-hosted Profile PAT 可以覆盖全站全部仓库或指定的
 多个仓库，但 Runner 会分别预检每个已配置仓库。默认最多并行运行 3 个任务，可用
 `--max-concurrent-jobs` 调整。
 
@@ -542,7 +561,7 @@ workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-s
 | Webhook 为 `401` | Subscription ID、当前 Secret、Runner 与 Server 时钟 |
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
-| Profile PAT 认证失败 | 与 Origin 绑定的 Profile 是否仍解析到预期 Runner 身份，以及 PAT 是否包含 `read:user`、`issues:read`、`issues:write` |
+| Profile PAT 认证失败 | 与 Origin 绑定的 Profile 是否仍解析到预期 Runner 身份，以及 PAT 是否包含 `read:user`、`issues:read`、`issues:write`；组织订阅校验会单独使用配置的 Webhook Secret |
 | Legacy 审计证据发布返回 `403` | 该路径仅供审计。若固定回滚窗口仍保留它，请确认有效 PAT 显式包含 `evidence:write`、允许访问准确仓库，且认证身份仍具有实时 `write` 或更高权限 |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | 提交时报作者身份未知 | 同时配置 `--git-author-name` 与 `--git-author-email`，并使用代码平台认可的值；不要恢复宿主全局 Git 配置 |
@@ -556,9 +575,9 @@ workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-s
 ## 安全边界
 
 - Webhook Secret 只验证 Server 到 Runner 的投递，不授予 Issue 或代码权限；
-- 与 Origin 绑定的 Profile PAT 会由每个作业复用，并在 dispatch 前针对当前显式配置的仓库和最低必需 Scope 重新校验；
+- 与 Origin 绑定的 Profile PAT 会由每个作业复用，并在 dispatch 前针对当前仓库和最低必需 Scope 重新校验；
 - Source Binding 始终不含凭据；优先按 Job 和 Binding 短期签发 Git 凭据；
 - `--allow-host-ssh` 会把专用 Runner 用户的 SSH 权限暴露给沙箱内 Agent，只适用于明确
   接受这一边界的可信内网；
-- Agent 只能处理明确配置的 `--repo`，评论作者还必须同时通过允许列表和仓库权限校验；
+- Agent 只能处理明确配置的 `--repo`，或单个 `--organization` 中满足纳管条件的仓库；评论作者还必须同时通过允许列表和仓库权限校验；
 - Runner 状态、Workspace 和 Credential Lease 都应进入集中日志与审计。

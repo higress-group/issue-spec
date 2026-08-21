@@ -121,3 +121,30 @@ The self-hosted server MUST let an authorized organization or repository adminis
 - **THEN** browser E2E configures a `github.v3` route, creates a selected key issue, a typed comment, and a human non-typed comment, verifies the receiver gets exactly the selected GitHub-compatible issue and human-comment events with no secret leakage, verifies typed-comment suppression and replay in the UI, and keeps live endpoint credentials outside source, fixtures, screenshots, and test output
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4949730701
+
+### Requirement: Organization-scoped Runner webhooks are operable
+
+The self-hosted product MUST let an authorized organization integration manager create and operate an organization-scoped `issue-spec.v1` Runner subscription, and `runner serve` MUST bind its configured credential to that authoritative organization subscription before accepting dynamic repository enrollment.
+
+#### Scenario: organization manager creates a Runner subscription
+
+- **WHEN** an organization integration manager opens the organization Runner webhook surface and submits a valid Runner receiver configuration
+- **THEN** the SPA omits `repository_id`, the Server creates an organization-scoped `issue-spec.v1` bearer subscription, and the show-once secret and subscription ID are displayed without weakening repository-scoped webhook behavior
+
+#### Scenario: organization Runner verifies subscription authority
+
+- **WHEN** `runner serve` starts in organization mode with a subscription ID and secret
+- **THEN** startup verifies that the active subscription belongs to the configured organization, uses `issue-spec.v1` bearer delivery, selects the supported comment events, and does not accept a repository-scoped or cross-organization subscription as organization authority
+
+#### Scenario: organization webhook lifecycle remains manageable
+
+- **WHEN** an authorized organization integration manager lists, pauses, resumes, rotates, inspects, or revokes the organization subscription
+- **THEN** the existing optimistic version, secret rotation, suppression, audit, retry, redaction, and terminal revocation contracts remain in force at organization scope
+
+#### Scenario: repository webhook management remains isolated
+
+- **WHEN** an operator continues to use a repository-scoped webhook or a caller lacks organization integration-management authority
+- **THEN** existing repository routes remain compatible and unauthorized organization webhook configuration is concealed or denied without revealing destinations or secret metadata
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/456#issuecomment-5352635785

@@ -43,6 +43,19 @@ func TestScopedSubscriptionAuthorizationSecretRotationAndRedaction(t *testing.T)
 		len(organizationScoped.Subscription.EventTypes) != 1 || organizationScoped.Subscription.EventTypes[0] != "issue_comment.created" {
 		t.Fatalf("organization subscription = %+v, %v", organizationScoped, err)
 	}
+	verified, err := env.service.VerifyRunnerCredential(t.Context(), env.scope.OrgID,
+		organizationScoped.Subscription.ID, []byte(organizationScoped.Secret), time.Now().UTC())
+	if err != nil || verified.ID != organizationScoped.Subscription.ID || verified.OrganizationID != env.scope.OrgID {
+		t.Fatalf("runner credential verification=%+v err=%v", verified, err)
+	}
+	if _, err := env.service.VerifyRunnerCredential(t.Context(), env.scope.OrgID,
+		organizationScoped.Subscription.ID, []byte("wrong-subscription-secret"), time.Now().UTC()); !errors.Is(err, subscriptions.ErrNotFound) {
+		t.Fatalf("wrong runner credential error=%v", err)
+	}
+	if _, err := env.service.VerifyRunnerCredential(t.Context(), uuid.New(),
+		organizationScoped.Subscription.ID, []byte(organizationScoped.Secret), time.Now().UTC()); !errors.Is(err, subscriptions.ErrNotFound) {
+		t.Fatalf("cross-organization runner credential error=%v", err)
+	}
 	var orgAudits int
 	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM audit_events
 		WHERE organization_id = $1 AND repository_id IS NULL AND resource_id = $2`,

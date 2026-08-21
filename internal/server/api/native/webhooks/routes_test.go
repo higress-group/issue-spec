@@ -21,7 +21,7 @@ func TestRouteSetIsExplicitAndFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(set.Routes) != 7 {
+	if len(set.Routes) != 8 {
 		t.Fatalf("routes = %d", len(set.Routes))
 	}
 	seen := map[string]bool{}
@@ -40,6 +40,7 @@ func TestRouteSetIsExplicitAndFailClosed(t *testing.T) {
 		"DELETE /api/v1/orgs/{org}/webhooks/{webhook}",
 		"POST /api/v1/orgs/{org}/webhooks/{webhook}/rotate-secret",
 		"GET /api/v1/orgs/{org}/webhooks/{webhook}/suppressions",
+		"POST /api/v1/orgs/{org}/webhooks/{webhook}/runner-verification",
 	} {
 		if !seen[key] {
 			t.Fatalf("missing route %s", key)
@@ -57,6 +58,35 @@ func TestReadViewsNeverExposeSecretMaterial(t *testing.T) {
 		Secret: "show-once", SecretVersion: 1}))
 	if !strings.Contains(string(created), `"secret":"show-once"`) {
 		t.Fatalf("create view omitted show-once secret: %s", created)
+	}
+	verification, _ := json.Marshal(runnerVerificationView(item))
+	if strings.Contains(string(verification), "secret") || strings.Contains(string(verification), "runner.example.test") ||
+		strings.Contains(string(verification), `"url"`) {
+		t.Fatalf("runner verification view contains credential or destination material: %s", verification)
+	}
+}
+
+func TestRunnerBearerCredentialRequiresOneStrictBoundedHeader(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		values []string
+		want   string
+	}{
+		{name: "valid", values: []string{"Bearer subscription-secret"}, want: "subscription-secret"},
+		{name: "missing"},
+		{name: "duplicate", values: []string{"Bearer one", "Bearer two"}},
+		{name: "wrong scheme", values: []string{"Basic credential"}},
+		{name: "extra whitespace", values: []string{"Bearer subscription secret"}},
+		{name: "empty", values: []string{"Bearer "}},
+		{name: "oversized", values: []string{"Bearer " + strings.Repeat("x", (64<<10)+1)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			credential := runnerBearerCredential(test.values)
+			defer clear(credential)
+			if string(credential) != test.want {
+				t.Fatalf("credential accepted=%t length=%d want_accepted=%t", len(credential) > 0, len(credential), test.want != "")
+			}
+		})
 	}
 }
 

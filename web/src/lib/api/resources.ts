@@ -36,7 +36,7 @@ import {
 } from "./types";
 
 type SourceBindingInput = Pick<SourceBinding, "provider_key" | "external_repository_id" | "clone_url" | "web_url" | "default_branch">;
-type WebhookInput = { repository_id: string; url: string; event_types: string[]; delivery_format: WebhookDeliveryFormat; signing_mode: WebhookSigningMode; content_policy: WebhookContentPolicy; retry: WebhookRetry };
+type WebhookInput = { repository_id?: string; url: string; event_types: string[]; delivery_format: WebhookDeliveryFormat; signing_mode: WebhookSigningMode; content_policy: WebhookContentPolicy; retry: WebhookRetry };
 type WebhookUpdateInput = Omit<WebhookInput, "repository_id"> & { active: boolean; expected_version: number; clear_destination_query?: boolean };
 
 export const api = {
@@ -103,9 +103,9 @@ export const api = {
     apiRequest(`/api/v1/orgs/${orgId}/repos/${repoId}/bindings`, { method: "POST", body, schema: sourceBindingSchema }),
   deactivateSourceBinding: (orgId: string, repoId: string) =>
     apiRequest<void>(`/api/v1/orgs/${orgId}/repos/${repoId}/bindings/active`, { method: "DELETE" }),
-  webhookSubscriptions: (orgId: string, repoId: string, signal?: AbortSignal) => {
-    const params = new URLSearchParams({ repository_id: repoId });
-    return apiRequest(`/api/v1/orgs/${orgId}/webhooks?${params}`, { schema: webhookSubscriptionsSchema, signal });
+  webhookSubscriptions: (orgId: string, repoId?: string, signal?: AbortSignal) => {
+    const params = repoId ? `?${new URLSearchParams({ repository_id: repoId })}` : "";
+    return apiRequest(`/api/v1/orgs/${orgId}/webhooks${params}`, { schema: webhookSubscriptionsSchema, signal });
   },
   createWebhookSubscription: (orgId: string, body: WebhookInput) =>
     apiRequest(`/api/v1/orgs/${orgId}/webhooks`, { method: "POST", body, schema: webhookSecretSchema }),

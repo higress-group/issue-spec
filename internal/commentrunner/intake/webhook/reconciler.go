@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
+	runnerrepository "github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
@@ -42,6 +43,7 @@ type ReconcilerConfig struct {
 	Store               state.StateStore
 	Backend             ReconcileBackend
 	Scopes              RepositoryScopes
+	Registry            runnerrepository.Registry
 	Runner              commentrunner.Config
 	AuthorizationPolicy commentrunner.AuthorizationPolicy
 	WorkerID            string
@@ -83,7 +85,7 @@ func NewReconciler(config ReconcilerConfig) (*Reconciler, error) {
 	if config.Queue == nil || config.Store == nil || config.Backend == nil {
 		return nil, errors.New("webhook reconciler requires queue, state store, and backend")
 	}
-	if len(config.Scopes.ByRepository) == 0 || len(config.Scopes.ByScope) != len(config.Scopes.ByRepository) {
+	if config.Registry == nil && (len(config.Scopes.ByRepository) == 0 || len(config.Scopes.ByScope) != len(config.Scopes.ByRepository)) {
 		return nil, errors.New("webhook reconciler requires complete one-to-one repository scopes")
 	}
 	if strings.TrimSpace(config.WorkerID) == "" {
@@ -191,9 +193,22 @@ func (r *Reconciler) reconcileClaim(ctx context.Context, delivery state.WebhookD
 	}
 	result.TriggerCommentID = envelope.Comment.NumericID
 	scope := models.RepoScope{OrgID: envelope.OrganizationID, RepoID: envelope.RepositoryID}
-	repository, ok := r.config.Scopes.Repository(scope)
-	if !ok {
-		return r.fail(ctx, delivery, result, "binding_unavailable")
+	repository := ""
+	if r.config.Registry != nil {
+		entry, resolveErr := r.config.Registry.ResolveScope(ctx, scope)
+		if resolveErr != nil {
+			if runnerrepository.IsRepositoryIneligible(resolveErr) {
+				return r.ignoreIneligible(ctx, delivery, result, envelope.Comment.RepresentationVersion)
+			}
+			return r.release(ctx, delivery, result, "repository_authority_unavailable")
+		}
+		repository = entry.Repository
+	} else {
+		var ok bool
+		repository, ok = r.config.Scopes.Repository(scope)
+		if !ok {
+			return r.fail(ctx, delivery, result, "binding_unavailable")
+		}
 	}
 	result.Repository = repository
 	remote, err := r.config.Backend.GetIssueComment(ctx, repository, envelope.Comment.NumericID)
@@ -280,6 +295,17 @@ func (r *Reconciler) reconcileClaim(ctx context.Context, delivery state.WebhookD
 		return r.release(ctx, delivery, result, "ack_state")
 	}
 	return r.complete(ctx, delivery, result)
+}
+
+func (r *Reconciler) ignoreIneligible(ctx context.Context, delivery state.WebhookDelivery,
+	result ReconcileResult, revision int64) (ReconcileResult, error) {
+	result, err := r.recordTerminalDecision(ctx, delivery, result, DurableDecision{
+		Outcome: state.DeliveryOutcomeIgnored, AuthoritativeRevision: revision,
+	}, nil)
+	if err == nil {
+		result.Reason = "repository_ineligible"
+	}
+	return result, err
 }
 
 func eventDecisionAlreadyPresent(current state.RunnerState, decision intake.EventDecision) bool {

@@ -38,6 +38,7 @@ import (
 func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	orgID, repoID, issueID, commentID, actorID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	bindingID := uuid.NewString()
 	commentNumericID := int64(71)
 	var reactionCalls, writebackCalls atomic.Int32
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +60,7 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 			writeRunnerJSON(w, http.StatusOK, map[string]any{"repositories": []map[string]any{{"repository": map[string]string{
 				"id": repoID.String(), "organization_id": orgID.String(), "name": "repo"}}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/orgs/"+orgID.String()+"/repos/"+repoID.String()+"/bindings/active":
-			writeRunnerJSON(w, http.StatusOK, map[string]any{"id": uuid.NewString(), "provider_key": "test-git",
+			writeRunnerJSON(w, http.StatusOK, map[string]any{"id": bindingID, "provider_key": "test-git",
 				"external_repository_id": "org/repo", "clone_url": "https://git.example.test/org/repo.git",
 				"web_url": "https://git.example.test/org/repo", "default_branch": "main", "version": 1, "active": true,
 				"created_at": now, "updated_at": now})
