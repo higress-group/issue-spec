@@ -88,6 +88,7 @@ type workspaceCommandResult struct {
 	Head                      string                                        `json:"head,omitempty"`
 	GitBranch                 string                                        `json:"git_branch,omitempty"`
 	Problems                  []string                                      `json:"problems,omitempty"`
+	OwnershipAdvisories       []processworkspace.OverlapAdvisory            `json:"ownership_advisories,omitempty"`
 	Remote                    workspaceRemoteResult                         `json:"remote"`
 	ReconcileRequired         bool                                          `json:"reconcile_required,omitempty"`
 	Assignment                *assignment.Packet                            `json:"assignment,omitempty"`
@@ -1291,7 +1292,8 @@ func workspaceResult(ctx context.Context, manager workspaceService, inspection p
 		AcceptedReceiptGeneration: lease.Portable.AcceptedReceiptGeneration,
 		AcceptedReceiptSubmission: lease.Portable.AcceptedReceiptSubmission, RuntimeNamespace: lease.Portable.RuntimeNamespace,
 		WorktreePath: lease.WorktreePath, Registered: inspection.Registered, Present: inspection.Present, Dirty: inspection.Dirty,
-		Head: inspection.Head, GitBranch: inspection.Branch, Problems: append([]string(nil), inspection.Problems...), Remote: remote}
+		Head: inspection.Head, GitBranch: inspection.Branch, Problems: append([]string(nil), inspection.Problems...),
+		OwnershipAdvisories: append([]processworkspace.OverlapAdvisory(nil), inspection.OwnershipAdvisories...), Remote: remote}
 }
 
 func acceptedReceiptIDForResult(lease processworkspace.LocalLease) string {
@@ -1330,5 +1332,22 @@ func (a *app) outputWorkspace(result workspaceCommandResult, jsonOut bool) int {
 	if len(result.Problems) > 0 {
 		fmt.Fprintf(a.out, "problems: %s\n", strings.Join(result.Problems, "; "))
 	}
+	for _, advisory := range result.OwnershipAdvisories {
+		fmt.Fprintf(a.out, "%s\n", advisoryLine(advisory))
+	}
 	return 0
+}
+
+// advisoryLine renders one advisory per overlapping workspace. The message is
+// informational only: it names the other workspace and its PROCESS, lists the
+// overlapping declared entries, and notes that the overlap may require
+// merge-conflict resolution at integration time. It must never instruct the
+// reader to pause, stop, wait, or abandon the workspace.
+func advisoryLine(advisory processworkspace.OverlapAdvisory) string {
+	entries := make([]string, 0, len(advisory.Overlaps))
+	for _, overlap := range advisory.Overlaps {
+		entries = append(entries, overlap.Entry+" vs "+overlap.PeerEntry)
+	}
+	return fmt.Sprintf("ownership advisory: workspace %s (process %s) declares overlapping write scope (%s); the overlap may require merge-conflict resolution at integration time",
+		advisory.WorkspaceID, advisory.ProcessID, strings.Join(entries, ", "))
 }

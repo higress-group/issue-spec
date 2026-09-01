@@ -58,9 +58,14 @@ func (b *workspaceCASBackend) UpdateCommentConditional(_ context.Context, _ stri
 
 func workspaceProcessBody(t *testing.T, class model.ProcessExecutionClass) string {
 	t.Helper()
-	body, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
+	return workspaceProcessBodyFor(t, "PROCESS-004", class, []string{"internal/commands/**"})
+}
+
+func workspaceProcessBodyFor(t *testing.T, processID string, class model.ProcessExecutionClass, ownership []string) string {
+	t.Helper()
+	body, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: processID, Status: "in-progress"},
 		Input: templates.ProcessInput{Title: "workspace", ParentTask: "TASK-002", ExecutionClass: class,
-			WriteOwnership: []string{"internal/commands/**"}, Handoff: "N/A"}})
+			WriteOwnership: ownership, Handoff: "N/A"}})
 	if err != nil {
 		t.Fatal(err)
 	}
