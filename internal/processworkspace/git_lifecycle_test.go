@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -62,6 +63,52 @@ func TestManagerPreparesParallelWritableAndRejectsRetiredSnapshot(t *testing.T) 
 	}
 	if got := gitOutput(t, repo, "rev-parse", "HEAD"); got != base {
 		t.Fatalf("integration HEAD changed: %s", got)
+	}
+}
+
+func TestManagerPrepareAndInspectSurfaceOwnershipAdvisories(t *testing.T) {
+	repo, base := newGitRepository(t)
+	manager := openTestManager(t, repo)
+	first := testLease("ws-a", "PROCESS-001", ModeWritable, "advisory-a", base, []string{"internal/shared/**"})
+
+	firstInspection, err := manager.Prepare(context.Background(), PrepareRequest{Lease: first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstInspection.OwnershipAdvisories) != 0 {
+		t.Fatalf("first prepare carried advisories against an empty registry: %+v", firstInspection.OwnershipAdvisories)
+	}
+
+	second := testLease("ws-b", "PROCESS-002", ModeWritable, "advisory-b", base, []string{"internal/shared/file.go"})
+	secondInspection, err := manager.Prepare(context.Background(), PrepareRequest{Lease: second})
+	if err != nil {
+		t.Fatalf("overlapping prepare must succeed as advisory-only: %v", err)
+	}
+	want := []OverlapAdvisory{{WorkspaceID: "ws-a", ProcessID: "PROCESS-001",
+		Overlaps: []OverlapAdvisoryEntry{{Entry: "internal/shared/file.go", PeerEntry: "internal/shared/**"}}}}
+	if !reflect.DeepEqual(secondInspection.OwnershipAdvisories, want) {
+		t.Fatalf("prepare advisories=%+v want %+v", secondInspection.OwnershipAdvisories, want)
+	}
+
+	inspected, err := manager.Inspect(context.Background(), first.Portable.WorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	symmetric := []OverlapAdvisory{{WorkspaceID: "ws-b", ProcessID: "PROCESS-002",
+		Overlaps: []OverlapAdvisoryEntry{{Entry: "internal/shared/**", PeerEntry: "internal/shared/file.go"}}}}
+	if !reflect.DeepEqual(inspected.OwnershipAdvisories, symmetric) {
+		t.Fatalf("inspect advisories=%+v want %+v", inspected.OwnershipAdvisories, symmetric)
+	}
+
+	if _, err := manager.Cleanup(context.Background(), second.Portable.WorkspaceID, second.Owner.Token); err != nil {
+		t.Fatal(err)
+	}
+	inspected, err = manager.Inspect(context.Background(), first.Portable.WorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inspected.OwnershipAdvisories) != 0 {
+		t.Fatalf("cleaned peer still produces advisories: %+v", inspected.OwnershipAdvisories)
 	}
 }
 

@@ -102,7 +102,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issue
 
 Parallel agent execution SHALL be allowed only for PROCESS nodes that are sufficiently decoupled.
 
-The coordinator SHALL verify that parallel PROCESS nodes have non-overlapping write ownership, stable interface contracts, independent test surfaces, and no immediate dependency on each other's implementation decisions.
+The coordinator SHALL verify that parallel PROCESS nodes have non-overlapping write ownership, stable interface contracts, independent test surfaces, and no immediate dependency on each other's implementation decisions. This verification is coordinator planning policy: it governs when the coordinator chooses parallel dispatch or records an integration protocol, and the workspace lease layer MUST NOT enforce it, because declared write overlap across PROCESSes is advisory at workspace preparation.
 
 The workflow SHALL treat parallelism as an optimization after context control and conflict avoidance, not as the primary reason for splitting work.
 
@@ -111,7 +111,7 @@ The existing workflow guidance that defaults to parallel worker dispatch SHALL b
 #### Scenario: overlapping writes must not run in parallel
 
 - **WHEN** two PROCESS nodes write to the same file, package-level abstraction, generated artifact, or shared configuration surface
-- **THEN** they SHALL NOT run in parallel unless a coordinator-owned integration protocol is explicitly recorded
+- **THEN** the coordinator SHALL NOT dispatch them in parallel unless a coordinator-owned integration protocol is explicitly recorded
 
 #### Scenario: disjoint modules may run in parallel
 
@@ -128,7 +128,13 @@ The existing workflow guidance that defaults to parallel worker dispatch SHALL b
 - **WHEN** the implement or apply workflow guidance is updated for this change
 - **THEN** any text that dispatches independent workers in parallel by default SHALL be rewritten to make serial-under-shared-parent-TASK the default and parallel dispatch conditional on the decoupling checks in this SPEC
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issuecomment-4877852810
+#### Scenario: declared overlap never blocks independent preparation
+
+- **WHEN** two PROCESS nodes with overlapping declared write ownership are prepared as separate workspaces
+- **THEN** workspace preparation MUST NOT serialize or reject either lease and MUST report the overlap as an advisory, while only the coordinator's dispatch policy decides whether the nodes run in parallel
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/461#issuecomment-5489854487
 
 ### Requirement: Agent-executed change-bearing PROCESS nodes require non-coordinator workers
 

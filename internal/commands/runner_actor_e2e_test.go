@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -108,6 +109,60 @@ func TestRunnerNativeProcessActorLifecycleUsesOneACPXCoordinator(t *testing.T) {
 	job := store.Snapshot().Jobs["job-native-actor"]
 	if job.Acpx.CWD != canonicalSessionClone {
 		t.Fatalf("persisted ACPX cwd=%q want session clone %q", job.Acpx.CWD, canonicalSessionClone)
+	}
+}
+
+// TestWorkspacePrepareOverlappingOwnershipIsAdvisory proves the end-to-end CLI
+// semantic: two real workspaces from different PROCESSes with overlapping
+// declared write scope both prepare successfully, the second one carrying an
+// advisory naming the first, and inspect reports the symmetric advisory.
+func TestWorkspacePrepareOverlappingOwnershipIsAdvisory(t *testing.T) {
+	skipWithoutRealGit(t)
+	repo, base := workspaceGitRepository(t)
+	workspaceRoot := filepath.Join(t.TempDir(), "managed")
+
+	firstBackend := newWorkspaceCASBackend(workspaceProcessBodyFor(t, "PROCESS-101", model.ProcessExecutionChangeBearing, []string{"internal/shared/**"}))
+	first, firstOut, firstErrOut := transitionAppWithError(firstBackend)
+	firstCode := first.runWorkflowWorkspace(context.Background(), []string{"prepare", "--repo", "o/r", "--issue", "177", "--process", "PROCESS-101",
+		"--integration-root", repo, "--workspace-root", workspaceRoot, "--owner-token", "owner-a", "--base", base, "--json"})
+	if firstCode != 0 {
+		t.Fatalf("first prepare code=%d out=%s err=%s", firstCode, firstOut.String(), firstErrOut.String())
+	}
+	firstResult := decodeWorkspaceResult(t, firstOut)
+	if !firstResult.OK || len(firstResult.OwnershipAdvisories) != 0 {
+		t.Fatalf("first prepare result=%+v", firstResult)
+	}
+
+	secondBackend := newWorkspaceCASBackend(workspaceProcessBodyFor(t, "PROCESS-102", model.ProcessExecutionChangeBearing, []string{"internal/shared/file.go"}))
+	second, secondOut, secondErrOut := transitionAppWithError(secondBackend)
+	secondCode := second.runWorkflowWorkspace(context.Background(), []string{"prepare", "--repo", "o/r", "--issue", "178", "--process", "PROCESS-102",
+		"--integration-root", repo, "--workspace-root", workspaceRoot, "--owner-token", "owner-b", "--base", base, "--json"})
+	if secondCode != 0 {
+		t.Fatalf("overlapping prepare must stay successful, code=%d out=%s err=%s", secondCode, secondOut.String(), secondErrOut.String())
+	}
+	secondResult := decodeWorkspaceResult(t, secondOut)
+	if !secondResult.OK || secondResult.Code != "" || secondResult.State != processworkspace.StatePrepared {
+		t.Fatalf("overlapping prepare result=%+v", secondResult)
+	}
+	want := []processworkspace.OverlapAdvisory{{WorkspaceID: "ws-process-101", ProcessID: "PROCESS-101",
+		Overlaps: []processworkspace.OverlapAdvisoryEntry{{Entry: "internal/shared/file.go", PeerEntry: "internal/shared/**"}}}}
+	if !reflect.DeepEqual(secondResult.OwnershipAdvisories, want) {
+		t.Fatalf("prepare advisories=%+v want %+v", secondResult.OwnershipAdvisories, want)
+	}
+
+	inspectBackend := newWorkspaceCASBackend(workspaceProcessBodyFor(t, "PROCESS-101", model.ProcessExecutionChangeBearing, []string{"internal/shared/**"}))
+	inspect, inspectOut, inspectErrOut := transitionAppWithError(inspectBackend)
+	inspectCode := inspect.runWorkflowWorkspace(context.Background(), []string{"inspect", "--repo", "o/r", "--issue", "177", "--process", "PROCESS-101",
+		"--integration-root", repo, "--workspace-root", workspaceRoot})
+	if inspectCode != 0 {
+		t.Fatalf("inspect code=%d out=%s err=%s", inspectCode, inspectOut.String(), inspectErrOut.String())
+	}
+	output := inspectOut.String()
+	if !strings.Contains(output, "ownership advisory: workspace ws-process-102 (process PROCESS-102) declares overlapping write scope (internal/shared/** vs internal/shared/file.go)") {
+		t.Fatalf("inspect output missing advisory line: %s", output)
+	}
+	if !strings.Contains(output, "may require merge-conflict resolution at integration time") {
+		t.Fatalf("inspect advisory line omits the integration-time consequence: %s", output)
 	}
 }
 

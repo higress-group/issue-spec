@@ -60,6 +60,10 @@ type Inspection struct {
 	Head       string     `json:"head,omitempty"`
 	Branch     string     `json:"branch,omitempty"`
 	Problems   []string   `json:"problems,omitempty"`
+	// OwnershipAdvisories lists declared write-scope overlap with other active
+	// writable leases from different PROCESSes. It is informational convergence
+	// data only and never affects the outcome of the inspected operation.
+	OwnershipAdvisories []OverlapAdvisory `json:"ownership_advisories,omitempty"`
 }
 
 type AssignmentRequest struct {
@@ -108,7 +112,7 @@ func (m *Manager) IssueAssignment(ctx context.Context, request AssignmentRequest
 	if err := packet.Validate(); err != nil {
 		return inspection, assignment.Packet{}, err
 	}
-	return inspection, packet, nil
+	return m.withOwnershipAdvisories(ctx, inspection), packet, nil
 }
 
 func OpenManager(ctx context.Context, integrationRoot, workspaceRoot string, options ManagerOptions) (*Manager, error) {
@@ -227,9 +231,13 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (Inspecti
 	} else if err != nil {
 		return Inspection{}, err
 	}
-	return m.withIntegrationLock(ctx, func() (Inspection, error) {
+	inspection, err := m.withIntegrationLock(ctx, func() (Inspection, error) {
 		return m.reconcilePreparing(ctx, created, path)
 	})
+	if err != nil {
+		return inspection, err
+	}
+	return m.withOwnershipAdvisories(ctx, inspection), nil
 }
 
 func (m *Manager) Inspect(ctx context.Context, workspaceID string) (Inspection, error) {
@@ -243,7 +251,32 @@ func (m *Manager) Inspect(ctx context.Context, workspaceID string) (Inspection, 
 	if err := m.validatePreparationRecoveryOwnership(ctx, lease.Portable); err != nil {
 		return Inspection{Lease: lease}, err
 	}
-	return m.inspectLease(ctx, lease)
+	inspection, err := m.inspectLease(ctx, lease)
+	if err != nil {
+		return inspection, err
+	}
+	return m.withOwnershipAdvisories(ctx, inspection), nil
+}
+
+// withOwnershipAdvisories attaches informational cross-PROCESS write-scope
+// overlap for the inspected lease. Advisories are best-effort convergence
+// data: a registry read or overlap computation failure never introduces a new
+// failure mode for prepare, assignment issuance, or inspect, so the inspection
+// is returned unchanged instead of failing the operation.
+func (m *Manager) withOwnershipAdvisories(ctx context.Context, inspection Inspection) Inspection {
+	if inspection.Lease.Portable.Mode != ModeWritable || inspection.Lease.Portable.State == StateCleaned {
+		return inspection
+	}
+	registry, err := m.Store.Load(ctx)
+	if err != nil {
+		return inspection
+	}
+	advisories, err := registry.OwnershipAdvisories(inspection.Lease.Portable.WorkspaceID)
+	if err != nil {
+		return inspection
+	}
+	inspection.OwnershipAdvisories = advisories
+	return inspection
 }
 
 func (m *Manager) reconcilePreparing(ctx context.Context, lease LocalLease, worktreePath string) (Inspection, error) {

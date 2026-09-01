@@ -582,9 +582,13 @@ func TestStoreRejectsCollisionsAndPurgesOnlyOwnedCleanedLease(t *testing.T) {
 	if _, err := store.Create(context.Background(), first); err != nil {
 		t.Fatal(err)
 	}
-	second := localPreparedLease(t, root, "ws-2", "PROCESS-002", "branch-2", "worker-2", []string{"internal/a/file.go"}, now)
+	second := localPreparedLease(t, root, "ws-2", "PROCESS-002", "branch-1", "worker-2", []string{"internal/b/**"}, now)
 	if _, err := store.Create(context.Background(), second); err == nil {
-		t.Fatal("store accepted active ownership collision")
+		t.Fatal("store accepted an active branch collision")
+	}
+	overlapping := localPreparedLease(t, root, "ws-3", "PROCESS-003", "branch-3", "worker-3", []string{"internal/a/file.go"}, now)
+	if _, err := store.Create(context.Background(), overlapping); err != nil {
+		t.Fatalf("store rejected advisory ownership overlap: %v", err)
 	}
 	if _, err := store.Create(context.Background(), first); !errors.Is(err, ErrLeaseExists) {
 		t.Fatalf("duplicate create err=%v", err)

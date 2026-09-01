@@ -24,7 +24,7 @@ packages may run concurrently. Select managed PROCESS only for:
 
 - concurrent code writers;
 - isolation that protects pre-existing work;
-- enforced path ownership;
+- declared write ownership with advisory cross-PROCESS overlap reporting;
 - restartable cross-session handoff;
 - dependency-ordered integration.
 

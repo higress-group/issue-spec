@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -286,5 +287,135 @@ func TestFastWorkspaceInspectCommandMapsServiceError(t *testing.T) {
 	result := decodeWorkspaceResult(t, out)
 	if result.OK || result.Code != "inspect_failed" {
 		t.Fatalf("error result=%+v want code=inspect_failed", result)
+	}
+}
+
+func advisoryResultForPrepare(request processworkspace.PrepareRequest) processworkspace.Inspection {
+	prepared := request.Lease
+	prepared.Portable.State = processworkspace.StatePrepared
+	return processworkspace.Inspection{Lease: prepared, OwnershipAdvisories: []processworkspace.OverlapAdvisory{{
+		WorkspaceID: "ws-peer", ProcessID: "PROCESS-PEER",
+		Overlaps: []processworkspace.OverlapAdvisoryEntry{
+			{Entry: "internal/commands/**", PeerEntry: "internal/commands/peer.go"},
+			{Entry: "internal/commands/**", PeerEntry: "docs/shared.md"},
+		},
+	}}}
+}
+
+func prepareArgs(jsonOut bool) []string {
+	args := []string{"prepare", "--repo", "o/r", "--issue", "177", "--process", "PROCESS-004",
+		"--integration-root", "/fake/integration", "--workspace-root", "/fake/managed",
+		"--owner-token", "owner-secret", "--base", strings.Repeat("a", 40)}
+	if jsonOut {
+		args = append(args, "--json")
+	}
+	return args
+}
+
+// TestFastWorkspacePrepareCommandCarriesOwnershipAdvisories covers prepare
+// success with advisory data: exit stays successful and the JSON result
+// carries the other workspace identity, PROCESS, and overlapping entries.
+func TestFastWorkspacePrepareCommandCarriesOwnershipAdvisories(t *testing.T) {
+	processBody := workspaceProcessBody(t, model.ProcessExecutionChangeBearing)
+	backend := newWorkspaceCASBackend(processBody)
+	app, out, errOut := transitionAppWithError(backend)
+
+	fake := newFakeWorkspaceService(t)
+	fake.prepareFn = func(_ context.Context, request processworkspace.PrepareRequest) (processworkspace.Inspection, error) {
+		return advisoryResultForPrepare(request), nil
+	}
+	app.openWorkspace = func(context.Context, string, string, processworkspace.ManagerOptions) (workspaceService, error) {
+		return fake, nil
+	}
+
+	if code := app.runWorkflowWorkspace(context.Background(), prepareArgs(true)); code != 0 {
+		t.Fatalf("prepare with advisory overlap must stay successful, code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	result := decodeWorkspaceResult(t, out)
+	if !result.OK || result.Code != "" {
+		t.Fatalf("prepare result=%+v", result)
+	}
+	want := []processworkspace.OverlapAdvisory{{
+		WorkspaceID: "ws-peer", ProcessID: "PROCESS-PEER",
+		Overlaps: []processworkspace.OverlapAdvisoryEntry{
+			{Entry: "internal/commands/**", PeerEntry: "internal/commands/peer.go"},
+			{Entry: "internal/commands/**", PeerEntry: "docs/shared.md"},
+		},
+	}}
+	if !reflect.DeepEqual(result.OwnershipAdvisories, want) {
+		t.Fatalf("advisories=%+v want %+v", result.OwnershipAdvisories, want)
+	}
+}
+
+// TestFastWorkspacePrepareCommandPrintsInformationalAdvisoryLines covers the
+// wording contract: human output prints one advisory line per overlapping
+// workspace that names the peer identity, lists the overlapping entries, and
+// states the integration-time consequence without instructing the reader to
+// pause, stop, wait, or abandon the work.
+func TestFastWorkspacePrepareCommandPrintsInformationalAdvisoryLines(t *testing.T) {
+	processBody := workspaceProcessBody(t, model.ProcessExecutionChangeBearing)
+	backend := newWorkspaceCASBackend(processBody)
+	app, out, errOut := transitionAppWithError(backend)
+
+	fake := newFakeWorkspaceService(t)
+	fake.prepareFn = func(_ context.Context, request processworkspace.PrepareRequest) (processworkspace.Inspection, error) {
+		return advisoryResultForPrepare(request), nil
+	}
+	app.openWorkspace = func(context.Context, string, string, processworkspace.ManagerOptions) (workspaceService, error) {
+		return fake, nil
+	}
+
+	if code := app.runWorkflowWorkspace(context.Background(), prepareArgs(false)); code != 0 {
+		t.Fatalf("human prepare with advisory overlap must stay successful, code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	line := advisoryLine(processworkspace.OverlapAdvisory{WorkspaceID: "ws-peer", ProcessID: "PROCESS-PEER",
+		Overlaps: []processworkspace.OverlapAdvisoryEntry{
+			{Entry: "internal/commands/**", PeerEntry: "internal/commands/peer.go"},
+			{Entry: "internal/commands/**", PeerEntry: "docs/shared.md"},
+		}})
+	if !strings.Contains(out.String(), line) {
+		t.Fatalf("human output missing advisory line %q: %s", line, out.String())
+	}
+	for _, forbidden := range []string{"pause", "stop", "wait", "abandon", "do not proceed"} {
+		if strings.Contains(strings.ToLower(line), forbidden) {
+			t.Fatalf("advisory line instructs the reader to %s: %q", forbidden, line)
+		}
+	}
+}
+
+// TestFastWorkspaceInspectCommandCarriesOwnershipAdvisories covers inspect
+// success with advisory data: exit stays successful and the JSON result
+// carries the same advisory projection as prepare.
+func TestFastWorkspaceInspectCommandCarriesOwnershipAdvisories(t *testing.T) {
+	processBody := workspaceProcessBody(t, model.ProcessExecutionChangeBearing)
+	backend := newWorkspaceCASBackend(processBody)
+	app, out, errOut := transitionAppWithError(backend)
+
+	fake := newFakeWorkspaceService(t)
+	lease := fastWritableLease("ws-process-004")
+	if _, err := fake.store.Create(context.Background(), lease); err != nil {
+		t.Fatalf("seed lease: %v", err)
+	}
+	prepared := lease
+	prepared.Portable.State = processworkspace.StatePrepared
+	fake.inspectFn = func(context.Context, string) (processworkspace.Inspection, error) {
+		return processworkspace.Inspection{Lease: prepared, OwnershipAdvisories: []processworkspace.OverlapAdvisory{{
+			WorkspaceID: "ws-peer", ProcessID: "PROCESS-PEER",
+			Overlaps: []processworkspace.OverlapAdvisoryEntry{{Entry: "internal/commands/**", PeerEntry: "internal/commands/peer.go"}},
+		}}}, nil
+	}
+	app.openWorkspace = func(context.Context, string, string, processworkspace.ManagerOptions) (workspaceService, error) {
+		return fake, nil
+	}
+
+	args := []string{"inspect", "--repo", "o/r", "--issue", "177", "--process", "PROCESS-004",
+		"--integration-root", "/fake/integration", "--workspace-root", "/fake/managed", "--workspace-id", "ws-process-004", "--json"}
+	if code := app.runWorkflowWorkspace(context.Background(), args); code != 0 {
+		t.Fatalf("inspect with advisory overlap must stay successful, code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	result := decodeWorkspaceResult(t, out)
+	if !result.OK || len(result.OwnershipAdvisories) != 1 || result.OwnershipAdvisories[0].WorkspaceID != "ws-peer" ||
+		result.OwnershipAdvisories[0].ProcessID != "PROCESS-PEER" || len(result.OwnershipAdvisories[0].Overlaps) != 1 {
+		t.Fatalf("inspect result advisories=%+v", result.OwnershipAdvisories)
 	}
 }

@@ -24,10 +24,22 @@ narrow direct-PR fast path with no selected Design/TASK and no delegation
 request; file count never selects that exception.
 
 Use managed PROCESS only for concurrent writers, isolation protecting existing
-work, enforced path ownership, restartable cross-session handoff, or
-dependency-ordered integration. Workspace prepare/complete/integrate preserve
-base, ownership, clean commits, tests, and handoff without a role receipt. Those facts are
+work, declared write ownership that reports cross-PROCESS overlap, restartable
+cross-session handoff, or dependency-ordered integration. Workspace
+prepare/complete/integrate preserve base, ownership, clean commits, tests, and
+handoff without a role receipt. Those facts are
 implementation safety only.
+
+Workspace conflicts have two classes. Local execution leases are prepare-time
+hard rejections: two active leases cannot share one worktree path, two active
+writable leases cannot share one branch, one PROCESS cannot hold multiple
+active leases, and exclusive runtime resources cannot collide. Declared path
+overlap between different PROCESSes is advisory only: `workspace prepare` and
+`workspace inspect` report `ownership_advisories` naming the overlapping
+workspace and entries while preparation still succeeds; the overlap may
+require merge-conflict resolution at integration time. Shared manifests,
+lockfiles, and generated outputs are convergence artifacts handled at
+integration time, not serialization gates.
 
 On conflict, ambiguous ownership, dirty or uncertain worktree state, failed
 test, or revision drift, stop the affected integration and

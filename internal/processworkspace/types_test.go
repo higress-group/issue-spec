@@ -3,6 +3,7 @@ package processworkspace
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -351,7 +352,6 @@ func TestRegistryRejectsActiveLeaseCollisions(t *testing.T) {
 	}{
 		{name: "branch", mutate: func(lease *LocalLease) { lease.Portable.Branch = left.Portable.Branch }},
 		{name: "path", mutate: func(lease *LocalLease) { lease.WorktreePath = left.WorktreePath }},
-		{name: "ownership", mutate: func(lease *LocalLease) { lease.Portable.WriteOwnership = []string{"internal/a/file.go"} }},
 		{name: "exclusive resource", mutate: func(lease *LocalLease) {
 			left.Portable.RuntimeResources = []RuntimeResource{{Kind: "port", Name: "api", Exclusive: true}}
 			lease.Portable.RuntimeResources = []RuntimeResource{{Kind: "port", Name: "api"}}
@@ -370,14 +370,22 @@ func TestRegistryRejectsActiveLeaseCollisions(t *testing.T) {
 		})
 	}
 
-	left.Portable.IntegrationOwner = "generator"
-	right.Portable.IntegrationOwner = "generator"
+	// Declared cross-PROCESS write-scope overlap is advisory convergence data,
+	// never a validation conflict, with or without a shared integration owner.
 	right.Portable.WriteOwnership = []string{"internal/a/file.go"}
 	registry := NewRegistry()
 	registry.Leases[left.Portable.WorkspaceID] = left
 	registry.Leases[right.Portable.WorkspaceID] = right
 	if err := registry.Validate(); err != nil {
-		t.Fatalf("shared integration owner should permit declared overlap: %v", err)
+		t.Fatalf("declared ownership overlap must validate: %v", err)
+	}
+	left.Portable.IntegrationOwner = "generator"
+	right.Portable.IntegrationOwner = "generator"
+	registry = NewRegistry()
+	registry.Leases[left.Portable.WorkspaceID] = left
+	registry.Leases[right.Portable.WorkspaceID] = right
+	if err := registry.Validate(); err != nil {
+		t.Fatalf("shared integration owner no longer gates validation: %v", err)
 	}
 }
 
@@ -402,6 +410,151 @@ func TestRegistryRejectsMixedRepositoryPhysicalConflicts(t *testing.T) {
 			t.Fatal("one common-dir registry accepted mixed repository leases")
 		}
 	}
+}
+
+func TestRegistryOwnershipAdvisories(t *testing.T) {
+	now := time.Unix(3600, 0).UTC()
+	root := t.TempDir()
+	peer := func(id, processID, branch string, ownership, shared []string) LocalLease {
+		lease := localPreparedLease(t, root, id, processID, branch, "worker-"+id, ownership, now)
+		lease.Portable.SharedTouchpoints = shared
+		return lease
+	}
+	registryWith := func(queried LocalLease, peers ...LocalLease) Registry {
+		registry := NewRegistry()
+		registry.Leases[queried.Portable.WorkspaceID] = queried
+		for _, other := range peers {
+			registry.Leases[other.Portable.WorkspaceID] = other
+		}
+		return registry
+	}
+	assertAdvisories := func(t *testing.T, registry Registry, workspaceID string, want []OverlapAdvisory) {
+		t.Helper()
+		if err := registry.Validate(); err != nil {
+			t.Fatalf("registry with advisory overlap must validate: %v", err)
+		}
+		got, err := registry.OwnershipAdvisories(workspaceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("advisories=%+v want %+v", got, want)
+		}
+	}
+
+	t.Run("exact match", func(t *testing.T) {
+		queried := peer("ws-a", "PROCESS-001", "branch-a", []string{"internal/shared.go"}, nil)
+		other := peer("ws-b", "PROCESS-002", "branch-b", []string{"internal/shared.go"}, nil)
+		assertAdvisories(t, registryWith(queried, other), "ws-a", []OverlapAdvisory{{
+			WorkspaceID: "ws-b", ProcessID: "PROCESS-002",
+			Overlaps: []OverlapAdvisoryEntry{{Entry: "internal/shared.go", PeerEntry: "internal/shared.go"}},
+		}})
+	})
+
+	t.Run("prefix containment", func(t *testing.T) {
+		queried := peer("ws-a", "PROCESS-001", "branch-a", []string{"internal/a/**"}, nil)
+		other := peer("ws-b", "PROCESS-002", "branch-b", []string{"internal/a/file.go"}, nil)
+		assertAdvisories(t, registryWith(queried, other), "ws-a", []OverlapAdvisory{{
+			WorkspaceID: "ws-b", ProcessID: "PROCESS-002",
+			Overlaps: []OverlapAdvisoryEntry{{Entry: "internal/a/**", PeerEntry: "internal/a/file.go"}},
+		}})
+	})
+
+	t.Run("symmetric containment", func(t *testing.T) {
+		queried := peer("ws-a", "PROCESS-001", "branch-a", []string{"internal/a/file.go"}, nil)
+		other := peer("ws-b", "PROCESS-002", "branch-b", []string{"internal/a/**"}, nil)
+		assertAdvisories(t, registryWith(queried, other), "ws-a", []OverlapAdvisory{{
+			WorkspaceID: "ws-b", ProcessID: "PROCESS-002",
+			Overlaps: []OverlapAdvisoryEntry{{Entry: "internal/a/file.go", PeerEntry: "internal/a/**"}},
+		}})
+		assertAdvisories(t, registryWith(queried, other), "ws-b", []OverlapAdvisory{{
+			WorkspaceID: "ws-a", ProcessID: "PROCESS-001",
+			Overlaps: []OverlapAdvisoryEntry{{Entry: "internal/a/**", PeerEntry: "internal/a/file.go"}},
+		}})
+	})
+
+	t.Run("shared touchpoints overlap", func(t *testing.T) {
+		queried := peer("ws-a", "PROCESS-001", "branch-a", []string{"internal/a/**"}, []string{"go.mod"})
+		other := peer("ws-b", "PROCESS-002", "branch-b", []string{"internal/b/**"}, []string{"go.mod"})
+		assertAdvisories(t, registryWith(queried, other), "ws-a", []OverlapAdvisory{{
+			WorkspaceID: "ws-b", ProcessID: "PROCESS-002",
+			Overlaps: []OverlapAdvisoryEntry{{Entry: "go.mod", PeerEntry: "go.mod"}},
+		}})
+	})
+
+	t.Run("disjoint declarations", func(t *testing.T) {
+		queried := peer("ws-a", "PROCESS-001", "branch-a", []string{"internal/a/**"}, nil)
+		other := peer("ws-b", "PROCESS-002", "branch-b", []string{"internal/b/**"}, nil)
+		assertAdvisories(t, registryWith(queried, other), "ws-a", nil)
+	})
+
+	t.Run("same PROCESS is not advisory", func(t *testing.T) {
+		queried := peer("ws-a", "PROCESS-001", "branch-a", []string{"internal/a/**"}, nil)
+		other := peer("ws-b", "PROCESS-001", "branch-b", []string{"internal/a/file.go"}, nil)
+		registry := registryWith(queried, other)
+		if err := registry.Validate(); err == nil {
+			t.Fatal("same-PROCESS active leases must remain a hard validation conflict")
+		}
+		advisories, err := registry.OwnershipAdvisories("ws-a")
+		if err != nil || len(advisories) != 0 {
+			t.Fatalf("same-PROCESS overlap produced advisories=%+v err=%v", advisories, err)
+		}
+	})
+
+	t.Run("cleaned leases are excluded", func(t *testing.T) {
+		queried := peer("ws-a", "PROCESS-001", "branch-a", []string{"internal/a/**"}, nil)
+		cleanedPeer := peer("ws-b", "PROCESS-002", "branch-b", []string{"internal/a/file.go"}, nil)
+		cleanedPeer.Portable.State = StateCleaned
+		assertAdvisories(t, registryWith(queried, cleanedPeer), "ws-a", nil)
+
+		cleanedQuery := peer("ws-c", "PROCESS-003", "branch-c", []string{"internal/a/**"}, nil)
+		cleanedQuery.Portable.State = StateCleaned
+		active := peer("ws-d", "PROCESS-004", "branch-d", []string{"internal/a/file.go"}, nil)
+		assertAdvisories(t, registryWith(cleanedQuery, active), "ws-c", nil)
+	})
+
+	t.Run("snapshot leases are excluded", func(t *testing.T) {
+		snapshotPeer := peer("ws-b", "PROCESS-002", "", []string{"internal/a/file.go"}, nil)
+		snapshotPeer.Portable.ExecutionClass = ExecutionReview
+		snapshotPeer.Portable.Mode = ModeSnapshot
+		snapshotPeer.Portable.DetachedRevision = snapshotPeer.Portable.BaseSHA
+		queried := peer("ws-a", "PROCESS-001", "branch-a", []string{"internal/a/**"}, nil)
+		assertAdvisories(t, registryWith(queried, snapshotPeer), "ws-a", nil)
+		assertAdvisories(t, registryWith(queried, snapshotPeer), "ws-b", nil)
+	})
+
+	t.Run("shared integration owner stays advisory", func(t *testing.T) {
+		queried := peer("ws-a", "PROCESS-001", "branch-a", []string{"internal/a/**"}, nil)
+		other := peer("ws-b", "PROCESS-002", "branch-b", []string{"internal/a/file.go"}, nil)
+		queried.Portable.IntegrationOwner = "generator"
+		other.Portable.IntegrationOwner = "generator"
+		assertAdvisories(t, registryWith(queried, other), "ws-a", []OverlapAdvisory{{
+			WorkspaceID: "ws-b", ProcessID: "PROCESS-002",
+			Overlaps: []OverlapAdvisoryEntry{{Entry: "internal/a/**", PeerEntry: "internal/a/file.go"}},
+		}})
+	})
+
+	t.Run("advisories sort by peer workspace id", func(t *testing.T) {
+		queried := peer("ws-a", "PROCESS-001", "branch-a", []string{"internal/**"}, nil)
+		second := peer("ws-c", "PROCESS-003", "branch-c", []string{"internal/c/**"}, nil)
+		first := peer("ws-b", "PROCESS-002", "branch-b", []string{"internal/b/**"}, nil)
+		assertAdvisories(t, registryWith(queried, second, first), "ws-a", []OverlapAdvisory{
+			{WorkspaceID: "ws-b", ProcessID: "PROCESS-002",
+				Overlaps: []OverlapAdvisoryEntry{{Entry: "internal/**", PeerEntry: "internal/b/**"}}},
+			{WorkspaceID: "ws-c", ProcessID: "PROCESS-003",
+				Overlaps: []OverlapAdvisoryEntry{{Entry: "internal/**", PeerEntry: "internal/c/**"}}},
+		})
+	})
+
+	t.Run("missing workspace has no advisories", func(t *testing.T) {
+		other := peer("ws-b", "PROCESS-002", "branch-b", []string{"internal/a/**"}, nil)
+		registry := NewRegistry()
+		registry.Leases[other.Portable.WorkspaceID] = other
+		advisories, err := registry.OwnershipAdvisories("ws-missing")
+		if err != nil || len(advisories) != 0 {
+			t.Fatalf("missing workspace advisories=%+v err=%v", advisories, err)
+		}
+	})
 }
 
 func TestPortableLeaseJSONContainsNoMachinePaths(t *testing.T) {
