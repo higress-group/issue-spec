@@ -384,6 +384,8 @@ issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process P
 issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
 ```
 
+workspace 冲突分为两类。本地执行租约在 prepare 阶段硬拒绝：两个活跃 lease 不能共享同一 worktree 路径，两个可写 lease 不能共享同一分支，一个 PROCESS 不能持有多个活跃 lease，独占 runtime 资源不能冲突。不同 PROCESS 的两个活跃可写 workspace 之间声明的写范围重叠只是 advisory：`prepare` 与 `inspect` 会输出 `ownership_advisories`，指明对方 workspace、其 PROCESS 以及重叠条目，同时命令仍然成功，因为该重叠可能需要在集成时解决合并冲突。共享 manifest、lockfile 和生成产物是集成时处理的收敛产物，不是序列化门禁。
+
 被分配的 implementation worker 不执行 `complete` 或 `integrate`。它返回一个有界 handoff，其中包含精确 result commit、changed paths、focused-test 结果、decisions、risks 和有价值的行级 rationale 草稿。Coordinator 提供 owner token 并执行 `workspace complete --result-commit`。该命令会校验单 commit、DCO、ownership 和 changed paths 的 Git 合约，然后记录 result commit 并推进 workspace lifecycle；Coordinator 在接受结果前重新运行配置的 integration checks。
 
 每个 implementation 角色 assignment 都必须携带 `design_context`，并将其纳入 portable assignment digest。该对象包含 canonical Design `source_url`、固定的 `read_mode: complete-issue-body`、固定的 `conflict_policy: design-authoritative-stop`，以及由 Coordinator 编写的 `invariant`、`applicable_decisions`、`implementation_direction`、`must_preserve`、`must_not` 与 `minimum_verification` 字段。workspace compiler 从当前 Implement issue 的 canonical predecessor chain 推导 Design URL；source 缺失、歧义或不匹配时 fail closed。结构化值在输出时不排序、不摘要，也不重新解释。
