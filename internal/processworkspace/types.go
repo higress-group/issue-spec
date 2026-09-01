@@ -764,6 +764,87 @@ func OwnershipOverlaps(left, right []string) (bool, error) {
 	return false, nil
 }
 
+// OverlapAdvisoryEntry names one pair of declared write-scope entries whose
+// scopes overlap: Entry is declared by the queried lease and PeerEntry by the
+// other active lease.
+type OverlapAdvisoryEntry struct {
+	Entry     string `json:"entry"`
+	PeerEntry string `json:"peer_entry"`
+}
+
+// OverlapAdvisory is informational declared write-scope overlap between the
+// queried active writable lease and one other active writable lease owned by a
+// different PROCESS. Overlap is convergence data resolved at integration time;
+// it is never a validation error.
+type OverlapAdvisory struct {
+	WorkspaceID string                 `json:"workspace_id"`
+	ProcessID   string                 `json:"process_id"`
+	Overlaps    []OverlapAdvisoryEntry `json:"overlaps"`
+}
+
+// OwnershipAdvisories computes informational cross-PROCESS write-scope overlap
+// between the named lease and every other active (non-cleaned) writable lease
+// owned by a different PROCESS in the same repository. Advisories are sorted by
+// peer workspace id. The result is empty when the named lease is missing,
+// cleaned, or not writable; same-PROCESS pairs are duplicate-dispatch
+// conflicts, not advisories.
+func (r Registry) OwnershipAdvisories(workspaceID string) ([]OverlapAdvisory, error) {
+	lease, found := r.Leases[workspaceID]
+	if !found || lease.Portable.State == StateCleaned || lease.Portable.Mode != ModeWritable {
+		return nil, nil
+	}
+	own := append(append([]string(nil), lease.Portable.WriteOwnership...), lease.Portable.SharedTouchpoints...)
+	ids := make([]string, 0, len(r.Leases))
+	for id := range r.Leases {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var advisories []OverlapAdvisory
+	for _, id := range ids {
+		if id == workspaceID {
+			continue
+		}
+		other := r.Leases[id]
+		if other.Portable.State == StateCleaned || other.Portable.Mode != ModeWritable ||
+			other.Portable.ProcessID == lease.Portable.ProcessID || other.Portable.Repository != lease.Portable.Repository {
+			continue
+		}
+		peer := append(append([]string(nil), other.Portable.WriteOwnership...), other.Portable.SharedTouchpoints...)
+		overlaps, err := ownershipOverlapEntries(own, peer)
+		if err != nil {
+			return nil, fmt.Errorf("leases %s and %s: %w", workspaceID, id, err)
+		}
+		if len(overlaps) == 0 {
+			continue
+		}
+		advisories = append(advisories, OverlapAdvisory{WorkspaceID: id, ProcessID: other.Portable.ProcessID, Overlaps: overlaps})
+	}
+	return advisories, nil
+}
+
+// ownershipOverlapEntries lists every overlapping declaration pair across two
+// ownership sets. Both inputs are normalized first, so pairs are unique and
+// follow normalized declaration order.
+func ownershipOverlapEntries(left, right []string) ([]OverlapAdvisoryEntry, error) {
+	a, err := NormalizeOwnership(left)
+	if err != nil {
+		return nil, err
+	}
+	b, err := NormalizeOwnership(right)
+	if err != nil {
+		return nil, err
+	}
+	var pairs []OverlapAdvisoryEntry
+	for _, one := range a {
+		for _, two := range b {
+			if ownershipEntriesOverlap(one, two) {
+				pairs = append(pairs, OverlapAdvisoryEntry{Entry: one, PeerEntry: two})
+			}
+		}
+	}
+	return pairs, nil
+}
+
 func OwnsPath(entries []string, repositoryPath string) (bool, error) {
 	normalized, err := NormalizeOwnership(entries)
 	if err != nil {
@@ -904,6 +985,11 @@ func validateAbsolutePath(name, value string, required bool) (string, error) {
 	return filepath.Clean(value), nil
 }
 
+// activeLeaseConflict rejects only physical execution conflicts between active
+// leases: shared worktree paths, shared writable branches, duplicate active
+// PROCESS dispatch, and exclusive runtime resource collisions. Declared
+// write-scope overlap between different PROCESSes is informational convergence
+// data computed by Registry.OwnershipAdvisories, never a validation error.
 func activeLeaseConflict(left, right LocalLease) error {
 	if left.WorktreePath != "" && filepath.Clean(left.WorktreePath) == filepath.Clean(right.WorktreePath) {
 		return errors.New("active leases share a worktree path")
@@ -918,16 +1004,6 @@ func activeLeaseConflict(left, right LocalLease) error {
 	}
 	if left.Portable.ProcessID == right.Portable.ProcessID {
 		return errors.New("same PROCESS has multiple active workspace leases")
-	}
-	if left.Portable.Mode == ModeWritable && right.Portable.Mode == ModeWritable {
-		overlap, err := OwnershipOverlaps(append(left.Portable.WriteOwnership, left.Portable.SharedTouchpoints...), append(right.Portable.WriteOwnership, right.Portable.SharedTouchpoints...))
-		if err != nil {
-			return err
-		}
-		sharedOwner := left.Portable.IntegrationOwner != "" && left.Portable.IntegrationOwner == right.Portable.IntegrationOwner
-		if overlap && !sharedOwner {
-			return errors.New("writable leases have overlapping ownership without a shared integration owner")
-		}
 	}
 	for _, one := range left.Portable.RuntimeResources {
 		for _, two := range right.Portable.RuntimeResources {
