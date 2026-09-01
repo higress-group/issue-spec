@@ -50,12 +50,12 @@ Source SPEC comments:
 
 ### Requirement: Workspace and commit scope enforce declared write ownership
 
-Workspace dispatch and integration MUST enforce PROCESS write ownership, MUST reject worker commits containing unrelated files or unowned shared outputs, and MUST preserve all pre-existing user changes and unowned worktrees.
+Workspace dispatch and integration MUST enforce PROCESS write ownership on worker commit scope, MUST reject worker commits containing unrelated files or unowned shared outputs, and MUST preserve all pre-existing user changes and unowned worktrees. Workspace preparation MUST NOT reject a lease because another active PROCESS declares overlapping write ownership; the overlap MUST instead be reported as an advisory that names the other workspace and notes that the overlap may require merge-conflict resolution at integration time.
 
-#### Scenario: Active write ownership overlaps
+#### Scenario: Active write ownership overlap is advisory
 
 - **WHEN** a proposed writable PROCESS overlaps an active PROCESS on a file, generated output, package chokepoint or shared configuration surface without an integration protocol
-- **THEN** dispatch MUST serialize the nodes or require an explicit integration owner instead of allocating concurrent writable worktrees
+- **THEN** workspace preparation MUST allocate the concurrent writable worktree and MUST report an advisory naming the other workspace and noting that the overlap may require merge-conflict resolution at integration time
 
 #### Scenario: Worker commit includes an unrelated file
 
@@ -72,7 +72,8 @@ Workspace dispatch and integration MUST enforce PROCESS write ownership, MUST re
 - **WHEN** the coordinator or lifecycle manager observes pre-existing user changes in another checkout
 - **THEN** it MUST leave those changes untouched and MUST NOT clean, reset, stage or include them in a PROCESS commit
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/175#issuecomment-4951798769
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/461#issuecomment-5489854487
 
 ### Requirement: Workspace lifecycle is observable, recoverable and session-resource-aware
 
@@ -168,3 +169,20 @@ Generated PROCESS planning guidance and maintained English and Chinese workspace
 - **THEN** the artifact MUST remain parseable without migration, while preparation MAY reject it when the path resolves to a tracked directory and MUST provide the explicit correction
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/272#issuecomment-5005442423
+
+### Requirement: Workspace ownership documentation separates execution leases from integration conflicts
+
+Maintained workspace documentation MUST distinguish local execution leases, which protect physical execution resources (worktree path, writable branch, duplicate PROCESS dispatch, exclusive runtime resources) with preparation-time rejections, from Git integration conflicts, which are resolved at integration time. Documentation MUST describe shared manifests, lockfiles, and generated outputs as convergence artifacts handled by the designated integration step rather than as preparation blockers, and ownership overlap advisories MUST NOT instruct a reader to pause, stop, or abandon the workspace.
+
+#### Scenario: Documentation names the two conflict classes
+
+- **WHEN** a reader consults maintained workspace documentation about ownership conflicts
+- **THEN** the documentation MUST state that declared path overlap across PROCESSes is advisory and that physical execution conflicts are the only preparation-time rejections
+
+#### Scenario: Convergence artifacts are documented
+
+- **WHEN** documentation describes shared manifests, lockfiles, or generated outputs that multiple changes may touch
+- **THEN** it MUST describe them as convergence artifacts handled at integration time rather than as lease blockers
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/461#issuecomment-5489856118
