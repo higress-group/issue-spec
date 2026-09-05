@@ -21,7 +21,7 @@ Read only the authoritative records needed for the phase. Do not expand or reuse
 |---|---|---|
 | `proposal-choice-brief` | Proposal body | Confirmed SPEC facts already available; linked evidence |
 | `design-explainer` | Design body; confirmed SPEC facts | Existing TASK facts when regenerating; linked evidence |
-| `implement-execution-brief` | Implement body; Design invariants and decisions; TASK; current PROCESS records, dependencies, links, statuses, and handoffs | Exact-current code-change, review, verification, or check evidence |
+| `implement-execution-brief` | Implement body; selected Design invariants and decisions; TASK and current PROCESS records, dependencies, links, statuses, and handoffs only when selected | Exact-current code-change, review, verification, or check evidence |
 
 Apply these authority rules:
 
@@ -48,13 +48,13 @@ Use this precedence when goals conflict:
 
 1. Select the phase inputs above with bounded issue-spec reads. Do not request `--expand-preview` or `--expand-all-previews`.
 2. Build a coverage ledger before writing UI:
-   - enumerate the phase-specific review dimensions below and map every applicable authoritative input to top-level attention, progressive drill-down, or an explicit not-applicable rationale;
+   - enumerate the matching phase recipe's review dimensions and map every applicable authoritative input to top-level attention, progressive drill-down, or an explicit not-applicable rationale;
    - identify the affected person or operator, their goal, the situation that triggers the change, and one representative case that can be traced end to end;
    - confirmed facts and constraints, each with a source link;
    - unresolved evidence gaps;
    - open decisions a human must make, each with the credible options;
    - phase-specific derived synthesis, clearly labeled.
-3. Resolve contradictions in favor of authoritative data. Stop generation if two authoritative inputs conflict or a required record cannot be identified uniquely.
+3. Resolve contradictions in favor of authoritative data. Use bounded reads to recover identifiable records; pause the affected projection if required inputs still conflict or cannot be identified uniquely. Missing optional detail is not a blocker, and unrelated authorized work can continue.
 4. Write a compact Markdown fallback first. Open with the scene, why it matters, and a concrete before/after or request-to-outcome case; then expose every applicable review dimension, required human decisions, critical constraints, and source links without running HTML.
 5. Add one valid `html-preview` fence containing a complete, standalone document. Prefer one preview per projection so the intended review surface is the first preview.
 6. Serialize a deterministic source manifest containing the selected source identities, body digests or exact revisions, and typed statuses and links. Hash that manifest for `--source-digest`; do not hash only `projection.md`, and exclude the projection itself.
@@ -112,143 +112,17 @@ Do not use color alone. Pair it with text and, when useful, a simple icon. Avoid
 
 ## Phase recipes
 
-### Proposal choice brief
+Read only the matching recipe, in full, after this shared guide:
 
-Help a reviewer turn scene, goal, and proposed scope into decisions before complete SPEC authoring:
+- [Proposal choice brief](projections/proposal.md): product problem, scope, and choices.
+- [Design explainer](projections/design.md): architecture, correctness, and alternatives.
+- [Implement execution brief](projections/implement.md): execution, verification, and applicable coordination.
 
-1. Lead with one representative person or operator, their current friction, and a concrete before/after journey.
-2. State the desired outcome, success signal, and proposed boundary in terms visible in that journey.
-3. Separate settled choices, evidence-dependent items, and genuine decisions; show how each option changes the case.
-4. Cover risks, assumptions, alternatives, reversibility, expected SPEC coverage, non-goals, and what remains intentionally out of scope.
-
-### Design explainer
-
-Help a reviewer understand correctness and alternatives before complete TASK planning:
-
-1. Lead with a concrete request, event, or operator action and its expected observable outcome; then name the selected architecture and every invariant it must preserve.
-2. Trace that case through the end-to-end data or control flow as numbered steps, with a meaningful failure path and trust boundaries visible.
-3. Cover interfaces, shared state, cache or persistence behavior, state transitions, and downstream consumers where applicable.
-4. Compare rejected or conditional alternatives and the premises that made the selected design preferable.
-5. Cover compatibility, migration, rollout, rollback, risks, verification strategy, and traceability to every active SPEC.
-
-Use interaction to explore layers or branches; do not add animation merely to make the page feel active.
-
-### Implement execution brief
-
-Help a reviewer validate the selected direct or managed execution strategy and monitor PROCESS records only when managed coordination exists.
-
-Open with one concrete acceptance case and show how the selected execution path carries it from trigger to verified outcome. For a direct path, show the single writer, bounded work package, and focused verification. For a managed path, use the candidate or current PROCESS sequence as the technical explanation of that case, not the first concept a reviewer must decode.
-
-The top level must show:
-
-- the representative acceptance case and its observable outcome;
-- the invariant-based direct work package or current typed PROCESS DAG;
-- counts for planned/ready/active/blocked/completed work only when authoritative records provide them;
-- the critical path and safe parallel groups only when managed coordination was selected;
-- the selected single writer or managed Agent allocation and its rationale;
-- actual typed blockers;
-- shared touchpoints and provider-review/configured-check obligations.
-
-If managed coordination is selected before PROCESS records exist, label work packages and dependencies `Candidate planning`. After records exist, replace candidates with the current typed PROCESS records and links. For a direct path, present the bounded single-writer plan without inventing candidate PROCESS records. Never leave a conflicting candidate DAG looking authoritative.
-
-For the direct work package or each selected PROCESS drill-down, show:
-
-- owned Design invariant and acceptance outcome;
-- parent TASK and covered SPEC/scenarios;
-- dependencies, predecessor handoff when one exists, and downstream consumers;
-- major entry points, owned areas, and shared touchpoints;
-- role recommendation and whether parallel execution is safe;
-- focused tests, generators, review, and verification obligations;
-- code-volume range with confidence and stated basis;
-- correctness complexity separately from change-surface, verification, rollout, and coordination complexity;
-- human review focus and authoritative links.
-
-Explain correctness complexity as the reasoning difficulty of preserving the invariant across states, failures, concurrency, compatibility, or trust boundaries. It is not a synonym for lines changed.
+Do not load the other phase recipes. Shared requirements below apply to every enabled projection.
 
 ## Markdown and HTML skeleton
 
-Generate `projection.md` in this shape:
-
-````markdown
-# Implement execution review
-
-> Human-review projection. The phase issue bodies and typed artifacts remain authoritative.
-
-## Review summary
-
-**Recommendation:** ...
-
-**Decision requested:** ...
-
-## Decisions and evidence
-
-- **Decision needed:** ... ([source](...))
-- **Confirmed:** ... ([source](...))
-- **Planning estimate:** ...; confidence: medium; basis: ...
-
-```html-preview id=implement-execution-review version=1 title="Implement execution review" height=720
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Implement execution review</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --ink: #172033; --muted: #607086; --line: #d9e0ea;
-      --surface: #fff; --soft: #f5f7fb; --decision: #4056b4;
-      --settled: #187252; --evidence: #9a6500; --blocked: #a93636;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; padding: 20px; color: var(--ink); background: var(--surface);
-      font: 15px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    main { width: min(100%, 1080px); margin: auto; }
-    .summary, .card { border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
-    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
-    .card { grid-column: span 6; background: var(--soft); }
-    .decision { border-left: 5px solid var(--decision); }
-    .settled { border-left: 5px solid var(--settled); }
-    .estimate { border-style: dashed; color: var(--muted); }
-    button, input, textarea { font: inherit; }
-    button:focus-visible, input:focus-visible, textarea:focus-visible,
-    summary:focus-visible, a:focus-visible { outline: 3px solid #8da2ff; outline-offset: 2px; }
-    @media (max-width: 700px) { body { padding: 12px; } .card { grid-column: 1 / -1; } }
-    @media (prefers-reduced-motion: reduce) { *, *::before, *::after {
-      animation-duration: .01ms !important; transition-duration: .01ms !important; } }
-  </style>
-</head>
-<body>
-  <main>
-    <section class="summary" aria-labelledby="summary-title">
-      <h1 id="summary-title">Implement execution review</h1>
-      <p>Who is affected, the situation they are in, and the observable outcome this plan must deliver.</p>
-    </section>
-    <section aria-labelledby="case-title">
-      <h2 id="case-title">Concrete case walkthrough</h2>
-      <div class="grid">
-        <article class="card"><h3>What the person sees</h3><p>...</p></article>
-        <article class="card"><h3>What the system does</h3><p>...</p></article>
-      </div>
-      <p><strong>Reviewer verifies:</strong> ...</p>
-    </section>
-    <section aria-labelledby="attention-title">
-      <h2 id="attention-title">Needs your attention</h2>
-      <div class="grid">
-        <article class="card decision"><h3>Decision needed</h3><p>...</p></article>
-        <article class="card settled"><h3>Confirmed constraint</h3><p>...</p></article>
-        <article class="card estimate"><h3>Planning estimate</h3><p>...</p></article>
-      </div>
-    </section>
-    <!-- Add the phase model, drill-down, and source links. -->
-  </main>
-  <script>
-    // Add only local presentation state (filters, tabs, accordions, DAG focus).
-  </script>
-</body>
-</html>
-```
-````
+The [optional example](../assets/projection-example.md) is a reusable starting asset, not required reading or a prescribed layout. Load it only when useful; supply the current phase's actual content and keep the Markdown fallback self-contained.
 
 Use a stable preview ID for the logical phase view. Metadata accepts only `id`, `version`, `title`, and `height`; IDs use lowercase letters, digits, and hyphens, `version` is `1`, title is at most 120 Unicode scalar values, and height is clamped to 240–720. Each preview source must remain below 256 KiB; preview count does not determine executability.
 

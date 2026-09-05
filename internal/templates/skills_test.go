@@ -105,8 +105,10 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 	disabled := WorkflowAuthoringOptions{HTMLReviewEnabled: false}
 	skills := IssueSpecSkillsWithOptions("owner/repo", disabled)
 	for _, skill := range skills {
-		if len(skill.Resources) != 0 {
-			t.Fatalf("disabled HTML review emitted resources for %s: %+v", skill.Name, skill.Resources)
+		for _, resource := range skill.Resources {
+			if skill.Name != "issue-spec-workflow" || resource.Path != "references/implementation-review.md" {
+				t.Fatalf("disabled HTML review emitted projection resource for %s: %s", skill.Name, resource.Path)
+			}
 		}
 		for _, forbidden := range []string{
 			"Human Review Projection", "human-review-projections.md", "proposal-choice-brief",
@@ -117,8 +119,8 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 			}
 		}
 	}
-	workflow := skillContent(t, skills, "issue-spec-workflow")
-	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "Built-in protocol overrides project text", "never reorder/omit steps or move open decisions", "exact-head human review handoff", "### Implementation Rationale"} {
+	workflow := skillWithReview(t, skills, "issue-spec-workflow")
+	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "built-in phase sequence and canonical artifact carriers are authoritative", "never reorder/omit steps or move open decisions", "exact-head human review handoff", "### Implementation Rationale"} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("disabled workflow lost typed obligation %q:\n%s", want, workflow)
 		}
@@ -129,7 +131,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 			t.Fatalf("disabled propose skill lost typed obligation %q:\n%s", want, propose)
 		}
 	}
-	apply := skillContent(t, skills, "issue-spec-apply")
+	apply := skillWithReview(t, skills, "issue-spec-apply")
 	for _, want := range []string{"finalize the plan", "Author PROCESS only for managed coordination", "real non-Coordinator worker", "exact result commit", "Do not create a role receipt", "### Implementation Rationale"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("disabled apply skill lost implementation obligation %q:\n%s", want, apply)
@@ -146,7 +148,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 }
 
 func TestGeneratedGuidanceMakesBuiltInPhaseProtocolAuthoritative(t *testing.T) {
-	const authority = "Built-in protocol overrides project text; never reorder/omit steps or move open decisions."
+	const authority = "For selected issue-spec steps, the built-in phase sequence and canonical artifact carriers are authoritative; never reorder/omit steps or move open decisions."
 	for _, skill := range IssueSpecSkills("owner/repo") {
 		if skill.Name == "issue-spec-github" {
 			continue
@@ -183,7 +185,7 @@ func TestTypedCommentWriterGuidanceRepeatsIssueScopedIDAllocation(t *testing.T) 
 }
 
 func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
-	workflow := skillContent(t, IssueSpecSkills("owner/repo"), "issue-spec-workflow")
+	workflow := skillWithReview(t, IssueSpecSkills("owner/repo"), "issue-spec-workflow")
 	wants := []string{
 		"auth status --json", "workflow validate --repo owner/repo", "bounded simple Issue", "one code writer",
 		"single child or subagent is an execution choice", "concurrent code writers", "protection of pre-existing work",
@@ -235,7 +237,7 @@ func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
 }
 
 func TestApplyGuidanceDistinguishesUnmanagedWorkerFromManagedPackages(t *testing.T) {
-	apply := skillContent(t, IssueSpecSkills("owner/repo"), "issue-spec-apply")
+	apply := skillWithReview(t, IssueSpecSkills("owner/repo"), "issue-spec-apply")
 	for _, want := range []string{
 		"select execution mode before assigning writers",
 		"If Design or TASK is selected", "user explicitly requests an independent worker",
@@ -252,13 +254,13 @@ func TestApplyGuidanceDistinguishesUnmanagedWorkerFromManagedPackages(t *testing
 		"Do not manufacture Implement, PROCESS, workspace lifecycle, role receipt, typed rationale, evidence, or another phase artifact",
 		"Each worker owns package code, focused tests, exact result commit", "Coordinator owns exact-commit inspection, integration",
 		"### Implementation Rationale", "Every actual code writer owns zero or more line-rationale drafts",
-		"No Implement, TASK, PROCESS, or SPEC is required", "Comments and status remain human review context and never certify mergeability",
-		"On the unmanaged delegated path this is the single non-Coordinator worker", "on the narrow Coordinator fast path it is the Coordinator", "under managed PROCESS each package owner owns its drafts",
+		"No Implement, TASK, PROCESS, or SPEC is required", "Comments and status are human review context and never certify mergeability",
+		"On an unmanaged delegated path this is the single non-Coordinator worker", "on the narrow Coordinator fast path it is the Coordinator", "under managed PROCESS each package owner owns its drafts",
 		"real read-only reviewer that is independent of every code writer", "exact base and current exact head", "no write path or provider credentials",
 		"actionable P0, P1, or P2 findings", "Route every P0/P1 unchanged to the original writer", "same reviewer recheck it",
-		"Repeat automatically until the reviewer reports zero P0/P1", "still-applicable P2 findings from the final reviewed head",
-		"provider-native non-blocking line comment", "ordinary change-level `change.comment` preserving `path:symbol/line`",
-		"P2 never enters the repair loop or pauses completion", "report the rendered comment body and continue",
+		"Repeat automatically until that reviewer reports zero P0/P1", "still-applicable P2 findings from the final reviewed head",
+		"provider-native non-blocking line comment", "ordinary change-level `change.comment` that preserves `path:symbol/line`",
+		"P2 never enters the repair loop and never pauses completion", "report the rendered comment body and continue",
 		"no typed REVIEW/VERIFY, finding evidence, receipt, readiness gate, or reviewer merge authority",
 	} {
 		if !strings.Contains(apply, want) {
@@ -296,7 +298,7 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		content := skillContent(t, skills, tc.name)
+		content := skillWithReview(t, skills, tc.name)
 		for _, want := range tc.required {
 			if !strings.Contains(content, want) {
 				t.Fatalf("%s missing bounded role contract %q:\n%s", tc.name, want, content)
@@ -394,7 +396,7 @@ func TestGeneratedGuidanceDeterministicSizeBudgets(t *testing.T) {
 
 func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
-	workflow := skillContent(t, skills, "issue-spec-workflow")
+	workflow := skillWithReview(t, skills, "issue-spec-workflow")
 	for _, want := range []string{
 		"persist the phase issue body, perform the first QUESTION discovery/create pass, upsert the human review projection",
 		"SPEC for Proposal, TASK for Design, and PROCESS for Implement only when managed coordination was selected",
@@ -418,7 +420,7 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"read [Human Review Projection Generation](references/human-review-projections.md) completely",
 		"Build a coverage ledger from authoritative inputs",
 		"coverage-complete review surface rather than a delta, changelog, or executive summary",
-		"build the Markdown fallback, the single `html-preview` review surface, source digest, coverage audit, and validation checks",
+		"Markdown fallback, single `html-preview`, source digest, coverage audit, and validation checks",
 		"Record every genuine unresolved decision as a blocking typed QUESTION before the phase projection upsert",
 		"issue-body or projection prose never carries an open decision",
 	} {
@@ -453,7 +455,7 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"keep unresolved decisions distinct from evidence-dependent items",
 		"settled, needs-evidence, and needs-decision",
 		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",
-		"generate a coverage-complete `projection.md` from current authoritative inputs",
+		"Generate a coverage-complete `projection.md` from current authoritative inputs",
 		"never rely on the reviewer already knowing omitted design information",
 		"Lead with a representative human or operator scene and a concrete before/after case",
 		"show how options change the case",
@@ -476,7 +478,7 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"trace its normal and failure paths",
 		"architecture")
 
-	apply := skillContent(t, skills, "issue-spec-apply")
+	apply := skillWithReview(t, skills, "issue-spec-apply")
 	assertTextOrder(t, apply,
 		"If Implement is selected, persist it",
 		"perform its first QUESTION pass",
@@ -486,7 +488,7 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 	for _, want := range []string{
 		"typed planning state remains authoritative",
 		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",
-		"generate a coverage-complete `projection.md` from current authoritative inputs",
+		"Generate a coverage-complete `projection.md` from current authoritative inputs",
 		"never emit only the increment since the Design",
 	} {
 		if !strings.Contains(apply, want) {
@@ -496,7 +498,10 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 }
 
 func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
-	reference := skillResourceContent(t, IssueSpecSkills("owner/repo"), "issue-spec-workflow", "references/human-review-projections.md")
+	var reference string
+	for _, resource := range HumanReviewProjectionResources() {
+		reference += resource.Content + "\n"
+	}
 	for _, want := range []string{
 		"issue bodies and typed artifacts as authoritative",
 		"GitHub displays the fenced HTML source and does not execute",
@@ -699,6 +704,12 @@ func countListItems(content string) int {
 		}
 	}
 	return count
+}
+
+// Review assertions use the explicitly selected review resource, not a larger entrypoint.
+func skillWithReview(t *testing.T, skills []RenderedSkill, name string) string {
+	t.Helper()
+	return skillContent(t, skills, name) + "\n" + skillResourceContent(t, skills, "issue-spec-workflow", "references/implementation-review.md")
 }
 
 func skillContent(t *testing.T, skills []RenderedSkill, name string) string {

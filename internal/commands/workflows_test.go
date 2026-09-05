@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/higress-group/issue-spec/internal/codereview"
+	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
@@ -30,7 +31,7 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	if got, want := len(result.SkillFiles), 4; got != want {
 		t.Fatalf("skill file count = %d, want %d", got, want)
 	}
-	if got, want := len(result.SkillResourceFiles), 2; got != want {
+	if got, want := len(result.SkillResourceFiles), len(templates.HumanReviewProjectionResources())+2; got != want {
 		t.Fatalf("skill resource file count = %d, want %d", got, want)
 	}
 	if got, want := strings.Join(result.SkillLinks, ","), ".claude/skills -> ../.agents/skills"; got != want {
@@ -123,7 +124,7 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	for _, want := range []string{
 		`name: "Issue Spec: Propose"`,
 		`category: "Workflow"`,
-		"Use when the user asks for /issue-spec:propose",
+		"Use for /issue-spec:propose or issue-native planning in a selected issue-spec change",
 	} {
 		if !strings.Contains(claudeCommand, want) {
 			t.Fatalf("claude command missing %q:\n%s", want, claudeCommand)
@@ -175,7 +176,15 @@ func TestWriteWorkflowArtifactsDisabledHTMLReviewPrunesExactManagedReferenceIdem
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPruned := cleanGeneratedPath(reference)
+	var prunedPaths []string
+	for _, resource := range templates.HumanReviewProjectionResources() {
+		path := filepath.Join(root, ".agents", "skills", "issue-spec-workflow", filepath.FromSlash(resource.Path))
+		prunedPaths = append(prunedPaths, cleanGeneratedPath(path))
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("disabled generation retained managed resource %s: %v", resource.Path, err)
+		}
+	}
+	wantPruned := strings.Join(prunedPaths, ",")
 	if got := strings.Join(result.PrunedFiles, ","); got != wantPruned {
 		t.Fatalf("pruned files = %q, want %q", got, wantPruned)
 	}

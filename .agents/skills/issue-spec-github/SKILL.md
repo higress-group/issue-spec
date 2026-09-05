@@ -1,6 +1,6 @@
 ---
 name: issue-spec-github
-description: Use GitHub CLI for GitHub issues, pull requests, CI runs, and API queries that issue-spec does not wrap.
+description: Use gh for requested GitHub PR, CI, release, or repository operations outside issue-spec's issue-discussion APIs. Not for non-GitHub providers.
 license: MIT
 compatibility: Requires GitHub CLI (gh).
 metadata:
