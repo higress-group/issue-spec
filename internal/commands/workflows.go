@@ -552,19 +552,26 @@ func pruneManagedHTMLReviewReference(root, delivery string, enabled bool) ([]str
 		return nil, nil
 	}
 	skillDir := filepath.Join(root, ".agents", "skills", "issue-spec-workflow")
-	path := filepath.Join(skillDir, "references", "human-review-projections.md")
 	if !managedIssueSpecSkillDirectory(skillDir) {
 		return nil, nil
 	}
-	if _, err := os.Lstat(path); os.IsNotExist(err) {
-		return nil, nil
-	} else if err != nil {
-		return nil, fmt.Errorf("inspect managed HTML review reference %s: %w", path, err)
+	var pruned []string
+	for _, resource := range templates.HumanReviewProjectionResources() {
+		path, err := skillResourcePath(skillDir, resource.Path)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return nil, fmt.Errorf("inspect managed HTML review resource %s: %w", path, err)
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, fmt.Errorf("prune managed HTML review resource %s: %w", path, err)
+		}
+		pruned = append(pruned, cleanGeneratedPath(path))
 	}
-	if err := os.Remove(path); err != nil {
-		return nil, fmt.Errorf("prune managed HTML review reference %s: %w", path, err)
-	}
-	return []string{cleanGeneratedPath(path)}, nil
+	return pruned, nil
 }
 
 func installGlobalCodexPrompts(root, repo string, provider *workflow.ProviderPlan, options globalPromptInstallOptions, result *workflowGenerationResult) error {
