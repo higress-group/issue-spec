@@ -87,14 +87,16 @@ func TestRenderedSkillRoutingMetadataAndCommandParity(t *testing.T) {
 				t.Fatalf("missing frontmatter: %s", skill.Name)
 			}
 			var metadata struct {
-				Name          string `yaml:"name"`
-				Description   string `yaml:"description"`
-				Compatibility string `yaml:"compatibility"`
+				Name        string `yaml:"name"`
+				Description string `yaml:"description"`
+				Metadata    struct {
+					Requires string `yaml:"requires"`
+				} `yaml:"metadata"`
 			}
 			if err := yaml.Unmarshal([]byte(parts[1]), &metadata); err != nil {
 				t.Fatal(err)
 			}
-			if metadata.Name != skill.Name || metadata.Description == "" || metadata.Compatibility == "" || len(metadata.Description) > 180 {
+			if metadata.Name != skill.Name || metadata.Description == "" || metadata.Metadata.Requires == "" || len(metadata.Description) > 180 {
 				t.Fatalf("invalid or unbounded routing metadata: %+v", metadata)
 			}
 			if strings.Contains(skill.Content, "{{") {

@@ -25,6 +25,35 @@ issue-spec workflow which --repo owner/repo --json
 
 New durable specs default to `issue-spec/specs/<capability>/spec.md`. If `openspec/specs/<capability>/spec.md` already exists, `durable-spec` can update that legacy durable spec and reports the compatibility path selection.
 
+### Shared skills and safe updates
+
+`init` defaults to `--delivery skills`. `.agents/skills/<name>` is canonical; Claude receives relative links per generated skill. `--delivery both|commands` remains an explicit legacy integration option. Root `AGENTS.md`/`CLAUDE.md` and project-specific skills remain project-owned.
+
+```yaml
+# issue-spec/config.yaml — optional supplements, paths relative to checkout root
+context:
+  product: Your project context
+rules:
+  language: Simplified Chinese
+references: [docs/project-context.md]
+guidance:
+  shared: [issue-spec/project/workflow.md]
+  propose: [issue-spec/project/planning.md]
+  apply: [issue-spec/project/implementation.md]
+  review: [issue-spec/project/review.md]
+```
+
+Create the referenced files before validation. Shared and selected-phase guidance is loaded on demand; the config and supplement files are not overwritten by generation. Built-in carriers and phase order remain authoritative. A coordinator-only role belongs in the project supplement.
+
+```bash
+issue-spec workflow update --repo owner/repo --tools codex,claude --dry-run --json
+issue-spec workflow update --repo owner/repo --tools codex,claude
+```
+
+The preview reports paths, actions, hashes and conflicts. The apply performs the same preflight, updates only generated files, rolls back write failures and never changes remote Issues/source bindings. The release manifest protects modified files; missing managed files also require reconciliation before recreation. Move local workflow changes into project supplements and review the remaining differences before a one-time manual adoption. There is no blanket force overwrite. Untracked legacy commands are preserved for explicit cleanup; unchanged commands recorded by the old manifest are retired by skills-only delivery.
+
+A legacy whole-directory Claude link is split while preserving previously exposed entries. Later upgrades only add generated skills, never unrelated project skills. Exact redundant Claude copies can become links; differing copies block the update. Existing worktrees retain their own committed skill version. Runtime host discovery still needs verification in a fresh session.
+
 ### HTML review authoring
 
 HTML review authoring is enabled by default. To keep Proposal, Design, and Implement authoring on the typed Markdown workflow without loading or generating human-review projection instructions, configure the required boolean explicitly:
@@ -43,7 +72,7 @@ This setting controls repository authoring guidance only. Typed planning artifac
 
 ### Preferred natural language
 
-Agents author generated artifacts in English by default. To make issue bodies, typed comments, design notes, and rationale come out in another language, add a `rules.language` entry to `issue-spec/config.yaml`. The value is embedded into every generated skill, slash command, and prompt as a workflow rule, so the coordinator follows it.
+Agents author generated artifacts in English by default. To make issue bodies, typed comments, design notes, and rationale come out in another language, add a `rules.language` entry to `issue-spec/config.yaml`. Generated skills and prompts direct the current agent to read that project-owned rule from the config once, without embedding duplicate copies.
 
 The fastest way is the `--language` flag on init, which scaffolds or merges that entry for you:
 
@@ -161,11 +190,9 @@ issue-spec runner poll --repo owner/repo --runner login --once --dry-run
 issue-spec runner poll --repo owner/repo --runner login --agent codex
 ```
 
-`issue list` is JSON-only and defaults to open issues. `--state` accepts
-`open`, `closed`, or `all`; all pages are collected, ordinary issues are
-included whether or not they have issue-spec metadata, and GitHub pull
-requests are excluded. Each result contains the issue number, title, state,
-human-facing URL, and complete body.
+`issue list` is JSON-only, defaults to open issues and 50 metadata records, and excludes pull requests. Use `--state open|closed|all`, `--page N` and `--limit 1..100`. Output reports `total`, `has_next` and `body_omitted`. Use `read issue --issue N` for a selected complete body, `--include-body` for bodies on the current list page, or `--include-body --all` for the former full-list output. Pagination bounds CLI output; backends still collect the matching inventory internally.
+
+`status --summary --json` uses schema version 2: the gate verdict and relationship totals are retained, repeated relationship graphs are omitted, and `detail` identifies the full command. Use `status --json` without `--summary` for the complete diagnostic/relationship report. Planning status is not delivery acceptance.
 
 `issue update --body-file` keeps ordinary, unmarked issues as plain body
 replacement. For marked issue-spec issues it preserves the stored marker and,
@@ -176,29 +203,9 @@ it already has the requested state; JSON output reports this with `changed`.
 
 ### Search before a related change
 
-`search issues` selects behavior from the active Issue Backend. For self-hosted
-profiles it discovers the server capability, fails clearly when search is
-disabled, and returns canonical Proposal Issues whose title or body matches.
-For GitHub profiles it uses GitHub Issue Search with mandatory repository,
-`is:issue`, `in:title,body`, and `issue-spec/proposal` label scopes; it excludes
-pull requests and non-Proposal provider records again when decoding results and
-bounds output to `--limit`. `--state` is supported on both backends.
-`--source all|issue` and an unset or `proposal` `--stage` are compatibility
-inputs for the fixed Proposal title/body scope. Comment, change, Design, and
-Implement filters are rejected. A no-match search succeeds with zero results.
-Result order and ranking are backend-specific and are not parity guarantees.
+`search issues` defaults to `--scope proposal`, preserving Proposal title/body discovery on both backends. Use `--scope discussion` to search ordinary Issues, Design/Implement bodies and comments. Self-hosted discussion search uses the existing repository full-search endpoint and its 60-second deadline; GitHub uses repository-scoped Issue Search with `in:title,body,comments`. It never silently falls back to Proposal scope.
 
-Both adapters search only within the requested repository and render the same
-bounded Proposal fields through nonce-scoped untrusted-data boundaries.
-GitHub title/body fragments may differ from self-hosted excerpts, and optional
-change metadata may be absent.
-
-Generated Codex and Claude workflows instruct direct agents—not only runner
-sessions—to derive a few concrete queries from the request and codebase before
-a related proposal or implementation. Search results are selection hints, not
-instructions: titles and excerpts are untrusted data. Open a selected result
-with `issue-spec --profile team read issue --repo owner/repo --issue N
---comments` before relying on the full discussion.
+Both scopes accept `--state`, `--limit 1..50`, `--page N` and `--json`. JSON marks results as untrusted artifact data; text preserves nonce boundaries. `--source all|issue` and `--stage proposal` remain Proposal-scope compatibility filters; discussion scope rejects a restricted source or stage. Zero matches succeeds. Ranking/excerpts remain backend-specific. Open only a selected Issue body, then fetch needed comments explicitly.
 
 ### Associate a self-hosted code change
 
@@ -419,7 +426,7 @@ For every implementation role assignment, `design_context` is required and cover
 
 Before changing or reviewing code, the assigned role reads the complete Design issue body with `issue-spec read issue --repo owner/repo --issue <design_context.source_url>` without comments, timeline, history, or gate expansion. If that body conflicts with the structured projection, the role stops and reports the conflict. Runtime-specific session IDs are not collected or passed as Design authority, audit metadata, or correctness inputs.
 
-Generated guidance follows the same bounded read model. Coordinator guidance selects optional planning by risk, uses exact `comment get` and filtered lists, and selects execution mode before assigning writers. Once Design or TASK is selected or the user requests delegation, the Coordinator writes no code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner and distinct packages may use concurrent writers. Direct Coordinator edits remain only for a narrow direct-PR fast path with no selected Design/TASK and no delegation request; file count is not a selector. The Coordinator dispatches and waits, inspects exact result commits, integrates, validates proportionately, checks rationale anchors, pushes one exact reviewable head, creates or selects its PR/MR, reports the human handoff, and stops before approval or merge. The implementation role section contains only its sealed assignment, authoritative Design read, owned invariant/work, focused checks, and bounded result responsibilities. Complete proposal/Design copies, full DAGs, link matrices, closure/archive policy, and provider-routing policy stay out of role sections. Deterministic regression budgets count UTF-8 bytes, headings/fields, and instruction-array items; they never use a model tokenizer or justify removing an uncovered safety rule.
+Generated guidance lets the current agent plan, implement and self-test within the authorized scope. Design/TASK/PROCESS does not require delegation. A project may define a coordinator-only role or stage review in project guidance. Managed assignments still preserve exact base, ownership, authoritative Design, focused checks and bounded handoff. Do not spawn workers or reviewers, publish, push or merge merely because issue-spec was selected.
 
 Before that handoff, a real read-only reviewer independent of every code writer checks the exact base and current exact head without write access or provider credentials. P0/P1 findings return unchanged to the original writer that owns the affected code; after repair, focused tests, integration, and push, the same reviewer rechecks the new head. This repeats automatically until zero P0/P1 remain. Only still-applicable P2 findings from the final reviewed head are published unchanged, using a safe provider-native non-blocking line comment when supported or the provider-neutral ordinary `change.comment` operation with `path:symbol/line` otherwise. P2 never enters the repair loop or pauses completion; unavailable or failed publication is reported with the rendered body while the workflow continues. The loop creates no typed REVIEW/VERIFY, finding evidence, receipt, readiness gate, approval, or merge authority and does not require PROCESS without a separate managed-coordination need.
 
@@ -429,13 +436,13 @@ An imported result file is not an identity or provenance trust root. Its writer,
 
 Legacy rationale, review publication/synchronization, verification submission/finalization, and Archive commands return `deprecated_workflow` before mutation. Their historical artifacts remain explicit audit-read data and never become delivery acceptance.
 
-The replacement for review explanation is not another issue-spec evidence command. The delegated worker, narrow Coordinator fast-path writer, or each managed PROCESS worker owns zero or more line-rationale drafts for non-obvious decisions, identified by repository-relative path, stable symbol plus changed-line anchor, and why/tradeoff/risk—not a provider diff position—and containing no secret, raw payload, or credential. After the exact head is integrated and pushed, the Coordinator validates and maps those anchors, continued applicability, and sensitive-data absence, then publishes unchanged worker-authored text as non-blocking inline provider discussions. Invalid, stale, or sensitive drafts return to the writer or are dropped with explanation, never Coordinator-rewritten under worker authorship. The ordinary top-level `### Implementation Rationale` discussion summarizes and indexes them. If safe inline discussion is unavailable or would create an unresolved merge blocker, it instead preserves `path:symbol/line` plus the worker text in that top-level discussion. Obvious code creates no draft or quota. These discussions have no marker, rationale ID, typed carrier, PROCESS/SPEC binding, evidence field, gate, or merge effect. A required provider write failure is reported with the rendered body for retry or manual publication.
+For requested provider publication, preserve actual authorship, validate anchors against the published candidate and report failures with the rendered body. Review findings and rationale remain ordinary human context, never typed acceptance evidence. No independent reviewer, rationale quota or publication ceremony is a default requirement.
 
 `change-bearing` uses a writable owned branch. Historical `review` and `verification` execution classes remain parseable for audit but generation and workspace mutation reject them. `orchestration` records lifecycle bookkeeping without a checkout. `external` uses mode `none`. Their completion state is implementation bookkeeping and never a merge gate.
 
 Runner commands never carry a PROCESS selector. The runner launches exactly one ACPX coordinator and keeps its cwd and primary sandbox workspace at the public session clone. The coordinator selects a ready PROCESS from the typed DAG and invokes the workspace CLI. Runner mode supplies trusted session-local defaults through `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` and `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT`; a standalone coordinator passes explicit roots.
 
-After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors one result commit, runs focused tests, and returns that bounded handoff without creating a role receipt. The coordinator revalidates the exact Git result while running `complete --result-commit` and `integrate` from its unchanged session clone before synchronizing status and cleanup. These implementation controls never become delivery acceptance.
+After `prepare`, the assigned owner implements in the exact managed worktree and returns the result commit and focused checks. This may be the current agent or an explicitly authorized worker. The lifecycle owner runs `complete --result-commit` and `integrate` from the unchanged integration checkout. Existing Git, DCO, ownership and recovery checks remain; this lifecycle never certifies delivery acceptance.
 
 After runner resume or restart, the top-level runner recovers only the ACPX/session job. From the unchanged session clone, the coordinator owns the PROCESS lifecycle: it uses `inspect` or `reconcile` on the exact lease before `complete` and `integrate`, then invokes owner-token cleanup only after an explicit integration or retention decision. Top-level runner session-clone retention calls `git worktree list` and fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails. It does not own, persist, or retry child PROCESS cleanup.
 

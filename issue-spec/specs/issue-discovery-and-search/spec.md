@@ -11,7 +11,7 @@ Proposal Issues:
 
 ### Requirement: Issue search is limited to Proposal titles and bodies
 
-The issue-spec CLI and dedicated self-hosted Search web/native routes MUST return only canonical Proposal Issues and MUST match query text only against each Proposal Issue title and body. The self-hosted PostgreSQL query MUST restrict candidates to active Proposal artifacts before text matching and MUST NOT search or hydrate comments, ordinary Issues, Design/Implement Issue bodies, issue numbers, or standalone change-key metadata. GitHub CLI search MUST require the canonical issue-spec/proposal label with in:title,body and MUST defensively discard non-Proposal provider results. Authorization, state filtering, deterministic ordering, pagination, bounded plain-text excerpts, provider trust boundaries, and the five-second server-owned query deadline MUST remain intact. Compatibility inputs source=all|issue and stage unset|proposal MAY be accepted and normalized to this fixed scope; contradictory comment, change, design, or implement filters MUST be rejected.
+The default issue-spec CLI Proposal scope and dedicated self-hosted Search web/native routes MUST return only canonical Proposal Issues and MUST match query text only against each Proposal Issue title and body. The self-hosted PostgreSQL query MUST restrict candidates to active Proposal artifacts before text matching and MUST NOT search or hydrate comments, ordinary Issues, Design/Implement Issue bodies, issue numbers, or standalone change-key metadata. GitHub CLI Proposal search MUST require the canonical issue-spec/proposal label with in:title,body and MUST defensively discard non-Proposal provider results. Authorization, state filtering, deterministic ordering, pagination, bounded plain-text excerpts, provider trust boundaries, and the five-second server-owned query deadline MUST remain intact. Compatibility inputs source=all|issue and stage unset|proposal MAY be accepted and normalized to this fixed scope; contradictory comment, change, design, or implement filters MUST be rejected.
 
 #### Scenario: Proposal title or body is discoverable
 
@@ -48,7 +48,7 @@ Source SPEC comments:
 
 ### Requirement: Repository Issues page searches complete issue discussions
 
-The self-hosted repository Issues page MUST provide an authorized repository-local search that matches Issue titles, Issue bodies, exact Issue numbers, and comment bodies through a native endpoint distinct from Proposal discovery. The operation MUST preserve state and selected-label filters, deterministic issue-centric ordering, pagination, canonical local navigation, bounded inert excerpts, and existing repository read authorization. It MUST use a 60-second database query deadline, honor earlier client cancellation, return no partial results on timeout, and expose a stable timeout problem. Text candidate plans MUST use repository-scoped pg_bigm plus scoped pg_jieba index paths and MUST NOT materialize matches from repositories outside the authorized target. PostgreSQL search preparation MUST reconcile comment-body pg_bigm and pg_jieba indexes for this operation while the CLI and dedicated Search page remain Proposal-only with their existing five-second deadline.
+The self-hosted repository Issues page MUST provide an authorized repository-local search that matches Issue titles, Issue bodies, exact Issue numbers, and comment bodies through a native endpoint distinct from Proposal discovery. The operation MUST preserve state and selected-label filters, deterministic issue-centric ordering, pagination, canonical local navigation, bounded inert excerpts, and existing repository read authorization. It MUST use a 60-second database query deadline, honor earlier client cancellation, return no partial results on timeout, and expose a stable timeout problem. Text candidate plans MUST use repository-scoped pg_bigm plus scoped pg_jieba index paths and MUST NOT materialize matches from repositories outside the authorized target. PostgreSQL search preparation MUST reconcile comment-body pg_bigm and pg_jieba indexes for this operation while the default CLI scope and dedicated Search page remain Proposal-only with their existing five-second deadline.
 
 #### Scenario: Issue title or body is searchable from the repository page
 
@@ -77,7 +77,7 @@ The self-hosted repository Issues page MUST provide an authorized repository-loc
 
 #### Scenario: Search surfaces remain separate
 
-- **WHEN** the same comment-only term is queried through the CLI or dedicated Search page
+- **WHEN** the same comment-only term is queried through the default CLI Proposal scope or dedicated Search page
 - **THEN** Proposal discovery does not return it and retains its five-second deadline
 
 #### Scenario: Fresh PostgreSQL search setup supports comments
@@ -87,3 +87,19 @@ The self-hosted repository Issues page MUST provide an authorized repository-loc
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/448#issuecomment-5264841170
+
+### Requirement: explicit discussion search and compact discovery
+
+The CLI MUST preserve Proposal-only search by default and support explicit `--scope discussion` for all Issue title/body and comment text. Self-hosted discussion search MUST reuse the existing authorized full-discussion endpoint and its timeout behavior; GitHub MUST use repository-scoped Issue Search including comments without a Proposal-label constraint. Contradictory source/stage filters MUST be rejected. Both scopes support bounded `--limit`, `--page` and untrusted-data JSON output.
+
+`issue list` MUST default to metadata only, at most 50 issues per page, exclude pull requests, and report total/has-next/body-omitted metadata. `--include-body` expands complete bodies; `--all` explicitly disables pagination. Compact status schema version 2 MUST preserve the evaluated gate verdict and relationship totals while omitting repeated graph details and providing an explicit full-detail command. These outputs MUST NOT claim implementation or delivery completion from planning state.
+
+#### Scenario: ordinary issue can be found without bulk body output
+
+- **WHEN** a query matches an ordinary Issue or a comment and the caller selects discussion scope
+- **THEN** the CLI returns the owning Issue with bounded excerpts and pagination metadata
+
+#### Scenario: compact status has a large relationship graph
+
+- **WHEN** hundreds of edges are present in a status report
+- **THEN** the summary returns totals and an expansion command without duplicating edge and adjacency records, preserving the full report's gate verdict

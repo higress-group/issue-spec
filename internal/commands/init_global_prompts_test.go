@@ -23,7 +23,7 @@ func TestInitGlobalPromptsDryRunPrintsAbsolutePathsWithoutWriting(t *testing.T) 
 		"--repo", "o/r",
 		"--tools", "codex",
 		"--skip-labels",
-		"--global-prompts-dir", target,
+		"--delivery", "both", "--global-prompts-dir", target,
 		"--global-prompts-dry-run",
 	})
 	if code != 0 {
@@ -138,6 +138,7 @@ func TestSelfHostedInitToolsNoneRejectsGlobalPromptOptionsBeforeNetwork(t *testi
 }
 
 func TestInitRejectsGlobalPromptsWithSkillsOnlyBeforeWrites(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
 	root := t.TempDir()
 	t.Chdir(root)
 	var out, errOut bytes.Buffer

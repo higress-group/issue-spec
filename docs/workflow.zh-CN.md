@@ -1,89 +1,61 @@
-# 人工交接工作流
+# 规划、实施与人工交接
 
-issue-spec 只有一个交付边界：实现并验证一个精确代码 head，创建或选择对应的
-provider 原生 PR/MR，为人工评审解释改动，报告交接信息，然后停止。当前 CI、
-评审、批准和合并归人和代码平台所有。
+当前 agent 可以在同一会话完成授权的规划、实施和自测。Design、TASK、PROCESS
+不要求另一个代码作者。项目可以通过自己的补充规则定义专职 coordinator 和阶段
+评审；这不是 issue-spec 的默认角色。分派、发布、推送、批准和合并仍取决于实际
+用户授权与宿主能力。
 
-规划工件都是可选的。只在它们能改进真实决策或受管执行时使用；工件状态不是
-交付验收。
+## 只选择有用的规划
 
-## 选择最小规划路径
+有界变更可使用普通 Issue。产品决策、长期契约或明确执行风险需要时，再选择
+Proposal、Design、Implement、SPEC、TASK 或 PROCESS。文件数和 agent 数不是语义
+拆分边界。受管 PROCESS 用于并发写入、保护已有工作的隔离、路径所有权、可恢复
+交接或按依赖集成。
 
-有界的单写作者变更默认只用普通 Issue。只有产品决策、durable contract 变化或
-明确协作风险值得时，才增加 Proposal、Design、Implement、SPEC、TASK 或 PROCESS。
+选中阶段依次：保存正文，发现真正阻塞的 QUESTION，启用时生成评审 projection，
+再编写选定的类型化子产物。普通 QUESTION 使用 resolution，带 Choice Model 的
+问题使用 ANSWER。不要为已经确定的私有实现细节制造问题或选项。
 
-子 agent 是执行选择，不是 PROCESS 触发条件。先选择 execution mode，再分配 writer。一旦
-选择了 Design 或 TASK，或者用户明确要求独立 worker，Coordinator 在 delegated 和 managed
-路径都不修改代码。未选择 managed PROCESS 时，由恰好一个真实的非 Coordinator worker
-负责有界实现；选择 managed PROCESS 后，每个会产生代码变更的 work package 都有一个真实的
-非 Coordinator owner，不同 package 可以并发。只有以下需要才选择 managed PROCESS：
+## 读取、实施与验证
 
-- 多个代码写作者并发；
-- 隔离以保护已有工作；
-- 声明式写所有权（跨 PROCESS 重叠仅作 advisory 报告）；
-- 可跨会话恢复的交接；
-- 按依赖顺序集成。
+先读完整当前 Design 和适用的有效决策，再从紧凑索引展开选中的 TASK、必需的
+SPEC 和依赖。摘要不能替代规范正文。查找相关普通讨论可用
+`search issues --scope discussion`；默认 Proposal 搜索继续可用。
 
-只读调查和评审子 agent 永远不需要 PROCESS。
+owner 在分配的 checkout 实施、自测、维护长期规格并报告实际候选。受管执行仍
+保留精确 base、所有权、worktree 隔离、DCO、生成器、测试、依赖顺序和有界交接。
+这些执行控制不构成交付验收。
 
-Coordinator 直接修改代码只保留给没有选定 Design/TASK、用户也未要求 delegation 的窄
-direct-PR fast path。文件数量永远不能选择这个例外。
+按变更行为和明确项目关卡选择检查；只有新改动、失败或具体未解风险才扩大。
+证据绑定实际验证版本，修复后重跑受影响检查，自测不代表独立评审。
 
-## 规划、实现与验证
+## 项目补充与评审
 
-选择规划时依次：保存阶段 Issue 正文；将真正未决事项记录为 QUESTION；按需更新
-无状态的人类评审 projection；只创建实际需要的 SPEC/TASK/PROCESS；在实现分支
-物化已确认的 durable spec。
+通用正文生成在 `.agents/skills`，Claude 逐技能链接到同一目录。读取
+`issue-spec/config.yaml` 的 context/rules，并按需加载 `guidance.shared` 与当前
+`propose`、`apply` 或 `review` 补充。项目维护这些文件和专用技能，详见
+[配置与安全升级](reference.zh-CN.md)。
 
-managed PROCESS 保留精确 base、所有权、worktree 隔离、DCO、生成器、测试、依赖
-顺序和有界 handoff。这些只是执行安全，不是评审或合并门禁。
+按用户请求的里程碑评审。项目可以由 coordinator 集中评审多个变更，也可以明确
+委派评审；issue-spec 不自动另起 reviewer 或要求 PR/MR。检查实际候选与已有
+证据，指出具体失败路径，将修复交还对应 owner，重查受影响行为。
 
-每个 implementation worker 负责一个 package 的代码、focused tests、精确 result commit、
-decisions、risks 和非显然的行级 rationale 草稿。Coordinator 负责 dispatch/wait、检查精确
-commit、集成、按风险执行最终验证、校验 anchor 和 provider 发布；worker 不接收 provider 凭据。
+## 授权发布与交接
 
-运行本次实现所需的测试和项目检查，推送一个精确可评审 head，再通过 provider
-的 `change.create`、GitHub 工具或明确的人工降级路径创建/选择 PR/MR。
+报告 base/candidate、结果、检查、缺口、风险和待评审事项。仅在获得授权且平台
+支持时创建代码变更或发布评论。按需发布的实现说明可使用普通
+`### Implementation Rationale` 评论和稳定的 `path:symbol/line` 锚点，解释非显然
+决策、保留实际作者身份，并针对已发布版本验证锚点。没有理由配额或强制发布
+仪式；写入失败时保留正文并报告。
 
-可选 `evidence.snapshot` 只提供审计和导航上下文。issue-spec 不归一化 provider
-当前策略，也不复刻其合并决策。
+批准和合并遵循实际授权及当前平台策略，不创建 readiness receipt 或 agent 自行
+签发的合并权限。
 
-## 解释非显然代码
+## Provider 操作与历史数据
 
-每个实际代码写作者只为非显然决策提供零条或多条行级 rationale 草稿，包括仓库
-相对路径、稳定 symbol 加 changed-line anchor，以及简洁的 why/tradeoff/risk。
-不得包含 secret、raw payload、credential、猜测的 diff position、填充内容或配额。
+`issue-spec.code-provider/v1` 提供操作级 `change.create`、`change.comment`、
+`evidence.snapshot`。任意已实现子集都有效，能力缺失只限制对应操作。snapshot
+是审计或导航上下文，不复刻平台合并策略。
 
-精确 head 集成并推送后，Coordinator 验证锚点、内容仍适用且无敏感信息，再把
-作者原文作为非阻塞 provider 行级讨论发布。无效、过时或敏感的草稿退回作者，
-或说明原因后丢弃；不能改写后冒充作者。
-
-顶层普通 `### Implementation Rationale` 讨论包含意图、决策与权衡、边界与风险、
-测试结果、精确 head、规划链接和行级 rationale 索引。如果平台不能安全发布行级
-评论，就在顶层保留 `path:symbol/line` 和作者原文。发布失败保持可见和可重试。
-rationale 是给人看的上下文，不是类型化证据或验收状态。
-
-## 交接并停止
-
-最终报告：
-
-- 精确推送 head；
-- PR/MR 链接；
-- 测试及结果；
-- rationale 发布状态；
-- 已知风险、边界和不支持的 provider 操作；
-- 本次实际使用的规划工件。
-
-随后在批准和合并之前停止。不要创建 readiness receipt、provider 策略模型、合并
-命令或自动的合并后协调。人直接在 provider 界面检查当前 CI、批准、讨论、所有权
-和分支策略，并决定是否合并。
-
-## Provider 能力
-
-`issue-spec.code-provider/v1` 只保留三个操作级能力：`change.create`、
-`change.comment`、`evidence.snapshot`。任意已实现子集都有效。缺失能力只限制对应
-动作，不会把仓库切换为全局 planning-only。
-
-历史 REVIEW、VERIFY、rationale evidence、finalization、receipt、Archive 和 provider
-evidence 在支持时仍可审计读取；已退役写命令在 mutation 前返回
-`deprecated_workflow`，不参与当前交付。
+历史 REVIEW、VERIFY、rationale evidence、finalization、receipt 和 Archive 仅供
+显式审计读取。退役写入口在变更前返回 `deprecated_workflow`，不参与当前交付。

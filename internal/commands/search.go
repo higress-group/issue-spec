@@ -63,11 +63,14 @@ func (a *app) runSearchIssues(ctx context.Context, args []string) int {
 	fs := newFlagSet("search issues", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name on the issue backend")
 	host := fs.String("hostname", "github.com", "issue backend hostname")
-	query := fs.String("query", "", "Proposal title/body search query")
-	state := fs.String("state", "all", "Proposal state: all, open, or closed")
+	query := fs.String("query", "", "search query")
+	scope := fs.String("scope", "proposal", "proposal: Proposal titles/bodies; discussion: all issues and comments")
+	pageNumber := fs.Int("page", 1, "result page (1-based)")
+	jsonOut := fs.Bool("json", false, "write compact JSON results with untrusted-data notice")
+	state := fs.String("state", "all", "issue state: all, open, or closed")
 	source := fs.String("source", "all", "compatibility filter: all or issue (both search Proposal title/body)")
 	stage := fs.String("stage", "", "compatibility filter: proposal only")
-	limit := fs.Int("limit", 10, "maximum Proposal results (1-50)")
+	limit := fs.Int("limit", 10, "maximum results per page (1-50)")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
@@ -78,13 +81,15 @@ func (a *app) runSearchIssues(ctx context.Context, args []string) int {
 	// so special characters are encoded exactly once by the selected backend.
 	repo := strings.TrimSpace(*repoFlag)
 	options := github.IssueSearchOptions{Query: strings.TrimSpace(*query), State: strings.ToLower(strings.TrimSpace(*state)),
-		Source: strings.ToLower(strings.TrimSpace(*source)), Stage: strings.ToLower(strings.TrimSpace(*stage)), Page: 1, PerPage: *limit}
+		Source: strings.ToLower(strings.TrimSpace(*source)), Stage: strings.ToLower(strings.TrimSpace(*stage)), Page: *pageNumber, PerPage: *limit, Scope: strings.ToLower(strings.TrimSpace(*scope))}
 	if err := validateSearchOptions(options); err != nil {
 		a.errorf("%v\n", err)
 		return 2
 	}
-	options.Source = "issue"
-	options.Stage = "proposal"
+	if options.Scope != "discussion" {
+		options.Source = "issue"
+		options.Stage = "proposal"
+	}
 	profile, _, err := auth.ResolveProfile(a.profileName, *host)
 	if err != nil {
 		a.errorf("resolve issue backend profile: %v\n", err)
@@ -100,6 +105,30 @@ func (a *app) runSearchIssues(ctx context.Context, args []string) int {
 		a.errorf("search issues: %v\n", err)
 		return 1
 	}
+	if *jsonOut {
+		// Redact values before JSON encoding, so escaped secrets cannot leak and
+		// redaction cannot damage the JSON structure.
+		for i := range page.Items {
+			item := &page.Items[i]
+			for _, field := range []*string{&item.Organization, &item.Repository, &item.Title, &item.State, &item.URL} {
+				*field = redactor.Redact(*field)
+			}
+			for j := range item.Changes {
+				item.Changes[j].Key = redactor.Redact(item.Changes[j].Key)
+				item.Changes[j].Stage = redactor.Redact(item.Changes[j].Stage)
+			}
+			for j := range item.Matches {
+				item.Matches[j].Source = redactor.Redact(item.Matches[j].Source)
+				item.Matches[j].Excerpt = redactor.Redact(item.Matches[j].Excerpt)
+			}
+		}
+		return a.outputJSON(struct {
+			Trust string `json:"trust"`
+			Scope string `json:"scope"`
+			github.IssueSearchPage
+		}{trustUntrustedData, options.Scope, page})
+	}
+
 	nonce, err := randomNonce()
 	if err != nil {
 		a.errorf("generate boundary nonce: %v\n", err)
@@ -150,6 +179,15 @@ func (a *app) selectIssueSearchAdapter(ctx context.Context, profile auth.Profile
 }
 
 func validateSearchOptions(options github.IssueSearchOptions) error {
+	if options.Scope != "" && options.Scope != "proposal" && options.Scope != "discussion" {
+		return errors.New("--scope must be proposal or discussion")
+	}
+	if options.Page < 1 {
+		return errors.New("--page must be positive")
+	}
+	if options.Scope == "discussion" && (options.Stage != "" || options.Source != "all") {
+		return errors.New("--scope discussion cannot be combined with --source issue or --stage")
+	}
 	if options.Query == "" || len(options.Query) > 256 {
 		return errors.New("--query must contain 1-256 bytes")
 	}
@@ -170,7 +208,7 @@ func validateSearchOptions(options github.IssueSearchOptions) error {
 
 func renderSearchResults(output *strings.Builder, nonce string, redactor github.ExternalCLIRedactor, profile string, page github.IssueSearchPage) {
 	writeReadHeader(output, nonce)
-	fmt.Fprintf(output, "\nresults: %d\ntotal: %d\nhas_next: %t\n", len(page.Items), page.Total, page.HasNext)
+	fmt.Fprintf(output, "\nresults: %d\ntotal: %d\npage: %d\nhas_next: %t\n", len(page.Items), page.Total, page.Page, page.HasNext)
 	for _, item := range page.Items {
 		fmt.Fprintf(output, "\nissue: #%d\n", item.Number)
 		writeTrustedField(output, redactor, "repository", item.Organization+"/"+item.Repository)
@@ -189,7 +227,7 @@ func renderSearchResults(output *strings.Builder, nonce string, redactor github.
 		if strings.TrimSpace(profile) != "" {
 			next += " --profile " + profile
 		}
-		next += fmt.Sprintf(" read issue --repo %s/%s --issue %d --comments", item.Organization, item.Repository, item.Number)
+		next += fmt.Sprintf(" read issue --repo %s/%s --issue %d", item.Organization, item.Repository, item.Number)
 		writeTrustedField(output, redactor, "next", next)
 	}
 }

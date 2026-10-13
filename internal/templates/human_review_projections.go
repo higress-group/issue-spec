@@ -31,3 +31,9 @@ func HumanReviewProjectionResources() []RenderedSkillResource {
 		{Path: "assets/projection-example.md", Content: projectionExample},
 	}
 }
+
+//go:embed assets/progressive-reading.md
+var progressiveReadingReference string
+
+//go:embed assets/question-decisions.md
+var questionDecisionsReference string

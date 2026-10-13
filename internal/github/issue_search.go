@@ -25,6 +25,7 @@ type IssueSearchOperations interface {
 }
 
 type IssueSearchOptions struct {
+	Scope   string // proposal (default) or discussion (all issues and comments)
 	Query   string
 	State   string
 	Source  string
@@ -169,14 +170,26 @@ func githubIssueSearchQuery(repo string, options IssueSearchOptions) (string, Is
 	if options.Stage != "" && options.Stage != "proposal" {
 		return "", IssueSearchOptions{}, errors.New("GitHub issue search stage must be proposal")
 	}
-	options.Source = "issue"
-	options.Stage = "proposal"
+	if options.Scope != "" && options.Scope != "proposal" && options.Scope != "discussion" {
+		return "", IssueSearchOptions{}, errors.New("invalid search scope")
+	}
+	if options.Scope == "discussion" && (options.Stage != "" || options.Source != "all") {
+		return "", IssueSearchOptions{}, errors.New("discussion scope does not support source or stage filters")
+	}
+	if options.Scope != "discussion" {
+		options.Source = "issue"
+		options.Stage = "proposal"
+	}
 
 	qualifiers := []string{options.Query, "repo:" + owner + "/" + repository, "is:issue"}
 	if options.State != "all" {
 		qualifiers = append(qualifiers, "is:"+options.State)
 	}
-	qualifiers = append(qualifiers, "in:title,body", `label:"issue-spec/proposal"`)
+	if options.Scope == "discussion" {
+		qualifiers = append(qualifiers, "in:title,body,comments")
+	} else {
+		qualifiers = append(qualifiers, "in:title,body", `label:"issue-spec/proposal"`)
+	}
 	return strings.Join(qualifiers, " "), options, nil
 }
 
@@ -191,7 +204,7 @@ func normalizeGitHubIssueSearch(repo string, options IssueSearchOptions, respons
 	for _, item := range response.Items {
 		if item.PullRequest != nil || !githubSearchRepositoryMatches(item.RepositoryURL, repo) ||
 			(options.State != "all" && !strings.EqualFold(item.State, options.State)) ||
-			!githubSearchHasLabel(item.Labels, "issue-spec/proposal") {
+			(options.Scope != "discussion" && !githubSearchHasLabel(item.Labels, "issue-spec/proposal")) {
 			rejected = true
 			continue
 		}
@@ -248,14 +261,19 @@ func githubIssueMatches(item githubIssueSearchItem, options IssueSearchOptions) 
 		if len(matches) == maxIssueSearchMatches {
 			break
 		}
-		if !strings.EqualFold(match.ObjectType, "Issue") ||
+		isComment := options.Scope == "discussion" && strings.EqualFold(match.ObjectType, "IssueComment") && strings.EqualFold(match.Property, "body")
+		if !isComment && (!strings.EqualFold(match.ObjectType, "Issue") ||
 			(!strings.EqualFold(strings.TrimSpace(match.Property), "title") &&
-				!strings.EqualFold(strings.TrimSpace(match.Property), "body")) {
+				!strings.EqualFold(strings.TrimSpace(match.Property), "body"))) {
 			continue
 		}
 		excerpt := boundedIssueSearchExcerpt(match.Fragment, options.Query)
 		if excerpt != "" {
-			matches = append(matches, IssueSearchMatch{Source: "issue", Excerpt: excerpt})
+			source := "issue"
+			if isComment {
+				source = "comment"
+			}
+			matches = append(matches, IssueSearchMatch{Source: source, Excerpt: excerpt})
 		}
 	}
 	if len(matches) == 0 && len(item.TextMatches) == 0 {

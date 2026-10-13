@@ -54,6 +54,14 @@ func TestWorkflowProjectionResourceLifecycleAndManifest(t *testing.T) {
 	if _, err := readWorkflowReleaseManifest(root, ""); err == nil {
 		t.Fatal("manifest accepted a changed phase reference")
 	}
+	if _, err := writeWorkflowArtifacts(root, "owner/repo", "codex,claude", "both"); err == nil {
+		t.Fatal("update accepted modified managed reference")
+	}
+	for _, resource := range templates.HumanReviewProjectionResources() {
+		if resource.Path == "references/projections/design.md" {
+			writeWorkflowTestFile(t, changed, resource.Content)
+		}
+	}
 	writeWorkflowTestFile(t, configPath, "html_review:\n  enabled: false\n")
 	if _, err := writeWorkflowArtifacts(root, "owner/repo", "codex,claude", "both"); err != nil {
 		t.Fatal(err)

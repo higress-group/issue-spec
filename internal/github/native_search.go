@@ -42,8 +42,16 @@ func (c *Client) SearchNativeIssues(ctx context.Context, repo string, options Na
 	if options.Stage != "" && options.Stage != "proposal" {
 		return NativeIssueSearchPage{}, errors.New("native issue search stage must be proposal")
 	}
-	options.Source = "issue"
-	options.Stage = "proposal"
+	if options.Scope != "" && options.Scope != "proposal" && options.Scope != "discussion" {
+		return NativeIssueSearchPage{}, errors.New("invalid search scope")
+	}
+	if options.Scope == "discussion" && (options.Stage != "" || options.Source != "all") {
+		return NativeIssueSearchPage{}, errors.New("discussion scope does not support source or stage filters")
+	}
+	if options.Scope != "discussion" {
+		options.Source = "issue"
+		options.Stage = "proposal"
+	}
 	query := url.Values{"q": []string{options.Query}}
 	for key, value := range map[string]string{"state": options.State, "source": options.Source, "stage": options.Stage} {
 		if value = strings.TrimSpace(value); value != "" {
@@ -56,8 +64,14 @@ func (c *Client) SearchNativeIssues(ctx context.Context, repo string, options Na
 	if options.PerPage > 0 {
 		query.Set("per_page", strconv.Itoa(options.PerPage))
 	}
+	route := "/search/issues"
+	if options.Scope == "discussion" {
+		route = "/issues/search"
+		query.Del("source")
+		query.Del("stage")
+	}
 	var result NativeIssueSearchPage
-	_, err = c.doRunnerJSON(ctx, http.MethodGet, "/context/repos/"+parsed+"/search/issues", query, nil, ConditionalRequest{}, false, &result)
+	_, err = c.doRunnerJSON(ctx, http.MethodGet, "/context/repos/"+parsed+route, query, nil, ConditionalRequest{}, false, &result)
 	if err != nil {
 		return NativeIssueSearchPage{}, err
 	}

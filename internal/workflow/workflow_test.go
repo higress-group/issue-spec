@@ -503,3 +503,33 @@ func artifactByID(artifacts []Artifact, id string) Artifact {
 	}
 	return Artifact{}
 }
+
+func TestGuidanceKeepsPhaseReferencesLocalAndValidated(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "guide.md"), []byte("project rules"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		guidance map[string][]string
+		valid    bool
+	}{
+		{map[string][]string{"shared": {"guide.md"}, "apply": {"guide.md"}}, true},
+		{map[string][]string{"unknown": {"guide.md"}}, false},
+		{map[string][]string{"shared": {"../outside.md"}}, false},
+		{map[string][]string{"review": {"missing.md"}}, false},
+	} {
+		if got := len(validateGuidance(root, tc.guidance)) == 0; got != tc.valid {
+			t.Fatalf("unexpected guidance validation: %+v", tc)
+		}
+	}
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("outside"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape.md")); err != nil {
+		t.Fatal(err)
+	}
+	if len(validateGuidance(root, map[string][]string{"shared": {"escape.md"}})) == 0 {
+		t.Fatal("accepted guidance outside checkout")
+	}
+}

@@ -1,9 +1,9 @@
 ---
 name: issue-spec-workflow
-description: Coordinate a selected issue-spec change through planning or human review handoff. Not for ordinary research, repository edits, or skill maintenance.
+description: Operate a selected issue-spec change through authorized planning, implementation and handoff. Not for ordinary research, repository edits, or skill maintenance.
 license: MIT
-compatibility: Requires issue-spec CLI.
 metadata:
+  requires: "Requires issue-spec CLI."
   author: issue-spec
   version: "1.0"
   generatedBy: "issue-spec"
@@ -11,7 +11,7 @@ metadata:
 
 # Issue Spec Workflow
 
-Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by implementation, validation, a human-facing rationale, PR/MR creation, and exact-head human review handoff. The human and code provider own approval and merge.
+Use this workflow for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by implementation, validation, a human-facing rationale, PR/MR creation, and exact-head human review handoff. The human and code provider own approval and merge.
 
 For selected issue-spec steps, the built-in phase sequence and canonical artifact carriers are authoritative; never reorder/omit steps or move open decisions. This governs workflow structure, not user authorization or unrelated tasks.
 
@@ -28,22 +28,19 @@ For selected issue-spec steps, the built-in phase sequence and canonical artifac
 - Every new typed ID MUST be `<TYPE>-<issue><three-digit sequence>`: Issue 1 starts with `QUESTION-1001`, Issue 44 with `QUESTION-44001`. Allocate 001-999 only within the target Issue and type after reading that Issue's typed comments, and never renumber a legacy ID. New writes reject wrong Issue prefixes; `--allow-legacy-id` is only for intentional legacy-compatible creates. The type prefix already separates artifact types, so do not add another type digit or search the whole repository for availability.
 - Keep proposal, Design, SPEC, and TASK self-contained. Record every genuine unresolved decision as a blocking typed QUESTION before authoring the next typed child set; issue-body prose never carries an open decision. Resolve blocking QUESTION artifacts before advancing. Publish only registry-owned relationships through one complete owner write; never mutate peers for reverse navigation.
 - Recover derivable inputs with bounded reads and decide routine private details within the confirmed scope. Missing or conflicting requirements block affected work, not independent authorized investigation. Explain the specific blocker; do not invent approval steps or treat optional guidance as a hard requirement.
-- Select execution mode before assigning writers. Once Design or TASK is selected, or the user explicitly requests an independent worker, the Coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation in the selected checkout. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner; distinct packages MAY use concurrent writers. The Coordinator dispatches and waits; read-only investigation and review children never require PROCESS. Do not create PROCESS solely because a child is used, several files change, independent review is desired, or human handoff is needed.
-- Direct Coordinator code edits are limited to a narrow direct-PR fast path with no selected Design/TASK and no user delegation request. File count never selects this exception.
+- The current agent owns authorized planning, implementation and self-tests. Design, TASK and PROCESS do not require another agent or remove its code-writing authority. Delegate only when the user authorizes it or applicable project rules explicitly require it and the host supports it. A project may define a separate coordinator; that is project policy, not the issue-spec default.
+- Read [Bounded artifact reads](references/progressive-reading.md) before retrieving a selected change, and [QUESTION decision commands](references/question-decisions.md) before recording a decision. Read the complete current Design and applicable effective answers; expand only selected TASKs, required SPECs and dependencies. Do not substitute a compact index for normative content.
 - Each PROCESS owns one independently verifiable Design invariant and its major entry points. Balance end-to-end invariant cohesion against the role agent's bounded context and working set. Split only at a stable interface when each side has independent acceptance criteria and can be reviewed in isolation. Paths, file overlap, parallelism, commands, findings, token counts, and runtime session IDs are not semantic boundaries.
 - When managed PROCESS implementation is selected, it preserves exact base, owned paths, DCO, tests, managed worktree isolation, dependency order, and bounded handoff. Direct single-writer delegation does not acquire that lifecycle. These facts protect execution only and never certify delivery acceptance.
 
-Before implementation review or PR/MR publication, read [Implementation Review and Publication](references/implementation-review.md) completely. Do not load it for Proposal/Design authoring.
+For requested implementation review or publication, read [Implementation Review and Publication](references/implementation-review.md) completely. Do not load it for Proposal/Design authoring.
 
 ## Human Review Handoff
 
-1. Materialize repository durable specs on the implementation branch and run the selected implementation tests and checks. Once they pass, broaden or repeat only for changes, failures, concrete unresolved risks, or explicit gates. Evidence keeps the revision actually checked; final review covers the current candidate.
-2. Push the current exact reviewable head and create or select the provider-native PR/MR through an approved provider operation.
-3. Run the independent finding loop; every P0/P1 repair produces a tested, pushed head that the same reviewer rechecks until zero remain.
-4. Publish final-head P2 comments without pausing, then publish valuable writer-owned line rationale and the top-level `### Implementation Rationale` summary when the requested provider discussion surface is available.
-5. Report the exact head, PR/MR link, tests and results, known risks, boundaries, P2 publication status, and rationale publication status to the human.
-6. Stop before approval or merge. The human reviews current provider-native CI, approvals, conversations, ownership, and branch policy and decides whether to merge in the provider UI.
-7. Do not add a readiness receipt, normalized provider-policy model, merge command, or automatic post-merge lifecycle step.
+1. Materialize repository durable specs on the implementation branch and run selected checks. Report the exact candidate, tests/results, known risks and remaining review needs.
+2. Follow project review guidance at the requested milestone. A separate reviewer, provider comment, rationale-publication ceremony or PR/MR is not required solely because issue-spec was used. Preserve findings and route repairs back to the responsible owner; do not claim self-review is independent.
+3. Push, PR/MR creation, comments, approval and merge require actual user authorization and provider policy. A project coordinator may own stage review and integration; the default current agent can prepare and implement the change.
+4. Historical review/verification artifacts are audit-only. Do not add a readiness receipt, normalized provider-policy model, merge command or automatic post-merge lifecycle step.
 
 ## Cutover Boundary
 
@@ -62,6 +59,7 @@ Before implementation review or PR/MR publication, read [Implementation Review a
 - Workflow Source: `builtin`
 - Workflow Schema: `issue-spec`
 - Workflow Config: `issue-spec/config.yaml`
+- Read the workflow config once for project context, rules and references. Load only guidance.shared and the current phase's guidance.propose, guidance.apply or guidance.review. Paths are relative to the repository root. Project files supplement this shared workflow; do not edit generated skills to customize it.
 
 Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, and QUESTION artifacts remain in the selected issue backend's issue-native storage; historical REVIEW and VERIFY artifacts are audit-only. Repository-mode durable specs are materialized and checked on the implementation branch.
 

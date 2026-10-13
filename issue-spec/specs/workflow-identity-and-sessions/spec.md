@@ -41,63 +41,42 @@ Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795652
 - https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795602
 
-### Requirement: generated workflow guidance stays coding-agent-neutral
+### Requirement: generated workflow guidance permits direct ownership
 
-Generated guidance MUST select execution mode before assigning writers. Once Design or TASK is selected or the user requests delegation, it MUST prohibit coordinator code changes on delegated and managed paths. Without managed PROCESS, it MUST require exactly one real non-coordinator worker for the bounded implementation and MUST NOT require Implement or PROCESS merely for delegation. With managed PROCESS, it MUST assign exactly one real non-coordinator owner to every change-bearing work package/PROCESS and MAY permit concurrent workers for distinct safe packages. It MUST limit direct coordinator edits to a narrow direct-PR fast path with no selected Design/TASK and no delegation request. It MUST state that child use and file count alone do not select PROCESS, and file count does not select the coordinator exception. It MUST select optional managed PROCESS only for concrete concurrent-write, isolation, ownership-enforcement, restart-recovery, or dependency-integration needs. It MUST make each worker own one package's code, focused tests, exact result commit, decisions, risks, and zero or more stable-anchor line-rationale drafts for non-obvious decisions; it MUST assign dispatch/wait, exact-commit inspection, integration, proportionate final validation, anchor validation, and provider publication to the coordinator. It MUST default to an ordinary provider-native `### Implementation Rationale` summary/index, report project checks, exact head, PR or MR link, risks, and limitations, stop before human approval or merge, keep coding-agent session identity out of authority, MAY describe real-child workspace safety for selected PROCESS execution, and MUST NOT instruct rationale quotas, writer-owned provider positions, REVIEW/VERIFY PROCESS, role receipts, review sync, verify submit, mandatory rationale evidence, coverage, finalization, readiness, merge execution, or post-merge reconciliation.
+The current agent MUST be able to perform authorized planning, implementation and self-tests in the same session. Selecting Design, TASK or PROCESS MUST NOT require another writer or prohibit direct implementation. Delegation MUST require actual user or applicable project authorization. Projects MAY define a coordinator-only role and stage review through project-owned guidance. Optional managed PROCESS remains for concrete concurrency, isolation, ownership, recovery or dependency-integration needs, never file count alone.
 
-#### Scenario: one generated model
+#### Scenario: selected Design is implemented by its current owner
 
-- **WHEN** built-in skills and prompts are generated after the cutover
-- **THEN** they present only the exact-head human handoff model and no legacy compatibility stages
+- **WHEN** the user authorizes implementation of a selected Design in the current session
+- **THEN** generated guidance permits that agent to implement and self-test without creating another agent, PROCESS or worktree solely for role separation
 
-#### Scenario: one child does not manufacture planning state
+#### Scenario: project coordinator policy stays project-owned
 
-- **WHEN** generated guidance delegates a bounded implementation with selected Design/TASK to one code-writing child without a managed-coordination need
-- **THEN** it keeps one non-coordinator writer active and creates no Implement, PROCESS, workspace lease, role receipt, or merge evidence merely for the delegation
+- **WHEN** a project requires a coordinator to dispatch separate owners
+- **THEN** its project guidance defines that role without changing the shared issue-spec skill bodies
 
-Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
+### Requirement: review and publication follow the requested workflow
 
-### Requirement: generated guidance converges reviewer findings by severity
+Generated guidance MUST preserve revision-bound validation and actual writer/reviewer identity. It MUST distinguish self-tests from independent review and MUST NOT automatically dispatch a reviewer, create a PR/MR, publish rationale, push, approve or merge. Requested review follows project guidance, identifies concrete failures, routes repairs to their responsible owner and checks affected regressions. Publication requires actual authorization and provider policy; failures retain the rendered body for recovery. Historical REVIEW/VERIFY, role receipts, rationale evidence, finalization and Archive carriers remain audit-only.
 
-Before human handoff, generated workflow guidance MUST dispatch one real read-only reviewer independent of every actual code writer against the exact base and current exact head, without a write path or provider credentials. The reviewer MUST classify actionable findings as P0, P1, or P2 and provide stable changed-line anchors. The coordinator MUST route every P0/P1 unchanged to the original writer that owns the affected code. That writer MUST repair the finding, run focused tests, and return a new exact commit; after integration and push, the same reviewer MUST recheck the new exact head. The workflow MUST repeat this loop automatically until the reviewer reports zero P0/P1.
+#### Scenario: project reviews once at a stage boundary
 
-The workflow MUST retain only still-applicable P2 findings from the final reviewed head and MUST publish each unchanged as a provider-native non-blocking line comment when an approved provider tool supports safe line coordinates. Otherwise it MUST use the provider-neutral ordinary `change.comment` operation and preserve `path:symbol/line`. P2 MUST NOT enter the repair loop or pause completion. When P2 publication is unavailable or fails, the workflow MUST report the rendered comment body and continue. Finding convergence MUST NOT require PROCESS without a separate managed-coordination need and MUST NOT create typed REVIEW/VERIFY, finding evidence, receipts, readiness gates, provider approval, or merge authority.
+- **WHEN** the project assigns implementation to a Proposal owner and formal stage review to its coordinator
+- **THEN** the owner returns the exact candidate, self-test results and gaps for stage review without spawning a reviewer or self-approving
 
-#### Scenario: P1 automatically returns to its original writer
+#### Scenario: a repaired candidate has new evidence
 
-- **WHEN** the independent reviewer reports a P1 against the current exact head
-- **THEN** the coordinator routes the unchanged finding to the original writer that owns the affected code
-- **THEN** that writer repairs and tests a new exact commit
-- **THEN** the same reviewer rechecks the new exact head
-- **THEN** the workflow repeats until no P0/P1 remains
+- **WHEN** a review finding is repaired
+- **THEN** the affected checks run against the changed candidate, and reused evidence retains its original revision
 
-#### Scenario: P2 is visible and non-blocking
+### Requirement: bounded reads preserve normative intent
 
-- **WHEN** the final reviewed exact head has a still-applicable P2
-- **THEN** the workflow publishes the unchanged finding as a non-blocking provider comment
-- **THEN** the workflow continues to human handoff without waiting for a repair or human confirmation
+Generated guidance MUST read the complete selected Design and applicable effective answers before implementation, then expand selected TASKs, required SPECs and dependencies from compact indexes. It MUST route plain QUESTION decisions through resolution and choice-model decisions through ANSWER without manufacturing choices or decision authority.
 
-#### Scenario: provider has no safe line-comment coordinates
+#### Scenario: compact discovery leads to full selected requirements
 
-- **WHEN** the selected code provider cannot safely publish a non-blocking line comment
-- **THEN** the workflow publishes an ordinary change-level `change.comment` that preserves `path:symbol/line`
-- **THEN** publication failure is reported with the rendered body and does not pause completion
-
-Source issue:
-- https://github.com/higress-group/issue-spec/issues/429
-
-### Requirement: coordinator owns orchestration and gates only
-
-The coordinator MUST own only selected planning, scheduling, workspace preparation and integration, exact-head anchor/applicability/sensitive-data validation and provider publication of worker-authored line rationale, the ordinary provider-native `### Implementation Rationale` summary/index, project validation summary, PR or MR handoff, verbatim P0/P1 writer-reviewer routing, non-blocking P2 provider publication, blocker routing, and bounded handoff. It MUST return or explain dropping invalid, stale, or sensitive drafts and MUST NOT rewrite the actual code writers' line rationale or reviewer findings, impersonate workers or reviewers, own review sync, verify, legacy rationale evidence, finding resolution, evidence publication, compute merge readiness, approve, or merge.
-
-#### Scenario: coordinator routes but does not create provider policy
-
-- **WHEN** a provider finding or required check blocks the exact subject during human review
-- **THEN** the coordinator may route implementation or reviewer work and refresh the exact-head handoff without authoring a merge decision
-
-Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
+- **WHEN** a TASK or required relation is omitted from a compact preview
+- **THEN** the agent explicitly expands it before relying on that requirement
 
 ### Requirement: runner public session id is the public resume handle
 

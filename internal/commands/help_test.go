@@ -22,7 +22,7 @@ func TestLeafCommandHelpShowsOptionsAndDefaults(t *testing.T) {
 		"--repo string",
 		"repository owner/name (default: \"\")",
 		"--delivery string",
-		"workflow artifact delivery: both, skills, or commands (default: both)",
+		"workflow artifact delivery: both, skills, or commands (default: skills)",
 		"--create-labels",
 		"ensure issue-spec labels (default: true)",
 		"--skip-labels",

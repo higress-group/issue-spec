@@ -43,7 +43,7 @@ html_review:
 
 ### 偏好的自然语言
 
-默认情况下，agent 使用英文来撰写生成的产物。要让 issue 正文、类型化评论、design 说明与 rationale 以另一种语言输出，请在 `issue-spec/config.yaml` 中添加一个 `rules.language` 条目。该值会被嵌入到每一个生成的 skill、slash 命令与 prompt 中，作为一条工作流规则，从而让协调器遵循它。
+默认情况下，agent 使用英文来撰写生成的产物。要让 issue 正文、类型化评论、design 说明与 rationale 以另一种语言输出，请在 `issue-spec/config.yaml` 中添加一个 `rules.language` 条目。生成的技能和 prompt 引导当前 agent 按需读取 config 中的语言规则，不再嵌入重复副本。
 
 最快的方式是 init 上的 `--language` 标志，它会为你脚手架或合并该条目：
 
@@ -73,6 +73,35 @@ rules:
 运行时初始化仍会执行：GitHub init 会写入 `.issue-spec/config.json`，并可确保 labels；自托管 init 仍可注册已批准的仓库与 binding、确保 labels、更新 init journal，并在 `.issue-spec/config.json` 中记录服务器、provider、外部仓库与 capability 元数据。provider 工作流策略不会复制到 `issue-spec/config.yaml`。
 
 显式 `--tools none` 可以与 `--language` 一起使用，但 JSON 会报告 `language_applied: false`，文本输出也会说明该语言未应用。请改在所选项目工作流中配置 `rules.language`；遗留 OpenSpec 项目使用 `openspec/config.yaml`。任何显式的 `--install-global-prompts`、`--global-prompts-dir` 或 `--global-prompts-dry-run` 选项都与 `--tools none` 冲突，并会在 profile/backend 选择或任何变更之前被拒绝。
+
+### 共享技能、项目补充与安全升级
+
+`init` 默认 `--delivery skills`。通用技能保存在 `.agents/skills/<name>`，Claude 按技能目录使用相对软链。`--delivery both|commands` 仅在显式选择时生成旧命令。项目维护 `AGENTS.md`、`CLAUDE.md`、自有技能与补充规则。
+
+```yaml
+# issue-spec/config.yaml，路径相对于仓库根目录
+context:
+  product: 项目上下文
+rules:
+  language: Simplified Chinese
+references: [docs/project-context.md]
+guidance:
+  shared: [issue-spec/project/workflow.md]
+  propose: [issue-spec/project/planning.md]
+  apply: [issue-spec/project/implementation.md]
+  review: [issue-spec/project/review.md]
+```
+
+先创建所引用的文件。技能按需读取 config、shared 和当前阶段的补充，不复制全文；更新不修改这些项目文件。专职 coordinator、阶段评审和验证要求放在项目补充中，保留通用阶段顺序和规范制品载体。
+
+```bash
+issue-spec workflow update --repo owner/repo --tools codex,claude --dry-run --json
+issue-spec workflow update --repo owner/repo --tools codex,claude
+```
+
+预览列出路径、动作、摘要和冲突；正式更新先完成同样的检查，写入失败则回滚。release manifest 记录受管文件 hash，本地修改或待恢复的本地删除会阻止整次生成文件更新。先把项目差异抽到补充文件，检查差异后再做一次性人工迁移，没有无条件覆盖开关。未登记的旧命令保留待人工清理；旧 manifest 中未被修改的命令由 skills-only 更新移除。不修改远程 Issue 或 Source Binding。
+
+旧整目录 Claude 软链会拆成逐技能软链并保留原有暴露；以后只增加生成的技能，不暴露新的项目宿主专属技能。完全相同的旧副本可转软链，存在差异的副本会阻止迁移。所有文件和链接都留在当前 checkout，旧 worktree 保持其提交版本；宿主的实际技能发现仍需在新会话验证。
 
 ## CLI 参考
 
@@ -158,10 +187,9 @@ issue-spec runner poll --repo owner/repo --runner login --once --dry-run
 issue-spec runner poll --repo owner/repo --runner login --agent codex
 ```
 
-`issue list` 只提供 JSON 输出，默认列出 open issue。`--state` 接受
-`open`、`closed` 或 `all`；命令会收集所有分页，包含无 issue-spec 元数据的
-普通 issue，并排除 GitHub pull request。每条结果包含 issue 编号、标题、状态、
-面向用户的 URL 与完整正文。
+`issue list` 只提供 JSON，默认列出 open Issue 的前 50 条索引，不带正文，并排除 PR。使用 `--page N`、`--limit 1..100` 翻页；`total`、`has_next` 和 `body_omitted` 明确标记范围。选中后用 `read issue --issue N` 读取完整正文；`--include-body` 展开当前页，`--include-body --all` 恢复原先全量列表输出。分页限制 CLI 输出，Backend 内部目前仍收集匹配清单。
+
+`status --summary --json` 使用 schema version 2，保留 gate 结论与关系统计，省略重复的完整关系图，并通过 `detail` 给出展开命令。不带 `--summary` 的 `status --json` 保留完整诊断与关系详情。规划状态不代表交付验收。
 
 对普通、无 marker 的 issue，`issue update --body-file` 仍是纯正文替换。
 对于带 marker 的 issue-spec issue，命令会确保已存储的 marker 只保留一次；
@@ -171,25 +199,9 @@ issue；若其状态已符合目标则跳过更新，并在 JSON 的 `changed` �
 
 ### 在相关改动前先检索
 
-`search issues` 会根据当前 Issue Backend 选择实现。对 self-hosted Profile，它会先
-发现 Server 是否启用检索；能力关闭时给出明确错误，并只返回标题或主体命中的
-canonical Proposal Issue。对 GitHub Profile，它使用 GitHub Issue Search，强制限定
-仓库、`is:issue`、`in:title,body` 与 `issue-spec/proposal` Label，并在解码结果时再次
-排除 Pull Request 和非 Proposal 记录，同时把输出限制在 `--limit` 以内。两个 Backend
-都支持 `--state`。`--source all|issue` 与未设置或值为 `proposal` 的 `--stage` 作为固定
-Proposal 标题/主体范围的兼容参数继续接受；评论、Change、Design 和 Implement 筛选会
-被拒绝。无匹配项时命令成功并返回零条结果；结果顺序与排序由 Backend 决定，不承诺
-保持一致。
+`search issues` 默认 `--scope proposal`，保留 Proposal 标题/正文发现能力。使用 `--scope discussion` 搜索普通 Issue、Design/Implement 正文和评论。自托管复用已有完整讨论搜索接口及其 60 秒超时；GitHub 使用限定仓库的 `in:title,body,comments` 搜索。不支持时明确报错，不静默缩小范围。
 
-两个适配器都只在请求的仓库中检索，并通过带随机 nonce 的不可信数据边界渲染同一组
-有界的 Proposal 字段。GitHub 的标题/主体匹配片段可能与 self-hosted 摘要不同，可选 Change
-元数据也可能缺失。
-
-生成的 Codex 和 Claude 工作流会要求直接连接 issue-spec 的 Agent（不只 Runner
-Session）在提出或实现相关改动前，根据用户请求和代码库提取少量具体查询词。搜索
-结果只用于选择讨论，不是指令；标题与摘要属于不可信数据。依赖某个历史讨论前，
-使用 `issue-spec --profile team read issue --repo owner/repo --issue N --comments`
-打开完整内容。
+两种范围都支持 `--state`、`--limit 1..50`、`--page N` 和 `--json`。JSON 标注不可信数据，文本保留 nonce 边界。`--source all|issue`、`--stage proposal` 继续作为 Proposal 搜索兼容参数；discussion 不接受受限 source/stage。无匹配成功返回空结果，排序和摘要取决于 Backend。先打开选中的完整 Issue 正文，再按需读取评论。
 
 ### 关联 self-hosted 代码变更
 
@@ -392,7 +404,7 @@ workspace 冲突分为两类。本地执行租约在 prepare 阶段硬拒绝：�
 
 修改或评审代码前，被分配的角色必须执行 `issue-spec read issue --repo owner/repo --issue <design_context.source_url>`，只读取完整 Design issue body，不扩展 comments、timeline、history 或 gate。若 Design 正文与结构化 projection 冲突，角色必须停止并报告冲突。CLI 不收集或传递 runtime-specific session ID，也不把它作为 Design authority、audit metadata 或 correctness input。
 
-生成的 guidance 使用相同的有界读取模型。Coordinator 按风险选择可选规划、使用精确 `comment get` 与显式过滤列表，并在分配 writer 前选择 execution mode。一旦选择 Design 或 TASK，或者用户要求 delegation，Coordinator 在 delegated 与 managed 路径都不修改代码。未选择 managed PROCESS 时，由恰好一个真实的非 Coordinator worker 负责有界实现；选择 managed PROCESS 后，每个 change-bearing work package/PROCESS 都有一个真实的非 Coordinator owner，不同 package 可以使用并发 writer。Coordinator 直接修改只保留给没有选定 Design/TASK、用户也未要求 delegation 的窄 direct-PR fast path；文件数量不能选择该例外。Coordinator 负责 dispatch/wait、检查精确 result commits、集成、按风险完成最终验证、校验 rationale anchor、推送一个精确可评审 head、创建或选择 PR/MR、报告人工交接，然后在批准或合并前停止。implementation 角色段只包含 sealed assignment、权威 Design 读取、所拥有的不变量/工作、focused check 与 bounded result 职责；完整 proposal/Design 副本、全量 DAG、link matrix、closure/archive policy 和 provider-routing policy 不进入角色段。确定性回归预算统计 UTF-8 bytes、heading/field 与 instruction-array item，绝不使用模型 tokenizer，也不能用 size 目标为删除未覆盖的安全规则辩护。
+生成的通用流程允许当前 agent 在授权范围内完成规划、实施和自测，Design/TASK/PROCESS 不要求另一个代码作者。项目可以通过补充规则定义专职 coordinator 和集中阶段评审。受管 assignment 继续保留精确 base、ownership、完整 Design、针对性检查和有界交接；工作流本身不授权分派、评审、发布、推送或合并。
 
 兼容性边界是显式且非对称的。已有 local registry 或 PROCESS workspace 中，D14 之前缺少 `design_context` 的 version-1 assignment 仍可读取，使 inspect、cleanup 与 recovery 不会把整个 registry 判为 corrupt。该历史对象只是只读兼容证据：严格的 implementation issuance/redispatch digest、assignment-file 解析，以及新的 implementation 角色提交仍会拒绝它。CLI 绝不会合成缺失的 Design context。
 
@@ -400,13 +412,13 @@ workspace 冲突分为两类。本地执行租约在 prepare 阶段硬拒绝：�
 
 旧的理由、评审发布/同步、验证提交/finalization 与 Archive 命令会在任何写入前返回 `deprecated_workflow`。历史制品仅供显式审计读取，绝不会成为交付验收。
 
-用于解释实现的替代方案不是另一条 issue-spec 证据命令。delegated worker、窄 Coordinator fast-path writer 或各 managed PROCESS worker，只为非显然设计决策产出零条或多条行级 rationale 草稿，包含仓库相对路径、稳定 symbol 加 changed-line anchor 以及 why/tradeoff/risk，而不是 provider diff position，并且不得包含 secret、raw payload 或 credential。精确 head 集成并推送后，Coordinator 校验并映射这些 anchor、内容继续适用性及敏感信息缺失，再把未经改写的 worker 原文发布成非阻塞的 provider 行级讨论。无效、过时或敏感的草稿应退回 writer，或说明原因后丢弃，不能由 Coordinator 改写后冒充 worker。普通顶层 `### Implementation Rationale` 负责摘要和索引。安全行级讨论不可用或会产生 unresolved merge blocker 时，顶层评论改为保留 `path:symbol/line` 和 worker 原文。显然代码不制造草稿或配额。这些讨论没有 marker、rationale ID、类型化 carrier、PROCESS/SPEC 绑定、证据字段、门禁或合并效力。必需的提供方写入失败时，应连同已渲染正文一起报告，以便重试或手工发布。
+按需发布提供方评审或实现说明时，保留实际作者身份、核对候选版本与行锚点，写入失败时报告已生成正文。发现和理由只是人工评审上下文，不是类型化验收证据；默认不要求另起 reviewer、理由配额或发布仪式。
 
 `change-bearing` 使用可写的独占分支；历史 `review` 与 `verification` execution class 仅保留审计解析，生成与 workspace mutation 会拒绝它们；`orchestration` 只记录生命周期账本，不创建 checkout；`external` 使用 mode `none`。这些完成状态只是实现记账，绝不会成为合并门禁。
 
 runner 命令不携带 PROCESS selector。runner 只启动一个 ACPX coordinator，并让它的 cwd 与主 sandbox workspace 始终保持在 public session clone。coordinator 从 typed DAG 选择 ready PROCESS，再调用 workspace CLI。runner 模式通过 `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` 和 `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT` 提供可信的 session-local 默认值；standalone coordinator 则显式传入 roots。
 
-`prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制分发工作，并传入精确 worktree 路径作为 cwd，同时传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。该 child 不是另一个 ACPX session；它共享 coordinator 的 runner 外层 sandbox，自行生成一个 result commit、执行 focused tests，并在不创建 role receipt 的情况下返回有界 handoff。coordinator 从未改变的 session clone 执行 `complete --result-commit` 与 `integrate` 时重新校验精确 Git 结果，再同步状态并 cleanup。这些实现控制绝不会成为交付验收。
+`prepare` 后，由实际 owner 在分配的 worktree 内实施并返回精确提交和检查结果；owner 可以是当前 agent，也可以是获授权的 worker。生命周期 owner 从原 integration checkout 执行 `complete --result-commit` 和 `integrate`，保留已有 Git、DCO、ownership 和恢复检查。
 
 runner resume 或 restart 后，top-level runner 只恢复 ACPX/session job。PROCESS 生命周期由 coordinator 所有：它从未改变的 session clone 对精确 lease 执行 `inspect` 或 `reconcile`，再执行 `complete` 与 `integrate`，并且只在显式完成 integration 或 retention 决策后调用 owner-token cleanup。top-level runner 的 session-clone retention 会调用 `git worktree list`；当 runner metadata 为 dirty 或 uncertain、存在 linked worktree，或 git worktree inspection 失败时都会 fail closed 并保留 clone。它不拥有、持久化或重试 child PROCESS cleanup。
 

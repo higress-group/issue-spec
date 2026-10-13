@@ -53,13 +53,15 @@ func IssueSpecSkillsWithOptions(repo string, options WorkflowAuthoringOptions) [
 		if tmpl.Name == "issue-spec-workflow" {
 			reviewPath = "references/implementation-review.md"
 		}
-		body = strings.ReplaceAll(body, "{{implementation-review}}", "Before implementation review or PR/MR publication, read [Implementation Review and Publication]("+reviewPath+") completely. Do not load it for Proposal/Design authoring.")
+		body = strings.ReplaceAll(body, "{{implementation-review}}", "For requested implementation review or publication, read [Implementation Review and Publication]("+reviewPath+") completely. Do not load it for Proposal/Design authoring.")
 		if strings.TrimSpace(tmpl.SkillOnly) != "" {
 			body = strings.TrimRight(body, "\n") + "\n\n" + strings.TrimSpace(tmpl.SkillOnly) + "\n"
 		}
 		skill := RenderedSkill{Name: tmpl.Name, Content: renderSkill(tmpl.Name, tmpl.Description, body)}
 		if tmpl.Name == "issue-spec-workflow" {
-			skill.Resources = []RenderedSkillResource{{Path: "references/implementation-review.md", Content: implementationReviewReference}}
+			skill.Resources = []RenderedSkillResource{{Path: "references/implementation-review.md", Content: implementationReviewReference},
+				{Path: "references/progressive-reading.md", Content: strings.ReplaceAll(progressiveReadingReference, "{{repo}}", repo)},
+				{Path: "references/question-decisions.md", Content: strings.ReplaceAll(questionDecisionsReference, "{{repo}}", repo)}}
 			if options.HTMLReviewEnabled {
 				skill.Resources = append(skill.Resources, HumanReviewProjectionResources()...)
 			}
@@ -107,7 +109,7 @@ func issueSpecWorkflows(repo string, options WorkflowAuthoringOptions) []Workflo
 	workflows := []WorkflowTemplate{
 		{
 			Name:        "issue-spec-workflow",
-			Description: "Coordinate a selected issue-spec change through planning or human review handoff. Not for ordinary research, repository edits, or skill maintenance.",
+			Description: "Operate a selected issue-spec change through authorized planning, implementation and handoff. Not for ordinary research, repository edits, or skill maintenance.",
 			SkillOnly: processWriteOwnershipGuidance + `
 
 ## Human Review Projections
@@ -119,7 +121,7 @@ Before generating or updating a phase projection, read [Human Review Projection 
 ` + translationSuffixGuidance,
 			Body: `# Issue Spec Workflow
 
-Use this coordinator protocol for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by implementation, validation, a human-facing rationale, PR/MR creation, and exact-head human review handoff. The human and code provider own approval and merge.
+Use this workflow for a bounded simple Issue or optional Proposal, Design, Implement, TASK, and PROCESS plan followed by implementation, validation, a human-facing rationale, PR/MR creation, and exact-head human review handoff. The human and code provider own approval and merge.
 
 ` + phaseProtocolAuthorityGuidance + `
 
@@ -137,8 +139,8 @@ Use this coordinator protocol for a bounded simple Issue or optional Proposal, D
 - In every selected phase use this order: persist the phase issue body, perform the first QUESTION discovery/create pass, upsert the human review projection, then author only the selected next typed children: SPEC for Proposal, TASK for Design, and PROCESS for Implement only when managed coordination was selected. Maintain one source-digest-bound logical comment with ` + "`issue-spec projection upsert --repo {{repo}} --issue <phase-issue> --phase <proposal-choice-brief|design-explainer|implement-execution-brief> --source-digest <sha256> --body-file <projection.md> --json`" + `. A projection is ordinary statusless synthesis, not gate or Agent authority; it has no typed marker, status, or transition. Issue bodies, typed artifacts, and only the latest effective ANSWER remain authoritative. Keep projection HTML source out of default Agent context. For a backend without atomic conditional projection creation, a first create after observing no matching projection requires ` + "`--allow-nonatomic --expected-absence`" + `; it remains non-atomic and succeeds only when full post-create re-observation proves exactly one matching logical projection with the planned body. For a backend without CAS, replacement after observing the unique current body requires ` + "`--allow-nonatomic --expected-digest <observed-sha256>`" + `; exact post-write re-observation guards the digest-bound update. These absence and digest preconditions are mutually exclusive. GitHub stores source only and never executes the preview or interactive answer intent.
 - Keep proposal, Design, SPEC, and TASK self-contained. Record every genuine unresolved decision as a blocking typed QUESTION before the phase projection upsert; issue-body or projection prose never carries an open decision. Resolve blocking QUESTION artifacts before advancing. Publish only registry-owned relationships through one complete owner write; never mutate peers for reverse navigation.
 - Recover derivable inputs with bounded reads and decide routine private details within the confirmed scope. Missing or conflicting requirements block affected work, not independent authorized investigation. Explain the specific blocker; do not invent approval steps or treat optional guidance as a hard requirement.
-- Select execution mode before assigning writers. Once Design or TASK is selected, or the user explicitly requests an independent worker, the Coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation in the selected checkout. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner; distinct packages MAY use concurrent writers. The Coordinator dispatches and waits; read-only investigation and review children never require PROCESS. Do not create PROCESS solely because a child is used, several files change, independent review is desired, or human handoff is needed.
-- Direct Coordinator code edits are limited to a narrow direct-PR fast path with no selected Design/TASK and no user delegation request. File count never selects this exception.
+- The current agent owns authorized planning, implementation and self-tests. Design, TASK and PROCESS do not require another agent or remove its code-writing authority. Delegate only when the user authorizes it or applicable project rules explicitly require it and the host supports it. A project may define a separate coordinator; that is project policy, not the issue-spec default.
+- Read [Bounded artifact reads](references/progressive-reading.md) before retrieving a selected change, and [QUESTION decision commands](references/question-decisions.md) before recording a decision. Read the complete current Design and applicable effective answers; expand only selected TASKs, required SPECs and dependencies. Do not substitute a compact index for normative content.
 - Each PROCESS owns one independently verifiable Design invariant and its major entry points. Balance end-to-end invariant cohesion against the role agent's bounded context and working set. Split only at a stable interface when each side has independent acceptance criteria and can be reviewed in isolation. Paths, file overlap, parallelism, commands, findings, token counts, and runtime session IDs are not semantic boundaries.
 - When managed PROCESS implementation is selected, it preserves exact base, owned paths, DCO, tests, managed worktree isolation, dependency order, and bounded handoff. Direct single-writer delegation does not acquire that lifecycle. These facts protect execution only and never certify delivery acceptance.
 
@@ -146,13 +148,10 @@ Use this coordinator protocol for a bounded simple Issue or optional Proposal, D
 
 ## Human Review Handoff
 
-1. Materialize repository durable specs on the implementation branch and run the selected implementation tests and checks. Once they pass, broaden or repeat only for changes, failures, concrete unresolved risks, or explicit gates. Evidence keeps the revision actually checked; final review covers the current candidate.
-2. Push the current exact reviewable head and create or select the provider-native PR/MR through an approved provider operation.
-3. Run the independent finding loop; every P0/P1 repair produces a tested, pushed head that the same reviewer rechecks until zero remain.
-4. Publish final-head P2 comments without pausing, then publish valuable writer-owned line rationale and the top-level ` + "`### Implementation Rationale`" + ` summary when the requested provider discussion surface is available.
-5. Report the exact head, PR/MR link, tests and results, known risks, boundaries, P2 publication status, and rationale publication status to the human.
-6. Stop before approval or merge. The human reviews current provider-native CI, approvals, conversations, ownership, and branch policy and decides whether to merge in the provider UI.
-7. Do not add a readiness receipt, normalized provider-policy model, merge command, or automatic post-merge lifecycle step.
+1. Materialize repository durable specs on the implementation branch and run selected checks. Report the exact candidate, tests/results, known risks and remaining review needs.
+2. Follow project review guidance at the requested milestone. A separate reviewer, provider comment, rationale-publication ceremony or PR/MR is not required solely because issue-spec was used. Preserve findings and route repairs back to the responsible owner; do not claim self-review is independent.
+3. Push, PR/MR creation, comments, approval and merge require actual user authorization and provider policy. A project coordinator may own stage review and integration; the default current agent can prepare and implement the change.
+4. Historical review/verification artifacts are audit-only. Do not add a readiness receipt, normalized provider-policy model, merge command or automatic post-merge lifecycle step.
 
 ## Cutover Boundary
 
@@ -183,7 +182,7 @@ Use for /issue-spec:propose or issue-native planning in a selected issue-spec ch
 4. Upsert ` + "`proposal-choice-brief`" + ` after that pass and before complete SPEC authoring. Lead with a representative human or operator scene and a concrete before/after case, then cover the problem, outcome, success signal, boundaries, non-goals, assumptions, risks, decisions, alternatives, and expected SPEC coverage. Distinguish settled, needs-evidence, and needs-decision items; show how options change the case. With no open decision, keep the other review dimensions visible. The projection is ordinary and statusless.
 5. Generate canonical SPEC comments with issue-spec comment generate --type SPEC. Requirements must be testable and include WHEN/THEN scenarios. --allow-noncanonical is a migration bypass, not normal authoring.
 6. Persist the authoritative self-contained Design, perform its first QUESTION discovery/create pass, then upsert ` + "`design-explainer`" + ` before complete TASK planning. Lead with a concrete request or operator case and observable outcome, then trace its normal and failure paths through architecture, invariants, interfaces, state, alternatives, compatibility, rollout, risks, verification, and active SPEC traceability. Use purposeful interaction to make the complete review surface easier to navigate.
-7. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. Selecting Design or TASK requires a real non-Coordinator implementation worker; execution-mode labels never authorize Coordinator code edits or automatically require PROCESS.
+7. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. TASKs organize the current owner’s work; they do not require delegation or automatically require PROCESS.
 8. Upsert each TASK with --covers-issue so it publishes its complete canonical SPEC coverage and verify planning relationships. Proposal, Design, Implement, TASK, and PROCESS remain optional aids and never certify delivery acceptance.
 `,
 		},
@@ -199,32 +198,34 @@ Use for /issue-spec:propose or issue-native planning in a selected issue-spec ch
 For ` + "`implement-execution-brief`" + `, read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely, then only its Implement recipe. Generate a coverage-complete ` + "`projection.md`" + ` from current authoritative inputs; never emit only the increment since the Design.`,
 			Body: `# Issue Spec Apply
 
-Coordinator: select execution mode before assigning writers. If Design or TASK is selected, or the user explicitly requests an independent worker, the Coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner; distinct packages MAY use concurrent writers. Select PROCESS only for concrete managed coordination, not child use, file count, independent review, or human handoff. If Implement is selected, persist it, perform its first QUESTION pass, upsert the ordinary statusless ` + "`implement-execution-brief`" + `, then finalize the plan. Author PROCESS only for managed coordination; typed planning state remains authoritative.
+Implement the authorized change directly in the current session. Use issue-spec-workflow for shared artifact rules and bounded reads. Design/TASK/PROCESS never requires a second code writer. Read the configured project guidance for ownership, validation and stage handoff. If Implement is selected, persist it, perform its first QUESTION pass, upsert the ordinary statusless ` + "`implement-execution-brief`" + ` when enabled, then author PROCESS only for actual managed coordination.
 
 ` + phaseProtocolAuthorityGuidance + `
 
 ` + typedIDAllocationGuidance + `
 
-## Delegated Paths and Narrow Coordinator Path
+## Implementation and Handoff
 
-Unmanaged delegated path: dispatch exactly one real non-Coordinator worker in the selected checkout. Managed PROCESS: dispatch one real non-Coordinator owner per change-bearing package; proven-independent packages may run concurrently. The Coordinator waits and writes no code on either path. Each worker owns package code, focused tests, exact result commit, changed paths, decisions, risks, and non-obvious line-rationale drafts. The Coordinator owns exact-commit inspection, integration, proportionate final validation, anchor validation, and provider publication.
+Read the complete Design, applicable answers, selected TASKs and required SPECs/dependencies. Confirm base/worktree, ownership, shared interfaces and required checks. Implement and self-test within that scope; recover derivable facts and pause only work affected by missing or conflicting requirements. Keep durable specifications current, without turning temporary development stages into product requirements.
 
-Coordinator code is allowed only on the narrow direct-PR fast path with no selected Design/TASK and no user delegation request; file count does not select it. Unmanaged paths use ordinary Git and project tests. Do not manufacture Implement, PROCESS, workspace lifecycle, role receipt, typed rationale, evidence, or another phase artifact merely to record delegation.
+Run affected checks and explicit gates. After they pass, expand testing only for a change, failure or concrete unresolved risk. Evidence names the revision actually checked; after a repair rerun affected checks and preserve reused evidence at its original revision. Report the candidate, results, gaps and remaining review needs. Self-tests do not constitute independent review or approval. Do not dispatch a reviewer, publish, push or merge as a workflow side effect.
+
+Delegation remains optional and requires actual authorization. Each assigned owner implements and tests its bounded package; any designated convergence owner handles shared changes and integration. Do not manufacture phase artifacts, PROCESS or role receipts to record ordinary single-owner work.
 
 {{implementation-review}}
 
-For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator worker with the packet below. Preserve exact base, ownership, DCO, tests, generators, dependency order, managed worktree isolation, and bounded handoff. These controls are implementation safety only: they do not create review, verification, rationale evidence, receipt, coverage, finalization, or delivery-acceptance authority.
+For selected managed PROCESS work, use the assignment below with its actual owner, which may be the current agent. Preserve exact base, ownership, DCO, tests, generators, dependency order, managed worktree isolation, and bounded handoff. These controls are implementation safety only: they do not create review, verification, rationale evidence, receipt, coverage, finalization, or delivery-acceptance authority.
 
 ## Implementation Role Packet
 
-Relay this packet verbatim to the worker; the Coordinator MUST NOT execute it.
+Apply this packet only when managed PROCESS execution is selected. A delegated owner receives the bounded assignment; a direct owner may execute it in its assigned worktree.
 
 1. Accept only the sealed implementation assignment for the exact PROCESS, base revision, worktree, write ownership, focused tests, generators, result schema, and design_context. Do not load proposal bodies, the complete DAG, link matrices, human merge policy, provider routing, or unrelated artifacts.
 2. Require design_context.read_mode=complete-issue-body and conflict_policy=design-authoritative-stop. Read the complete Design with issue-spec read issue --repo {{repo}} --issue <design_context.source_url> without comments, timeline, history, or gates. Recover derivable metadata. Stop and report any conflict in scope, authority, ownership, or contracts; routine private choices are not conflicts.
 3. Work only in the assigned worktree and owned paths. Preserve the named invariant, decisions, must_preserve, must_not, and minimum_verification exactly. Do not collect or pass runtime session IDs.
 4. Implement the invariant, run assigned generators, finish exactly one DCO commit when required, and leave the tree clean. Collect zero or more line-rationale drafts only for non-obvious decisions: repository-relative path, stable symbol plus changed-line anchor, and concise why/tradeoff/risk without secret, raw payload, or credential. Do not guess a provider diff position or create filler. If cohesion fails, stop with stable-interface split options and acceptance consequences.
 5. Complete the assigned behavior and fix introduced failures. Run every assigned generator and focused test; expand or repeat only for changes, failures, concrete risks, or required gates. Return the exact result commit, changed paths, command outcomes, decisions, risks, and line-rationale drafts. Do not create a role receipt, decision file, or evidence carrier. Provider access and final diff positions are not worker responsibilities.
-6. An amendment invalidates the returned revision; rerun affected and explicitly required checks. Reused results keep their original revision and require justified applicability. Leave integration, cleanup, review, anchor validation, publication, and workspace completion to the Coordinator; it publishes worker-authored text but does not author it.
+6. An amendment invalidates the returned revision; rerun affected and explicitly required checks. Reused results keep their original revision and require justified applicability. Leave shared integration and lifecycle completion to the designated convergence owner. Do not impersonate another writer when publishing rationale.
 `,
 		},
 	}
@@ -286,13 +287,7 @@ func disableProposeHTMLReviewGuidance(body string) string {
 }
 
 func disableApplyHTMLReviewGuidance(body string) string {
-	lines := strings.Split(body, "\n")
-	for index, line := range lines {
-		if strings.HasPrefix(line, "Coordinator: select execution mode before assigning writers") {
-			lines[index] = "Coordinator: select execution mode before assigning writers. If Design or TASK is selected, or the user explicitly requests an independent worker, the Coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner; distinct packages MAY use concurrent writers. Select PROCESS only for concrete managed coordination, not child use, file count, independent review, or human handoff. If Implement is selected, persist it, perform its first QUESTION pass, then finalize the plan. Author PROCESS only for managed coordination; typed planning state remains authoritative."
-		}
-	}
-	return strings.Join(lines, "\n")
+	return strings.ReplaceAll(body, ", upsert the ordinary statusless `implement-execution-brief` when enabled", "")
 }
 
 func renderSkill(name, description, body string) string {
@@ -304,8 +299,8 @@ func renderSkillWithCompatibility(name, description, compatibility, body string)
 name: %s
 description: %s
 license: MIT
-compatibility: %s
 metadata:
+  requires: %q
   author: issue-spec
   version: "1.0"
   generatedBy: "%s"
@@ -316,18 +311,20 @@ metadata:
 
 func githubCLISkill() RenderedSkill {
 	const name = "issue-spec-github"
-	const description = "Use gh for requested GitHub PR, CI, release, or repository operations outside issue-spec's issue-discussion APIs. Not for non-GitHub providers."
+	const description = "Use gh for external GitHub user Issues, requested PR, CI, release, and repository operations. Not for non-GitHub providers."
 	const body = `# GitHub CLI
 
-Use the gh CLI only for GitHub operations outside issue-spec's workflow and discussion surfaces.
+Route by the requested target. Use gh directly for external GitHub bug reports and support discussions, even when this checkout uses a different issue-spec backend. Do not require issue-spec auth or silently turn an external report into internal planning. For internal issue-spec artifacts and their discussion, use the configured issue-spec backend.
+
+Read an external Issue with gh issue view <number> --repo owner/repo --comments. For an authorized external reply, put the exact text in a file and use gh issue comment <number> --repo owner/repo --body-file reply.md. Return the created URL; inspect the discussion before retrying an uncertain submission. Reading or drafting alone does not authorize sending. Follow repository review guidance for requested code-change handoff, without starting internal planning or spawning a reviewer automatically.
 
 ## Use
 
 - Inspect PR status, reviews, mergeability, CI, workflow runs, releases, labels, and repository metadata.
 - Use structured --json/--jq output. Use git directly for local repository operations.
-- After the code writer returns valuable line-rationale drafts, validate each stable path/symbol/changed-line anchor against the pushed exact head and confirm the rationale still applies and contains no secret, raw payload, or credential. Return invalid, stale, or sensitive drafts to the writer, or drop them with an explanation; never rewrite them while claiming worker authorship. Publish valid unchanged text as a GitHub-native inline PR comment by resolving ` + "`commit_id`" + `, ` + "`path`" + `, right-side ` + "`line`" + `, and ` + "`side=RIGHT`" + ` after push. Writers need no GitHub access and never guess diff positions. Publish no filler.
-- Before human-review handoff, publish or refresh the ordinary GitHub PR discussion headed ` + "`### Implementation Rationale`" + ` through ` + "`gh pr comment <pr> --body-file <file>`" + ` and use it as the summary/index for inline rationale. If a safe inline comment cannot be created, retain ` + "`path:symbol/line`" + ` plus the writer-authored rationale in this top-level discussion. Report requested write failure and retain the body without treating any rationale comment as evidence or delivery acceptance.
-- Ordinary issue discussion writes: write a body file and run issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json. The selected issue backend owns the write. Never use GitHub CLI or a raw issue-comment API write.
+- When rationale publication is requested and the code writer returns valuable line-rationale drafts, validate each stable path/symbol/changed-line anchor against the pushed exact head and confirm the rationale still applies and contains no secret, raw payload, or credential. Return invalid, stale, or sensitive drafts to the writer, or drop them with an explanation; never rewrite them while claiming worker authorship. Publish valid unchanged text as a GitHub-native inline PR comment by resolving ` + "`commit_id`" + `, ` + "`path`" + `, right-side ` + "`line`" + `, and ` + "`side=RIGHT`" + ` after push. Writers need no GitHub access and never guess diff positions. Publish no filler.
+- When requested, publish or refresh the ordinary GitHub PR discussion headed ` + "`### Implementation Rationale`" + ` through ` + "`gh pr comment <pr> --body-file <file>`" + ` and use it as the summary/index for inline rationale. If a safe inline comment cannot be created, retain ` + "`path:symbol/line`" + ` plus the writer-authored rationale in this top-level discussion. Report requested write failure and retain the body without treating any rationale comment as evidence or delivery acceptance.
+- Ordinary issue discussion writes on the selected issue-spec backend: write a body file and run issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json. The selected issue backend owns the write. Never use GitHub CLI or a raw issue-comment API write for those internal artifacts.
 - issue-spec owns optional planning, implementation coordination, durable projection, PR context, and human handoff. The human and code host own current review, checks, approval, merge, and closing behavior. Do not use GitHub endpoints for non-GitHub providers.
 
 ## Setup and examples
