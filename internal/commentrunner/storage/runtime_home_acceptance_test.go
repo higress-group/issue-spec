@@ -330,7 +330,11 @@ func TestPrepareRuntimeHomeAndScratchNeverTouchForeignRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare runtime home: %v", err)
 	}
-	if rel, relErr := filepath.Rel(newRoot, home.Root); relErr != nil || strings.HasPrefix(rel, "..") {
+	canonicalRoot, err := filepath.EvalSymlinks(newRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel, relErr := filepath.Rel(canonicalRoot, home.Root); relErr != nil || strings.HasPrefix(rel, "..") {
 		t.Fatalf("runtime home %q must anchor below the new root %q", home.Root, newRoot)
 	}
 	scratch, err := PrepareJobScratch(newRoot, "job-eeeeeeeeeeeeeeee")

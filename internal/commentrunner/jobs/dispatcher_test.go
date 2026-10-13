@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -2125,11 +2125,8 @@ func TestSandboxRunnerSkipsMissingHostCodexConfig(t *testing.T) {
 }
 
 func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t *testing.T) {
-	// The sandbox Prepare step resolves the acpx binary via exec.LookPath, so
-	// this test only runs where acpx is installed. Skip on clean CI runners
-	// that have no acpx on PATH to keep `go test ./...` hermetic.
-	if _, err := exec.LookPath("acpx"); err != nil {
-		t.Skipf("acpx not installed on PATH; skipping sandbox bind test: %v", err)
+	if runtime.GOOS != "linux" {
+		t.Skip("bubblewrap command construction is supported on Linux only")
 	}
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")
@@ -2145,6 +2142,8 @@ func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t
 		t.Fatal(err)
 	}
 	writeFileWithMode(t, issueSpecPath, []byte("#!/bin/sh\n"), 0o700)
+	acpxPath := filepath.Join(temp, "acpx")
+	writeFileWithMode(t, acpxPath, []byte("#!/bin/sh\n"), 0o700)
 
 	runner := &recordingBwrapRunner{}
 	env, err := (SandboxRunner{Config: sandbox.Config{
@@ -2155,7 +2154,7 @@ func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t
 	}, Deps: sandbox.Dependencies{Runner: runner}}).Prepare(context.Background(), SandboxRequest{
 		WorkspacePath:        workspacePath,
 		AcpxWorkingDirectory: workspacePath,
-		AcpxBinary:           "acpx",
+		AcpxBinary:           acpxPath,
 		IssueSpecBinary:      issueSpecPath,
 		RuntimeHome:          filepath.Join(runtimeRoot, "home"),
 		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
@@ -2193,6 +2192,9 @@ func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t
 }
 
 func TestSandboxRunnerBwrapBindsResolvedNVMStyleAcpxInstall(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("bubblewrap command construction is supported on Linux only")
+	}
 	temp := t.TempDir()
 	realRoot := filepath.Join(temp, "real")
 	linkRoot := filepath.Join(temp, "link")

@@ -79,6 +79,10 @@ func openPoolManager(ctx context.Context, integrationRoot, poolRoot string, opti
 
 func inspectPoolLocked(ctx context.Context, manager *Manager, absPool string) (storage.PoolInspection, error) {
 	inspection := storage.PoolInspection{ClonePresent: true}
+	// Leases and Git worktree paths are canonical. Compare them against the
+	// manager's canonical pool root, while retaining absPool for filesystem
+	// observation and the caller's literal-path deletion validation.
+	canonicalPool := manager.WorkspaceRoot
 	if entries, readErr := os.ReadDir(absPool); readErr == nil {
 		inspection.FilesystemEntries = len(entries)
 	} else if !errors.Is(readErr, os.ErrNotExist) {
@@ -88,7 +92,7 @@ func inspectPoolLocked(ctx context.Context, manager *Manager, absPool string) (s
 	inspection.RegistryComplete = complete
 	foreign := map[string]bool{}
 	for _, lease := range leases {
-		if leaseWorktreeUnderPool(lease, absPool) {
+		if leaseWorktreeUnderPool(lease, canonicalPool) {
 			if lease.Portable.State != StateCleaned {
 				inspection.ActiveLeases++
 			}
@@ -111,7 +115,7 @@ func inspectPoolLocked(ctx context.Context, manager *Manager, absPool string) (s
 		inspection.Problems = append(inspection.Problems, "worktree listing failed")
 	} else {
 		for _, worktree := range worktrees {
-			if pathWithin(absPool, worktree) {
+			if pathWithin(canonicalPool, worktree) {
 				inspection.RegisteredWorktrees++
 			}
 		}

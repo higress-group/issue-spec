@@ -104,7 +104,11 @@ func TestEngineWithRealProcessPoolInspection(t *testing.T) {
 	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	poolHash, err := storage.SessionProcessPoolHash("o/r", "ps-1", clone)
+	canonicalClone, err := storage.Canonicalize(clone)
+	if err != nil {
+		t.Fatalf("canonical clone: %v", err)
+	}
+	poolHash, err := storage.SessionProcessPoolHash("o/r", "ps-1", canonicalClone)
 	if err != nil {
 		t.Fatalf("pool hash: %v", err)
 	}
@@ -145,7 +149,11 @@ func TestEnginePreservesPoolWithRealActiveLease(t *testing.T) {
 	if err := st.UpsertPublicSession(terminalSession("o/r", "ps-1", clone)); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	poolHash, err := storage.SessionProcessPoolHash("o/r", "ps-1", clone)
+	canonicalClone, err := storage.Canonicalize(clone)
+	if err != nil {
+		t.Fatalf("canonical clone: %v", err)
+	}
+	poolHash, err := storage.SessionProcessPoolHash("o/r", "ps-1", canonicalClone)
 	if err != nil {
 		t.Fatalf("pool hash: %v", err)
 	}
