@@ -3,35 +3,35 @@
   "release": "development",
   "source_revision": "unknown",
   "requirements_skill_content_id": "sha256:35e55ba3b52b377acbd36ca4305cd958e3bd593008d576a7a82c9b06ab862ed1",
-  "content_digest": "sha256:214a66b3b8ec4838a43c69164bbc25cb06e6a15375cf5d234316c76278305442",
+  "content_digest": "sha256:7de7a521b3c00e51f1d28547aa55a5367088ac250818b7afc63de4abaad099e6",
   "files": [
     {
       "path": ".agents/skills/issue-spec-apply/SKILL.md",
-      "sha256": "091df60b50407743b9336f40b20409fe8832bf7bc45dcc50aae279564266c103"
+      "sha256": "1a82037b15cb811eae02c5db504256a25b834ca110dde9146ef7e0e4600cb924"
     },
     {
       "path": ".agents/skills/issue-spec-github/SKILL.md",
-      "sha256": "837b81b7408fe4d4a5a961fb494a4cd081daed4141ff68253265e9af8bfaa6a5"
+      "sha256": "a2a1cfeb647e737f66dbbbd97a53cfc752c84395ee4f6f080d7bfab3ee48d7d5"
     },
     {
       "path": ".agents/skills/issue-spec-propose/SKILL.md",
-      "sha256": "9a2171a497db204a6773003895088f9a9ca5e42289e8f8c8ae94feb6099c866f"
+      "sha256": "a6199c7baad64541497c2b1d2fb25d6c6d88c42c9fbccc1577cc229bbb44c09e"
     },
     {
       "path": ".agents/skills/issue-spec-workflow/SKILL.md",
-      "sha256": "f8be511b737de3f76f58d359e6e318ae8b6ef54cb7c0dcf014ad992935f355cb"
+      "sha256": "bc48b5f608258aa5b821738100c68e6d2fa4d8e24aafc1ec615649482369869a"
     },
     {
       "path": ".agents/skills/issue-spec-workflow/references/implementation-review.md",
-      "sha256": "3975e369a6bb6ff1da1b62214cb345c85641c2f2445bce0bc5940d16cfb30eb7"
+      "sha256": "448cfd953d847f0966aa12f0d880f603272abb73caba9a4709e4c6bf44ee5368"
     },
     {
-      "path": ".claude/commands/issue-spec/apply.md",
-      "sha256": "b34e10738cbe9f4cecf63112130fdf0df0223d042351a1e290920b33720f17d4"
+      "path": ".agents/skills/issue-spec-workflow/references/progressive-reading.md",
+      "sha256": "94b169840eed5eba7582fabce06008b3333a02dcf9cc89619292efaac132683d"
     },
     {
-      "path": ".claude/commands/issue-spec/propose.md",
-      "sha256": "4fe9cae210c8458dc3dbb013055d3bad16061d29712d86f33c2d8fcaee355673"
+      "path": ".agents/skills/issue-spec-workflow/references/question-decisions.md",
+      "sha256": "8c817bb08e73853101a42d8c4ca0e83e72fc81be04221f1f5004623588fa193c"
     }
   ]
 }

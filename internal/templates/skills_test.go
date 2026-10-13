@@ -65,21 +65,7 @@ func TestCheckedInWorkflowAssetsMatchAuthoritativeTemplates(t *testing.T) {
 			t.Fatalf("checked-in skill %s differs from its authoritative template at %s", path, firstTextDifference(got, want))
 		}
 	}
-	for _, command := range IssueSpecCommandContentsWithOptions("higress-group/issue-spec", options) {
-		path := filepath.Join(root, ".claude", "commands", "issue-spec", command.ID+".md")
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		parts := strings.SplitN(string(body), "---\n\n", 2)
-		if len(parts) != 2 {
-			t.Fatalf("checked-in command %s has no front-matter boundary", path)
-		}
-		got, want := parts[1], strings.TrimSpace(command.Body)
-		if got != want+"\n" && !strings.HasPrefix(got, want+"\n\n## Project Workflow\n") {
-			t.Fatalf("checked-in command %s differs from its authoritative template at %s", path, firstTextDifference(got, want))
-		}
-	}
+
 }
 
 func firstTextDifference(got, want string) string {
@@ -106,7 +92,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 	skills := IssueSpecSkillsWithOptions("owner/repo", disabled)
 	for _, skill := range skills {
 		for _, resource := range skill.Resources {
-			if skill.Name != "issue-spec-workflow" || resource.Path != "references/implementation-review.md" {
+			if skill.Name != "issue-spec-workflow" || (resource.Path != "references/implementation-review.md" && resource.Path != "references/progressive-reading.md" && resource.Path != "references/question-decisions.md") {
 				t.Fatalf("disabled HTML review emitted projection resource for %s: %s", skill.Name, resource.Path)
 			}
 		}
@@ -120,7 +106,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	workflow := skillWithReview(t, skills, "issue-spec-workflow")
-	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "built-in phase sequence and canonical artifact carriers are authoritative", "never reorder/omit steps or move open decisions", "exact-head human review handoff", "### Implementation Rationale"} {
+	for _, want := range []string{"Keep proposal, Design, SPEC, and TASK self-contained", "blocking typed QUESTION", "built-in phase sequence and canonical artifact carriers are authoritative", "never reorder/omit steps or move open decisions", "exact-head human review handoff", "actual authorization"} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("disabled workflow lost typed obligation %q:\n%s", want, workflow)
 		}
@@ -132,7 +118,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	apply := skillWithReview(t, skills, "issue-spec-apply")
-	for _, want := range []string{"finalize the plan", "Author PROCESS only for managed coordination", "real non-Coordinator worker", "exact result commit", "Do not create a role receipt", "### Implementation Rationale"} {
+	for _, want := range []string{"author PROCESS only for actual managed coordination", "current session", "exact result commit", "Do not create a role receipt", "actual authorization"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("disabled apply skill lost implementation obligation %q:\n%s", want, apply)
 		}
@@ -184,97 +170,30 @@ func TestTypedCommentWriterGuidanceRepeatsIssueScopedIDAllocation(t *testing.T) 
 	}
 }
 
-func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
-	workflow := skillWithReview(t, IssueSpecSkills("owner/repo"), "issue-spec-workflow")
-	wants := []string{
-		"auth status --json", "workflow validate --repo owner/repo", "bounded simple Issue", "one code writer",
-		"single child or subagent is an execution choice", "concurrent code writers", "protection of pre-existing work",
-		"enforced path ownership", "restartable cross-session handoff", "dependency-ordered integration",
-		"Select execution mode before assigning writers", "Once Design or TASK is selected", "Coordinator MUST NOT write code on delegated or managed paths",
-		"user explicitly requests an independent worker", "Without managed PROCESS, exactly one real non-Coordinator worker",
-		"With managed PROCESS", "every change-bearing work package/PROCESS has one real non-Coordinator owner",
-		"distinct packages MAY use concurrent writers", "Coordinator dispatches and waits",
-		"narrow direct-PR fast path", "no selected Design/TASK and no user delegation request",
-		"File count never selects this exception", "Do not create PROCESS solely because a child is used",
-		"<TYPE>-<issue><three-digit sequence>", "QUESTION-1001", "QUESTION-44001",
-		"do not add another type digit or search the whole repository", "never renumber a legacy ID",
-		"one independently verifiable Design invariant", "bounded context and working set", "stable interface",
-		"exact-head human review handoff", "provider-native PR/MR", "Stop before approval or merge",
-		"current provider-native CI", "human and code provider own approval and merge",
-		"exact head, PR/MR link, tests and results", "Deprecated review sync/submit completion",
-		"### Implementation Rationale", "Every actual code writer owns zero or more line-rationale drafts",
-		"Before requesting human review", "Comments and status are human review context and never certify mergeability",
-		"actual code writer", "line-rationale drafts", "stable symbol plus changed-line anchor", "why/tradeoff/risk",
-		"Writers need no provider credentials", "MUST NOT guess final diff positions",
-		"needs no draft, quota, coverage target, or placeholder", "maps it to a changed line",
-		"valid worker text", "non-blocking inline discussion", "decisions/tradeoffs", "boundaries/risks", "validation/results", "indexes inline rationale",
-		"would create an unresolved merge blocker", "path:symbol/line",
-		"secret, raw payload, or credential", "confirms the text still applies and contains no sensitive data",
-		"Invalid, stale, or sensitive drafts", "never rewrites and impersonates the writer",
-		"Each worker owns one package's code changes, focused tests, exact result commit", "Coordinator owns dispatch and wait, exact-commit inspection, integration",
-		"proportionate final validation, anchor validation, and provider publication", "Do not give provider credentials to workers",
-		"real read-only reviewer that is independent of every code writer", "exact base and current exact head", "no write path or provider credentials",
-		"actionable P0, P1, or P2 findings", "Route every P0/P1 unchanged to the original writer", "same reviewer recheck it",
-		"Repeat automatically until that reviewer reports zero P0/P1", "still-applicable P2 findings from the final reviewed head",
-		"provider-native non-blocking line comment", "ordinary change-level `change.comment`", "P2 never enters the repair loop and never pauses completion",
-		"report the rendered comment body and continue", "no typed REVIEW/VERIFY, finding evidence, receipt, readiness gate, or reviewer merge authority",
-	}
-	for _, want := range wants {
-		if !strings.Contains(workflow, want) {
-			t.Fatalf("coordinator guidance missing %q:\n%s", want, workflow)
+func TestWorkflowDefaultsToCurrentOwner(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		skills := IssueSpecSkillsWithOptions("owner/repo", WorkflowAuthoringOptions{HTMLReviewEnabled: enabled})
+		content := skillWithReview(t, skills, "issue-spec-workflow")
+		for _, want := range []string{"current agent owns authorized planning, implementation and self-tests", "Delegate only when", "blocking typed QUESTION", "Bounded artifact reads", "QUESTION decision commands", "actual user authorization"} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("missing %q", want)
+			}
 		}
-	}
-	for _, stale := range []string{
-		"Codex CODEX_THREAD_ID remains the artifact writer session source of truth",
-		"CODEX_THREAD_ID may override",
-		"split into parallel worker PROCESS nodes only when file/module write ownership is provably disjoint",
-		"one repair PROCESS per finding",
-	} {
-		if strings.Contains(workflow, stale) {
-			t.Fatalf("coordinator guidance contains stale rule %q", stale)
+		for _, skill := range skills {
+			for _, forbidden := range []string{"Coordinator MUST NOT write code", "requires a real non-Coordinator", "dispatch one real read-only reviewer"} {
+				if strings.Contains(skill.Content, forbidden) {
+					t.Fatalf("%s restores %q", skill.Name, forbidden)
+				}
+			}
 		}
 	}
 }
 
-func TestApplyGuidanceDistinguishesUnmanagedWorkerFromManagedPackages(t *testing.T) {
-	apply := skillWithReview(t, IssueSpecSkills("owner/repo"), "issue-spec-apply")
-	for _, want := range []string{
-		"select execution mode before assigning writers",
-		"If Design or TASK is selected", "user explicitly requests an independent worker",
-		"Coordinator MUST NOT write code on delegated or managed paths",
-		"Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation",
-		"With managed PROCESS", "every change-bearing work package/PROCESS has one real non-Coordinator owner",
-		"distinct packages MAY use concurrent writers",
-		"## Delegated Paths and Narrow Coordinator Path",
-		"Unmanaged delegated path", "dispatch exactly one real non-Coordinator worker",
-		"one real non-Coordinator owner per change-bearing package", "proven-independent packages may run concurrently",
-		"waits and writes no code on either path",
-		"narrow direct-PR fast path", "no selected Design/TASK", "no user delegation request",
-		"file count does not select it",
-		"Do not manufacture Implement, PROCESS, workspace lifecycle, role receipt, typed rationale, evidence, or another phase artifact",
-		"Each worker owns package code, focused tests, exact result commit", "Coordinator owns exact-commit inspection, integration",
-		"### Implementation Rationale", "Every actual code writer owns zero or more line-rationale drafts",
-		"No Implement, TASK, PROCESS, or SPEC is required", "Comments and status are human review context and never certify mergeability",
-		"On an unmanaged delegated path this is the single non-Coordinator worker", "on the narrow Coordinator fast path it is the Coordinator", "under managed PROCESS each package owner owns its drafts",
-		"real read-only reviewer that is independent of every code writer", "exact base and current exact head", "no write path or provider credentials",
-		"actionable P0, P1, or P2 findings", "Route every P0/P1 unchanged to the original writer", "same reviewer recheck it",
-		"Repeat automatically until that reviewer reports zero P0/P1", "still-applicable P2 findings from the final reviewed head",
-		"provider-native non-blocking line comment", "ordinary change-level `change.comment` that preserves `path:symbol/line`",
-		"P2 never enters the repair loop and never pauses completion", "report the rendered comment body and continue",
-		"no typed REVIEW/VERIFY, finding evidence, receipt, readiness gate, or reviewer merge authority",
-	} {
-		if !strings.Contains(apply, want) {
-			t.Fatalf("apply guidance missing direct delegation rule %q:\n%s", want, apply)
-		}
-	}
-	for _, forbidden := range []string{"issue-spec code-change rationale", "issue-spec:code-change-rationale", "Rationale ID:"} {
-		if strings.Contains(apply, forbidden) {
-			t.Fatalf("apply guidance restores legacy rationale mechanism %q:\n%s", forbidden, apply)
-		}
-	}
-	for _, forbidden := range []string{"coordinator MAY implement directly or dispatch", "whether Coordinator or child", "For selected Design/TASK or a user delegation request, dispatch exactly one", "select one writer before editing"} {
-		if strings.Contains(apply, forbidden) {
-			t.Fatalf("apply guidance retains ambiguous writer rule %q:\n%s", forbidden, apply)
+func TestApplyGuidancePreservesDirectAndManagedOwnership(t *testing.T) {
+	content := skillWithReview(t, IssueSpecSkills("owner/repo"), "issue-spec-apply")
+	for _, want := range []string{"Implement the authorized change directly in the current session", "Self-tests do not constitute independent review", "managed PROCESS", "sealed implementation assignment", "assigned worktree and owned paths", "actual owner, which may be the current agent", "after a repair rerun affected checks"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("missing %q", want)
 		}
 	}
 }
@@ -293,7 +212,7 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 				"assigned generators", "exactly one DCO commit", "exact result commit", "changed paths", "command outcomes",
 				"Collect zero or more line-rationale drafts", "stable symbol plus changed-line anchor", "Do not guess a provider diff position",
 				"Provider access and final diff positions are not worker responsibilities", "Do not create a role receipt",
-				"secret, raw payload, or credential", "An amendment invalidates the returned revision", "line-rationale drafts", "anchor validation", "publishes worker-authored text"},
+				"secret, raw payload, or credential", "An amendment invalidates the returned revision", "line-rationale drafts", "designated convergence owner"},
 			forbidden: []string{"issue-spec role complete", "receipt.json", "decision-file", "workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
 	}
@@ -335,15 +254,15 @@ func TestRoleGuidanceRemovesFormerReceiptRecipe(t *testing.T) {
 5. For each focused test with a result-revision binding, first produce the exact final DCO result commit, resolve the sealed declarative selector against that commit, run the resulting command, and record both assigned_selector and resolved_revision with the executed command and outcome. Any amendment changes the result revision, invalidates the earlier test evidence, and requires resolution and execution again. Literal selectors retain their exact command identity.
 6. Manually construct the complete receipt schema from assignment identity, Git revision, changed paths, selectors, outcomes, assurance, decisions, risks, rationale, and provenance. For every literal selector copy the exact command. For every bound selector copy assigned_selector, resolved_revision, and the expanded command. Set route=role-owned, assurance=self-reported, writer and subject to the role agent, and the manual source. Canonically sort changed paths, decisions, risks, and tests, omit receipt_digest, hash the canonical JSON, restore receipt_digest, and avoid framing changes. Re-open the output and manually compare assignment id, digest, generation, role, base, result revision, tests, receipt id, and receipt digest. Return the result commit, changed paths, generator outputs, focused tests, decisions, risks, and bounded handoff/result receipt.`,
 	}
-	for name, old := range former {
+	for name := range former {
 		content := rolePacketOnly(skillContent(t, skills, name))
 		for _, forbidden := range []string{"issue-spec role complete", "receipt_digest", "sha256sum", "jq -S", "hash canonical JSON", "newline framing"} {
 			if strings.Contains(content, forbidden) {
 				t.Fatalf("%s retains manual receipt recipe %q", name, forbidden)
 			}
 		}
-		if len([]byte(content)) >= len([]byte(old)) {
-			t.Fatalf("%s role packet did not compact: new=%d former=%d", name, len([]byte(content)), len([]byte(old)))
+		if len([]byte(content)) > 2600 {
+			t.Fatalf("%s role packet did not compact: new=%d former=%d", name, len([]byte(content)), 2600)
 		}
 	}
 }
@@ -483,10 +402,9 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"If Implement is selected, persist it",
 		"perform its first QUESTION pass",
 		"upsert the ordinary statusless `implement-execution-brief`",
-		"then finalize the plan",
-		"Author PROCESS only for managed coordination")
+		"then author PROCESS only for actual managed coordination")
 	for _, want := range []string{
-		"typed planning state remains authoritative",
+		"canonical artifact carriers are authoritative",
 		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",
 		"Generate a coverage-complete `projection.md` from current authoritative inputs",
 		"never emit only the increment since the Design",
@@ -622,23 +540,7 @@ func TestCheckedInCodexClaudeGuidanceMatchesTemplates(t *testing.T) {
 			}
 		}
 	}
-	for _, command := range IssueSpecCommandContentsWithOptions("higress-group/issue-spec", options) {
-		path := filepath.Join(root, ".claude", "commands", "issue-spec", command.ID+".md")
-		got, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		separator := []byte("\n---\n\n")
-		index := bytes.Index(got, separator)
-		if index < 0 {
-			t.Fatalf("checked-in Claude command has no frontmatter boundary: %s", path)
-		}
-		body := got[index+len(separator):]
-		wantPrefix := []byte(strings.TrimRight(command.Body, "\n") + "\n\n## Project Workflow\n")
-		if !bytes.HasPrefix(body, wantPrefix) {
-			t.Fatalf("checked-in Claude command differs from the authoritative template before its generated Project Workflow notice: %s", path)
-		}
-	}
+
 	for _, base := range []string{filepath.Join(".agents", "skills"), filepath.Join(".claude", "skills")} {
 		path := filepath.Join(root, base, "issue-spec-workflow", "references", "human-review-projections.md")
 		if _, err := os.Stat(path); !os.IsNotExist(err) {

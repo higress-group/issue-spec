@@ -39,6 +39,7 @@ type Config struct {
 	Schema       string              `json:"schema,omitempty" yaml:"schema"`
 	Context      WorkflowContext     `json:"context,omitempty" yaml:"context"`
 	Rules        map[string]any      `json:"rules,omitempty" yaml:"rules"`
+	Guidance     map[string][]string `json:"guidance,omitempty" yaml:"guidance"`
 	References   []string            `json:"references,omitempty" yaml:"references"`
 	Store        map[string]any      `json:"store,omitempty" yaml:"store"`
 	ExternalCode *ExternalCodeConfig `json:"external_code,omitempty" yaml:"external_code"`
@@ -225,6 +226,7 @@ func ResolveWithOptions(opts ResolveOptions) (Plan, error) {
 		plan.Source.ConfigPath,
 		plan.Source.SchemaPath,
 	)...)
+	plan.Diagnostics = append(plan.Diagnostics, validateGuidance(root, plan.Config.Guidance)...)
 	if plan.HasErrors() {
 		return plan, errors.New("workflow validation failed")
 	}
@@ -1005,4 +1007,35 @@ func shadowedSchemaDiagnostics(root, userConfigDir, schemaName, selectedPath str
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// Guidance is project-owned prose, loaded only for the selected skill/phase.
+// Paths are repository-relative and remain valid across checkouts.
+func validateGuidance(root string, guidance map[string][]string) []Diagnostic {
+	var out []Diagnostic
+	keys := make([]string, 0, len(guidance))
+	for key := range guidance {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, phase := range keys {
+		if phase != "shared" && phase != "propose" && phase != "apply" && phase != "review" {
+			out = append(out, Diagnostic{Severity: "error", Code: "invalid_guidance_phase", Message: "guidance phase must be shared, propose, apply, or review", Path: phase})
+			continue
+		}
+		for _, path := range guidance[phase] {
+			if !filepath.IsLocal(path) {
+				out = append(out, Diagnostic{Severity: "error", Code: "invalid_guidance_path", Message: "guidance must be repository-relative", Path: path})
+				continue
+			}
+			info, err := os.Stat(filepath.Join(root, path))
+			resolved, resolveErr := filepath.EvalSymlinks(filepath.Join(root, path))
+			base, baseErr := filepath.EvalSymlinks(root)
+			relative, relErr := filepath.Rel(base, resolved)
+			if err != nil || !info.Mode().IsRegular() || resolveErr != nil || baseErr != nil || relErr != nil || !filepath.IsLocal(relative) {
+				out = append(out, Diagnostic{Severity: "error", Code: "invalid_guidance_path", Message: "guidance must resolve to a readable file within this checkout", Path: path})
+			}
+		}
+	}
+	return out
 }

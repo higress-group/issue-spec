@@ -304,7 +304,7 @@ func TestSelfHostedInitSupportsOperationOnlyProvidersThroughHumanHandoff(t *test
 				t.Fatalf("operation-only workflow config =\n%s", workflowConfig)
 			}
 			providerSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-code-provider", "SKILL.md"))
-			if !strings.Contains(providerSkill, "Human Handoff Workflow") || !strings.Contains(providerSkill, "Stop. The human") ||
+			if !strings.Contains(providerSkill, "Human Handoff Workflow") || !strings.Contains(providerSkill, "Approval and merge require separate authorization") ||
 				strings.Contains(providerSkill, "merge-check") {
 				t.Fatalf("operation-only init did not generate human handoff guidance:\n%s", providerSkill)
 			}

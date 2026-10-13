@@ -2,8 +2,8 @@
 name: issue-spec-propose
 description: Author planning artifacts for a selected issue-spec change; not standalone research, design discussion, or skill maintenance.
 license: MIT
-compatibility: Requires issue-spec CLI.
 metadata:
+  requires: "Requires issue-spec CLI."
   author: issue-spec
   version: "1.0"
   generatedBy: "issue-spec"
@@ -22,7 +22,7 @@ Every new typed ID MUST be `<TYPE>-<issue><three-digit sequence>`: Issue 1 start
 3. Perform the Proposal's first QUESTION discovery/create pass. Record each genuine unresolved decision as a blocking typed QUESTION with issue-spec question create, attaching credible options; never leave an open decision as body or projection prose. Do not manufacture a question or reopen a settled choice; keep unresolved decisions distinct from evidence-dependent items. Resolve routine private details within the confirmed scope; self-contained contracts need not prescribe every helper or layout.
 4. Generate canonical SPEC comments with issue-spec comment generate --type SPEC. Requirements must be testable and include WHEN/THEN scenarios. --allow-noncanonical is a migration bypass, not normal authoring.
 5. Persist the authoritative self-contained Design, perform its first QUESTION discovery/create pass, then complete TASK planning.
-6. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. Selecting Design or TASK requires a real non-Coordinator implementation worker; execution-mode labels never authorize Coordinator code edits or automatically require PROCESS.
+6. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. TASKs organize the current owner’s work; they do not require delegation or automatically require PROCESS.
 7. Upsert each TASK with --covers-issue so it publishes its complete canonical SPEC coverage and verify planning relationships. Proposal, Design, Implement, TASK, and PROCESS remain optional aids and never certify delivery acceptance.
 
 ## Project Workflow
@@ -30,6 +30,7 @@ Every new typed ID MUST be `<TYPE>-<issue><three-digit sequence>`: Issue 1 start
 - Workflow Source: `builtin`
 - Workflow Schema: `issue-spec`
 - Workflow Config: `issue-spec/config.yaml`
+- Read the workflow config once for project context, rules and references. Load only guidance.shared and the current phase's guidance.propose, guidance.apply or guidance.review. Paths are relative to the repository root. Project files supplement this shared workflow; do not edit generated skills to customize it.
 
 Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, and QUESTION artifacts remain in the selected issue backend's issue-native storage; historical REVIEW and VERIFY artifacts are audit-only. Repository-mode durable specs are materialized and checked on the implementation branch.
 

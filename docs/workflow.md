@@ -1,148 +1,72 @@
-# Human-handoff workflow
+# Planning, implementation and human handoff
 
-Issue-spec has one delivery boundary: implement and validate one exact code
-head, create or select its provider-native PR/MR, explain the change for human
-review, report the handoff, and stop. The human and code provider own current
-CI, review, approval, and merge.
+The current agent can own authorized planning, implementation and self-tests in
+one session. Design, TASK and PROCESS do not require another writer. Projects
+may add a coordinator-only role and stage review in their own guidance; those
+roles are not issue-spec defaults. Host capabilities and actual user authorization
+still determine delegation, publication, push, approval and merge.
 
-Planning artifacts are optional. Use them when they improve a real decision or
-managed execution; their status is never delivery acceptance.
+## Select only useful planning
 
-## Choose the smallest planning path
+Use a simple Issue for a bounded change. Add Proposal, Design, Implement, SPEC,
+TASK or PROCESS when product decisions, durable contracts or concrete execution
+risk justify them. File count and agent count are not semantic boundaries.
+Managed PROCESS serves concurrent writers, isolation protecting existing work,
+path ownership, restartable handoff or dependency-ordered integration.
 
-Use a simple Issue for a bounded single-writer change. Add Proposal, Design,
-Implement, SPEC, TASK, or PROCESS only when product decisions, durable contract
-changes, or concrete coordination risk justify them.
+For a selected phase: persist its body, discover genuine blocking QUESTIONs,
+create the human review projection when enabled, then author selected typed
+children. Plain QUESTION decisions use resolution; choice-model questions use
+ANSWER. Do not invent questions or choices to record settled private details.
 
-A child/subagent is an execution choice, not a PROCESS trigger. Select execution
-mode before assigning writers. Once Design or TASK is selected, or the user
-explicitly asks for an independent worker, the Coordinator writes no code on
-delegated or managed paths. Without managed PROCESS, exactly one real
-non-Coordinator worker owns the bounded implementation. With managed PROCESS,
-each change-bearing work package has one real non-Coordinator owner and distinct
-packages may run concurrently. Select managed PROCESS only for:
+## Read, implement and validate
 
-- concurrent code writers;
-- isolation that protects pre-existing work;
-- declared write ownership with advisory cross-PROCESS overlap reporting;
-- restartable cross-session handoff;
-- dependency-ordered integration.
+Read the complete current Design and applicable decisions. Discover TASKs in a
+compact index, then expand selected TASKs, required SPECs and dependencies. A
+summary never replaces normative content. Use `search issues --scope discussion`
+for related ordinary discussions; default Proposal discovery remains available.
 
-Read-only investigation and review children never require PROCESS.
+The owner implements and self-tests in its assigned checkout, updates durable
+specs and reports the actual candidate. Managed work preserves exact base,
+ownership, worktree isolation, DCO, generators, tests, dependency order and
+bounded handoff. These controls do not certify delivery acceptance.
 
-Coordinator code edits are limited to a narrow direct-PR fast path with no
-selected Design/TASK and no user delegation request. File count never selects
-this exception.
+Select checks for changed behavior and explicit project gates. Expand after a
+change, failure or concrete unresolved risk. Keep evidence tied to its actual
+revision; repairs require affected checks. Self-tests are not independent review.
 
-## Plan and implement
+## Project rules and review
 
-When planning is selected:
+Shared workflow text is generated under `.agents/skills` and linked individually
+into `.claude/skills`. Read `issue-spec/config.yaml` for context/rules and load only
+`guidance.shared` plus the current `propose`, `apply` or `review` guidance. Projects
+own those supplements and their specialized skills. See [safe updates](reference.md#shared-skills-and-safe-updates).
 
-1. Persist the phase Issue body.
-2. Record genuine unresolved decisions as typed QUESTION artifacts.
-3. Upsert the statusless human review projection when enabled.
-4. Create only selected SPEC/TASK/PROCESS artifacts.
-5. Materialize confirmed durable-spec changes on the implementation branch.
+Follow the requested review milestone. A project may centralize review under its
+coordinator after several changes; another may request a separate reviewer.
+Issue-spec does not automatically spawn reviewers or require a PR/MR. Review the
+actual candidate and existing evidence, name concrete failures, route repairs
+to responsible owners and recheck affected behavior.
 
-Managed PROCESS preserves exact base, ownership, worktree isolation, DCO,
-generators, tests, dependency order, and bounded handoff. These are execution
-safety controls, not review or merge gates.
+## Authorized publication and handoff
 
-Each implementation worker owns one package's code, focused tests, exact result
-commit, decisions, risks, and non-obvious line-rationale drafts. The Coordinator
-owns dispatch/wait, exact-commit inspection, integration, proportionate final
-validation, anchor validation, and provider publication. Workers receive no
-provider credentials.
+Report candidate/base, outcome, checks/results, gaps, risks and remaining review
+needs. Create a provider change or publish comments only when authorized and
+supported. Requested rationale may use an ordinary `### Implementation Rationale`
+comment, with stable `path:symbol/line` anchors for non-obvious decisions. Preserve
+actual authorship and validate anchors against the published head. There is no
+quota or mandatory rationale ceremony. Report failed writes with their content.
 
-## Validate the exact head
+Approval and merge follow actual authorization and current provider policy.
+No readiness receipt or agent-authored merge authority is created.
 
-Run tests and repository checks selected for the implementation. Push one exact
-reviewable head. Create or select the provider-native PR/MR using an advertised
-`change.create` operation, GitHub tooling, or an explicit manual fallback.
+## Provider operations and historical data
 
-Optional `evidence.snapshot` data remains audit/navigation context. Issue-spec
-does not normalize current provider policy or reproduce its merge decision.
+`issue-spec.code-provider/v1` exposes operation-scoped `change.create`,
+`change.comment` and `evidence.snapshot`. Any implemented subset is valid;
+missing capabilities constrain only those actions. Snapshots are audit/navigation
+context, not a reconstruction of provider merge policy.
 
-## Converge reviewer findings
-
-Before human handoff, dispatch one real read-only reviewer independent of every
-code writer. Give it the exact base and current exact head, but no write path or
-provider credentials. The reviewer returns actionable P0, P1, or P2 findings
-with stable changed-line anchors.
-
-Route each P0/P1 unchanged to the original writer that owns the affected code.
-That writer repairs it, runs focused tests, and returns a new exact commit.
-Integrate and push the repair, then have the same reviewer recheck it. Repeat
-automatically until no P0/P1 remains. This routing needs no PROCESS unless a
-separate managed-coordination need already exists.
-
-Keep only still-applicable P2 findings from the final reviewed head. Publish
-each unchanged as a provider-native non-blocking line comment when safe line
-coordinates are supported. Otherwise publish an ordinary change-level
-`change.comment` preserving `path:symbol/line`. P2 never enters the repair loop
-and never pauses completion. If publication is unavailable or fails, report the
-rendered body and continue.
-
-This loop creates no typed REVIEW/VERIFY, finding evidence, receipt, readiness
-gate, provider approval, or merge authority.
-
-## Explain non-obvious code
-
-Each actual code writer owns zero or more line-rationale drafts for non-obvious
-decisions in changed code. A useful draft contains repository-relative path,
-stable symbol plus changed-line anchor, and concise why/tradeoff/risk, with no
-secret, raw payload, credential, guessed diff position, filler, or quota.
-
-After exact-head integration and push, the Coordinator validates anchors,
-continued applicability, and sensitive-data absence. Publish valid unchanged
-writer text as non-blocking provider-native line discussion. Invalid, stale, or
-sensitive drafts return to the writer or are dropped with an explanation; the
-Coordinator never rewrites them while claiming writer authorship.
-
-Maintain an ordinary top-level `### Implementation Rationale` discussion with:
-
-- intent;
-- decisions and tradeoffs;
-- boundaries and known risks;
-- tests and results;
-- exact head and planning links;
-- an index of line rationale.
-
-If safe line discussion is unsupported or would create an unresolved provider
-review blocker, preserve `path:symbol/line` plus writer text in that top-level
-discussion. A requested publication failure remains visible and retryable.
-Rationale comments are human context, not typed evidence or acceptance.
-
-## Hand off and stop
-
-Report:
-
-- exact pushed head;
-- PR/MR link;
-- tests and results;
-- rationale publication status;
-- known risks, boundaries, and unsupported provider operations;
-- planning artifacts when used.
-
-Then stop before approval or merge. Do not create a readiness receipt, provider
-policy model, merge command, or automatic post-merge reconciliation. The human
-uses the current provider UI to inspect CI, approvals, conversations, ownership,
-and branch policy and decides whether to merge.
-
-## Provider capability model
-
-`issue-spec.code-provider/v1` exposes only operation-scoped capabilities:
-
-- `change.create`
-- `change.comment`
-- `evidence.snapshot`
-
-Any implemented subset is valid. Missing capabilities constrain only those
-actions and never switch the repository into a global planning-only mode.
-
-## Historical workflow data
-
-Historical REVIEW, VERIFY, rationale evidence, finalization, receipt, Archive,
-and provider evidence remain readable for audit where supported. Retired writer
-commands return `deprecated_workflow` before mutation. They are not part of
-current delivery.
+Historical REVIEW, VERIFY, rationale evidence, finalization, receipts and Archive
+remain explicit audit data where supported. Retired writers return
+`deprecated_workflow` before mutation. They are not current delivery steps.

@@ -237,6 +237,7 @@ Usage:
   issue-spec durable-spec preview|apply|check|detail --repo owner/repo --proposal N [options]
   issue-spec workflow validate --repo owner/repo [--json]
   issue-spec workflow which --repo owner/repo [--schema name] [--json]
+  issue-spec workflow update --repo owner/repo [--tools codex,claude] [--dry-run] [--json]
   issue-spec workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup --repo owner/repo --issue N --process PROCESS-001
   issue-spec link --repo owner/repo --targets-file relationships.json [--allow-nonatomic --expected-digest SHA256]
   issue-spec link --repo owner/repo --from SPEC-001 --from-issue N --to TASK-001 --to-issue M [--allow-nonatomic --expected-digest SHA256]

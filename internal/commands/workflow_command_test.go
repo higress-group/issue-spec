@@ -251,13 +251,7 @@ artifacts:
 		t.Fatalf("generated skill missing workflow notice:\n%s", body)
 	}
 	for _, want := range []string{
-		"Workflow Context:",
-		`"team": "platform"`,
-		"Workflow Rules:",
-		`"review": "require workflow-owner approval"`,
-		"Artifact Instructions:",
-		"`proposal` (proposal):",
-		"Use the proposal project guidance.",
+		"Read the workflow config once", "context, rules and references", "guidance.shared", "issue-spec workflow which", "selected artifact's instructions",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("generated skill missing workflow notice content %q:\n%s", want, body)
@@ -281,5 +275,49 @@ func writeWorkflowTestFile(t *testing.T, path, body string) {
 	}
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkflowUpdateCommandPreviewAndApply(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	config := "context:\n  product: project-only\nrules:\n  review: use project-stage-review\n"
+	writeWorkflowTestFile(t, filepath.Join(root, "issue-spec/config.yaml"), config)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	args := []string{"update", "--repo", "o/r", "--tools", "codex,claude", "--json"}
+	if code := app.runWorkflow(t.Context(), append(args, "--dry-run")); code != 0 {
+		t.Fatal(errOut.String())
+	}
+	var preview workflowUpdatePlan
+	if err := json.Unmarshal(out.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Changes) == 0 || len(preview.Conflicts) != 0 {
+		t.Fatalf("bad preview %+v", preview)
+	}
+	if _, err := os.Stat(".agents"); !os.IsNotExist(err) {
+		t.Fatal("preview wrote repository files")
+	}
+	out.Reset()
+	if code := app.runWorkflow(t.Context(), args); code != 0 {
+		t.Fatal(errOut.String())
+	}
+	if got := readTestFile(t, "issue-spec/config.yaml"); got != config {
+		t.Fatal("update rewrote project config")
+	}
+	skill := readTestFile(t, ".agents/skills/issue-spec-workflow/SKILL.md")
+	if strings.Contains(skill, "project-only") || !strings.Contains(skill, "Read the workflow config once") {
+		t.Fatal("project context copied instead of referenced")
+	}
+	out.Reset()
+	if code := app.runWorkflow(t.Context(), append(args, "--dry-run")); code != 0 {
+		t.Fatal(errOut.String())
+	}
+	if err := json.Unmarshal(out.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Changes) != 0 {
+		t.Fatal("second preview changed files")
 	}
 }

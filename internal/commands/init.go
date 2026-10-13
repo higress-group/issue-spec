@@ -37,7 +37,7 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 	createLabels := fs.Bool("create-labels", true, "ensure issue-spec labels")
 	skipLabels := fs.Bool("skip-labels", false, "skip ensuring issue-spec labels")
 	tools := fs.String("tools", "", "generate workflow artifacts for AI tools: all, none, or comma-separated codex,claude; explicit none leaves project workflow configuration untouched")
-	delivery := fs.String("delivery", "both", "workflow artifact delivery: both, skills, or commands")
+	delivery := fs.String("delivery", "skills", "workflow artifact delivery: both, skills, or commands")
 	installGlobalPrompts := fs.Bool("install-global-prompts", false, "install user-global Codex prompts (disabled by default; conflicts with explicit --tools none)")
 	globalPromptsDir := fs.String("global-prompts-dir", "", "user-global Codex prompt directory; implies --install-global-prompts and conflicts with explicit --tools none")
 	globalPromptsDryRun := fs.Bool("global-prompts-dry-run", false, "preview user-global Codex prompt paths without writing them; implies --install-global-prompts and conflicts with explicit --tools none")

@@ -3,6 +3,7 @@ package commentrunner
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -91,7 +92,7 @@ func TestDefaultConfigFromEnvUsesUnifiedIssueSpecHomeDir(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigFromEnvFallsBackToXDGDirsWhenHomeEmpty(t *testing.T) {
+func TestDefaultConfigFromEnvFallsBackToPlatformDirsWhenHomeEmpty(t *testing.T) {
 	configDir := filepath.Join(t.TempDir(), "config")
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 	setDefaultConfigPathEnv(t, "", configDir, cacheDir)
@@ -101,15 +102,23 @@ func TestDefaultConfigFromEnvFallsBackToXDGDirsWhenHomeEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cfg.StatePath != filepath.Join(configDir, "issue-spec", "runner-state.json") {
+	wantState := filepath.Join(configDir, "issue-spec", "runner-state.json")
+	wantWorkspace := filepath.Join(cacheDir, "issue-spec", "runner-workspaces")
+	if runtime.GOOS == "darwin" {
+		// macOS ignores XDG overrides; without HOME its platform directories
+		// are unavailable, so the runner uses the relative fallback.
+		wantState = filepath.Join(".issue-spec", "runner-state.json")
+		wantWorkspace = filepath.Join(".issue-spec", "runner-workspaces")
+	}
+	if cfg.StatePath != wantState {
 		t.Fatalf("StatePath = %q", cfg.StatePath)
 	}
-	if cfg.WorkspaceRoot != filepath.Join(cacheDir, "issue-spec", "runner-workspaces") {
+	if cfg.WorkspaceRoot != wantWorkspace {
 		t.Fatalf("WorkspaceRoot = %q", cfg.WorkspaceRoot)
 	}
 }
 
-func TestDefaultConfigFromEnvFallsBackToXDGDirsWhenHomeIsRoot(t *testing.T) {
+func TestDefaultConfigFromEnvFallsBackToPlatformDirsWhenHomeIsRoot(t *testing.T) {
 	configDir := filepath.Join(t.TempDir(), "config")
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 	setDefaultConfigPathEnv(t, string(filepath.Separator), configDir, cacheDir)
@@ -119,10 +128,16 @@ func TestDefaultConfigFromEnvFallsBackToXDGDirsWhenHomeIsRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cfg.StatePath != filepath.Join(configDir, "issue-spec", "runner-state.json") {
+	wantState := filepath.Join(configDir, "issue-spec", "runner-state.json")
+	wantWorkspace := filepath.Join(cacheDir, "issue-spec", "runner-workspaces")
+	if runtime.GOOS == "darwin" {
+		wantState = "/Library/Application Support/issue-spec/runner-state.json"
+		wantWorkspace = "/Library/Caches/issue-spec/runner-workspaces"
+	}
+	if cfg.StatePath != wantState {
 		t.Fatalf("StatePath = %q", cfg.StatePath)
 	}
-	if cfg.WorkspaceRoot != filepath.Join(cacheDir, "issue-spec", "runner-workspaces") {
+	if cfg.WorkspaceRoot != wantWorkspace {
 		t.Fatalf("WorkspaceRoot = %q", cfg.WorkspaceRoot)
 	}
 }

@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestSearchIssuesUsesSelfHostedCapabilityAndTrustBoundaries(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{"trust: untrusted_artifact_data", "issue: #17", "repository: acme/widgets",
-		"change:\n", "auth-lock", "stage: proposal", "match_source: issue", "read issue --repo acme/widgets --issue 17 --comments",
+		"change:\n", "auth-lock", "stage: proposal", "match_source: issue", "read issue --repo acme/widgets --issue 17",
 		"<<BEGIN UNTRUSTED ", "<<END UNTRUSTED "} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in output:\n%s", want, text)
@@ -109,7 +110,7 @@ func TestSearchIssuesUsesGitHubBackendAndTrustBoundaries(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{"trust: untrusted_artifact_data", "issue: #23", "repository: acme/widgets",
-		"match_source: issue", "read issue --repo acme/widgets --issue 23 --comments", "--profile search-github",
+		"match_source: issue", "read issue --repo acme/widgets --issue 23", "--profile search-github",
 		"<<BEGIN UNTRUSTED ", "<<END UNTRUSTED "} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in output:\n%s", want, text)
@@ -151,7 +152,7 @@ func TestSearchIssuesGitHubNoMatchIsSuccess(t *testing.T) {
 	app.profileName = profile.Name
 	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return provider, nil }
 	if code := app.runSearch(t.Context(), []string{"issues", "--repo", "acme/widgets", "--query", "no-such-change"}); code != 0 || errOut.Len() != 0 ||
-		!strings.Contains(out.String(), "results: 0\ntotal: 0\nhas_next: false") || strings.Contains(out.String(), "issue: #") {
+		!strings.Contains(out.String(), "results: 0\ntotal: 0\npage: 1\nhas_next: false") || strings.Contains(out.String(), "issue: #") {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
 }
@@ -183,4 +184,32 @@ func (f *fakeNativeSearchProvider) GetNativeServerMetadata(context.Context) (git
 func (f *fakeNativeSearchProvider) SearchNativeIssues(_ context.Context, repo string, options github.NativeIssueSearchOptions) (github.NativeIssueSearchPage, error) {
 	f.repo, f.options, f.searched = repo, options, true
 	return f.page, nil
+}
+
+func TestSearchDiscussionJSONKeepsScopeAndRedactsBeforeEncoding(t *testing.T) {
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Setenv("ISSUE_SPEC_TOKEN", "quoted-secret")
+	profile := auth.Profile{Name: "search-json", Kind: auth.ProfileKindHosted, Hostname: "issues.test", APIURL: "https://issues.test/api/v3", NativeAPIURL: "https://issues.test/api/v1", WebURL: "https://issues.test", ServerInstanceID: "issue-spec:search-json"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeNativeSearchProvider{metadata: github.NativeServerMetadata{Features: github.NativeServerFeatures{Search: true}}, page: github.IssueSearchPage{Page: 2, PerPage: 10, Items: []github.IssueSearchResult{{Number: 103, Title: "untrusted \"quoted-secret\"", Matches: []github.IssueSearchMatch{{Source: "comment", Excerpt: "quoted-secret"}}}}}}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.profileName = profile.Name
+	app.newNativeSearchProvider = func(auth.Profile, string) (nativeSearchProvider, error) { return provider, nil }
+	if code := app.runSearch(t.Context(), []string{"issues", "--repo", "o/r", "--query", "term", "--scope", "discussion", "--page", "2", "--json"}); code != 0 {
+		t.Fatal(errOut.String())
+	}
+	var result struct {
+		Trust string
+		Scope string
+		github.IssueSearchPage
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Trust != trustUntrustedData || result.Scope != "discussion" || provider.options.Page != 2 || provider.options.Stage != "" || strings.Contains(out.String(), "quoted-secret") {
+		t.Fatalf("unsafe result: %s", out.String())
+	}
 }

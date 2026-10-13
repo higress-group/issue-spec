@@ -165,7 +165,7 @@ func TestIssueListReturnsStableJSONAndExcludesPullRequests(t *testing.T) {
 		}
 	})
 
-	code := app.runIssue(t.Context(), []string{"list", "--repo", "o/r", "--state", "closed", "--json"})
+	code := app.runIssue(t.Context(), []string{"list", "--repo", "o/r", "--state", "closed", "--json", "--include-body"})
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
 	}

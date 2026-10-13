@@ -48,14 +48,20 @@ type issueListItem struct {
 	Title  string `json:"title"`
 	State  string `json:"state"`
 	URL    string `json:"url"`
-	Body   string `json:"body"`
+	Body   string `json:"body,omitempty"`
 }
 
 type issueListResult struct {
-	OK     bool            `json:"ok"`
-	Repo   string          `json:"repo"`
-	State  string          `json:"state"`
-	Issues []issueListItem `json:"issues"`
+	Page        int             `json:"page"`
+	Limit       int             `json:"limit"`
+	Total       int             `json:"total"`
+	HasNext     bool            `json:"has_next"`
+	BodyOmitted bool            `json:"body_omitted"`
+	Detail      string          `json:"detail"`
+	OK          bool            `json:"ok"`
+	Repo        string          `json:"repo"`
+	State       string          `json:"state"`
+	Issues      []issueListItem `json:"issues"`
 }
 
 func (a *app) runIssueList(ctx context.Context, args []string) int {
@@ -63,12 +69,20 @@ func (a *app) runIssueList(ctx context.Context, args []string) int {
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	stateFlag := fs.String("state", "open", "issue state: open, closed, or all")
+	page := fs.Int("page", 1, "result page (1-based)")
+	limit := fs.Int("limit", 50, "issues per page (1-100)")
+	all := fs.Bool("all", false, "return all matching issues without pagination")
+	includeBody := fs.Bool("include-body", false, "include complete issue bodies")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
 	if !*jsonOut {
 		a.errorf("--json is required for issue list\n")
+		return 2
+	}
+	if *page < 1 || *limit < 1 || *limit > 100 || (*all && *page != 1) {
+		a.errorf("--page must be positive, --limit must be 1-100; --all requires page 1\n")
 		return 2
 	}
 	state, ok := normalizeIssueListState(*stateFlag)
@@ -100,10 +114,21 @@ func (a *app) runIssueList(ctx context.Context, args []string) int {
 			Title:  issue.Title,
 			State:  strings.ToLower(strings.TrimSpace(issue.State)),
 			URL:    issue.HTMLURL,
-			Body:   issue.Body,
+			Body:   "",
 		})
+		if *includeBody {
+			issues[len(issues)-1].Body = issue.Body
+		}
 	}
-	return a.outputJSON(issueListResult{OK: true, Repo: repo, State: state, Issues: issues})
+	total := len(issues)
+	if !*all {
+		start := total
+		if *page <= total / *limit + 1 {
+			start = min((*page-1)**limit, total)
+		}
+		issues = issues[start:min(start+*limit, total)]
+	}
+	return a.outputJSON(issueListResult{OK: true, Repo: repo, State: state, Issues: issues, Page: *page, Limit: *limit, Total: total, HasNext: !*all && *page <= (total-1) / *limit && total > 0, BodyOmitted: !*includeBody, Detail: "Use read issue --issue N for selected bodies; --include-body --all restores complete list output."})
 }
 
 func normalizeIssueListState(value string) (string, bool) {

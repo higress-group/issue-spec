@@ -82,11 +82,11 @@ external_code:
 `issue-spec` CLI 让 agent 参与到人类在浏览器里评审的同一套工作流中：
 
 - agent 以校验、安全变更与工作流关卡为约束，编写并读取类型化产物（`SPEC`、`TASK`、`PROCESS` 等）
-- 协调器把实现拆成 PROCESS 节点，分派给最合适的 agent——worker、reviewer、verifier 各自保持在窄而有效的上下文窗口内
-- 团队成员和他们的 agent 可以中途接手任何变更，因为全部状态——决策、阻塞、review 发现、证据——都在 issue 里，而不在某个人的本地文件里
+- 当前 agent 可以完成授权的规划、实施与自测；项目按需通过补充规则定义专职 coordinator 和阶段评审
+- 团队成员和他们的 agent 可以中途接手任何变更，因为规划决策与阻塞保存在 Issue 中；当前评审、检查、批准和合并由人和代码平台负责
 - `issue-spec runner` 在受管工作区内执行经过授权的评论命令（`/new`、`/resume`），直接从 issue 触发工作
 
-PR 行级发现、rationale 与检查会同步回 `REVIEW` 评论；`verify` 在归档前以未解决的阻塞问题、可追溯性与 P0/P1 发现为关卡。
+通用技能只保留一份，Claude 逐技能链接；项目差异通过 `issue-spec/config.yaml` 和按阶段引用的补充文件维护。`workflow update --dry-run` 预览升级并保护本地修改。评审、发布和合并遵循实际授权，不自动分派 reviewer 或增加理由发布仪式。详见[配置与升级说明](docs/reference.zh-CN.md)。
 
 ## 兼容对接 GitHub
 
@@ -104,7 +104,7 @@ go install github.com/higress-group/issue-spec/cmd/issue-spec@latest
 
 ```bash
 gh auth login
-issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery both
+issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery skills
 ```
 
 然后在你的 agent 里通过生成的 skills 或 slash 命令驱动工作流：

@@ -13,75 +13,16 @@ func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		"exactly one runner-selected /new command", "authorized_command", "runner_metadata",
-		"untrusted data", "reference_only", "content_sha256", "issue-spec read/comment get",
-		"bounded single-writer change", "child/subagent is an execution choice, not a PROCESS trigger",
-		"Once Design or TASK is selected", "every change-bearing work package must be owned",
-		"If Design or TASK is selected", "user explicitly requests an independent worker",
-		"Select the execution mode before assigning writers", "makes no code changes on any delegated path",
-		"Without managed PROCESS, exactly one real non-Coordinator worker", "With managed PROCESS",
-		"each change-bearing work package/PROCESS has one real non-Coordinator worker owner", "distinct packages may use concurrent writers",
-		"narrow direct-PR fast path", "no selected Design/TASK and no delegation request", "File count never selects either mode",
-		"concurrent code writers", "isolation protecting pre-existing work", "enforced path ownership",
-		"restartable cross-session handoff", "dependency-ordered integration",
-		"one independently verifiable Design invariant", "bounded role working set", "stable interface",
-		"block before dispatch", "acceptance consequences", "request human direction",
-		"workspace prepare -> real non-Coordinator", "never implements/tests/commits", "sealed assignment",
-		"design_context.source_url", "without comments, timeline, history, or gates", "stops on conflict",
-		"implementation worker owns one work package's code, focused tests, exact result commit", "Coordinator owns dispatch/wait, exact-commit inspection, integration",
-		"proportionate final validation, anchor validation, and provider publication", "without a role receipt", "exact reviewable head", "current provider-native CI",
-		"### Implementation Rationale", "Before requesting human review", "direct-path writer", "managed PROCESS worker",
-		"stop before approval or merge", "decides whether to merge in the provider UI",
-		"actual code writer", "line-rationale drafts", "stable symbol plus changed-line anchor", "why/tradeoff/risk",
-		"secret, raw payload, or credential", "continued applicability", "sensitive-data absence",
-		"invalid, stale, or sensitive drafts", "never rewrite and impersonate the writer",
-		"map to changed lines", "valid unchanged text", "non-blocking inline discussions", "summary/index",
-		"inline discussion is unsupported or would create an unresolved merge blocker", "path:symbol/line", "Never demand filler, quota, coverage",
-		"real read-only reviewer independent of every code writer", "exact base and current exact head", "no write path or provider credentials",
-		"findings classified P0, P1, or P2", "route the unchanged finding to the original writer", "runs focused tests, and returns a new exact commit",
-		"same reviewer to recheck it", "Repeat automatically until that reviewer reports zero P0/P1", "still-applicable P2 findings from the final reviewed head",
-		"provider-native non-blocking line comment", "provider supports safe line coordinates", "ordinary change-level `change.comment`",
-		"P2 never enters the repair loop and never pauses completion", "report the rendered comment body and continue",
-		"Never create typed REVIEW/VERIFY, finding evidence, a receipt, a readiness gate, or reviewer merge authority",
-		"Phase projections are ordinary statusless human synthesis",
-		"Persist the selected phase body, perform the first QUESTION pass, upsert the projection",
-		"PROCESS only when managed coordination was selected",
-		"only the latest effective ANSWER drive gates and Agents",
-		"never place projection HTML source in default Agent context",
-		"same mutation plan/checkpoint", "Cleanup is explicit", "destructive", "retain dirty, linked, uncertain, or unintegrated work",
-		"report tests, risks, rationale, exact head, and change link", "human reviews current provider-native CI",
-		"one synchronous Coordinator turn", "Background completion does not trigger another turn automatically",
-		"bounded test, build, child, or background process is still running", "never return a progress-only terminal response",
-		"further progress is genuinely impossible", "unfinished work, blocking reason, and evidence needed to resume safely",
-		"Immediately before ending the turn, emit exactly one valid issue_spec_coordinator_summary block",
-		"issue_spec_coordinator_summary", `"diagnostics": []`, `"source_label": "authorized_command"`,
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+	for _, want := range []string{"authorized_command", "runner_metadata", "untrusted data", "content_sha256", "current agent owns authorized planning, implementation and self-tests", "Separate coordinator", "same mutation plan/checkpoint", "Cleanup is explicit", "retain dirty, linked, uncertain, or unintegrated work", "one synchronous Coordinator turn", "issue_spec_coordinator_summary", "never return a progress-only terminal response", "stop before approval or merge"} {
+		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(want)) {
+			t.Fatalf("missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{
-		"CODEX_THREAD_ID may still override", "session source of truth", "runner-managed writeback action envelope",
-		"one PROCESS per command entry point", "one repair PROCESS per finding", "coordinator-inline execution",
-		"The Coordinator MAY dispatch exactly one native child/subagent",
-		"Select the writer before editing",
-		"issue-spec code-change rationale", "issue-spec:code-change-rationale", "Rationale ID:",
-		"merge-check", "provider authority token", "post-merge reconciliation",
-	} {
+	for _, forbidden := range []string{"MUST NOT write code", "never implements/tests/commits", "Dispatch one real read-only reviewer", "no selected Design/TASK"} {
 		if strings.Contains(prompt, forbidden) {
-			t.Fatalf("prompt contains stale rule %q", forbidden)
+			t.Fatalf("obsolete rule %q", forbidden)
 		}
 	}
-	assertTextOrder(t, prompt,
-		"Materialize durable specs on the implementation branch",
-		"Push the current exact reviewable head and create or select its PR/MR",
-		"Dispatch one real read-only reviewer independent of every code writer",
-		"Repeat automatically until that reviewer reports zero P0/P1",
-		"Keep only still-applicable P2 findings from the final reviewed head",
-		"Complete final-head rationale publication",
-		"stop before approval or merge",
-	)
 }
 
 func TestCoordinatorPromptRolePacketBoundary(t *testing.T) {
@@ -93,7 +34,7 @@ func TestCoordinatorPromptRolePacketBoundary(t *testing.T) {
 		"Give the child only its sealed assignment", "exact worktree/branch/ownership", "parent TASK", "predecessor handoff",
 		"Do not copy proposal/Design bodies, full DAGs, link matrices, closure/archive, or provider-routing policy into role packets",
 		"The role owns one result commit, focused tests, and a bounded result",
-		"each managed PROCESS worker owns its drafts", "guessed diff position", "Publish valid unchanged text",
+		"Preserve actual code-writer authorship", "For requested publication",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing role boundary %q", want)

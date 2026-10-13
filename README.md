@@ -113,24 +113,21 @@ review in the browser:
 
 - agents author and read optional typed planning artifacts (`SPEC`, `TASK`,
   `PROCESS`, ...) with validation and safe transitions
-- a selected Design or TASK delegates every change-bearing work package to one
-  real non-Coordinator owner; an unmanaged bounded path has exactly one worker,
-  while managed PROCESS may coordinate concurrent packages when concurrency,
-  isolation, ownership, recovery, or dependency integration requires it
+- the current agent can plan, implement and self-test; projects may add a
+  coordinator role and stage review through versioned project guidance
 - teammates and their agents pick up planning mid-flight because optional
   decisions and blockers live in Issues, while current review, checks, approval,
   and merge remain owned by people and the code provider
 - `issue-spec runner` executes authorized comment commands (`/new`, `/resume`)
   in managed workspaces, so work can be triggered straight from an issue
 
-The actual code writer records line-local rationale only for non-obvious design
-decisions, using stable code anchors rather than provider diff positions. After
-the exact head is pushed, the coordinator validates those anchors and publishes
-the worker-authored text as non-blocking inline comments. The ordinary
-`### Implementation Rationale` discussion summarizes and indexes them, or
-carries `path:symbol/line` fallbacks when safe inline discussion is unavailable.
-No rationale quota or gate exists. Issue-spec reports one exact-head human
-handoff; the current provider UI remains authoritative for review and merge.
+Shared skills are installed once under `.agents/skills`, with per-skill Claude
+links. Project rules and phase guidance stay in `issue-spec/config.yaml` and
+referenced files. `workflow update --dry-run` previews an upgrade and protects
+local edits. See [configuration and safe updates](docs/reference.md#shared-skills-and-safe-updates).
+
+Review, publication and merge follow the user's authorization and project policy;
+issue-spec does not automatically spawn a reviewer or require a rationale ceremony.
 
 ## Works with GitHub too
 
@@ -154,7 +151,7 @@ repository:
 
 ```bash
 gh auth login
-issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery both
+issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery skills
 ```
 
 Then drive the workflow from your agent with the generated skills or slash

@@ -2,8 +2,8 @@
 name: issue-spec-apply
 description: Implement a selected issue-spec change, directly or with managed PROCESS coordination. Not a trigger for ordinary code edits or skill maintenance.
 license: MIT
-compatibility: Requires issue-spec CLI.
 metadata:
+  requires: "Requires issue-spec CLI."
   author: issue-spec
   version: "1.0"
   generatedBy: "issue-spec"
@@ -11,32 +11,34 @@ metadata:
 
 # Issue Spec Apply
 
-Coordinator: select execution mode before assigning writers. If Design or TASK is selected, or the user explicitly requests an independent worker, the Coordinator MUST NOT write code on delegated or managed paths. Without managed PROCESS, exactly one real non-Coordinator worker owns the bounded implementation. With managed PROCESS, every change-bearing work package/PROCESS has one real non-Coordinator owner; distinct packages MAY use concurrent writers. Select PROCESS only for concrete managed coordination, not child use, file count, independent review, or human handoff. If Implement is selected, persist it, perform its first QUESTION pass, then finalize the plan. Author PROCESS only for managed coordination; typed planning state remains authoritative.
+Implement the authorized change directly in the current session. Use issue-spec-workflow for shared artifact rules and bounded reads. Design/TASK/PROCESS never requires a second code writer. Read the configured project guidance for ownership, validation and stage handoff. If Implement is selected, persist it, perform its first QUESTION pass, then author PROCESS only for actual managed coordination.
 
 For selected issue-spec steps, the built-in phase sequence and canonical artifact carriers are authoritative; never reorder/omit steps or move open decisions. This governs workflow structure, not user authorization or unrelated tasks.
 
 Every new typed ID MUST be `<TYPE>-<issue><three-digit sequence>`: Issue 1 starts with `QUESTION-1001`, Issue 44 with `QUESTION-44001`. Allocate 001-999 only within the target Issue and type after reading that Issue's typed comments, and never renumber a legacy ID. New writes reject wrong Issue prefixes; `--allow-legacy-id` is only for intentional legacy-compatible creates.
 
-## Delegated Paths and Narrow Coordinator Path
+## Implementation and Handoff
 
-Unmanaged delegated path: dispatch exactly one real non-Coordinator worker in the selected checkout. Managed PROCESS: dispatch one real non-Coordinator owner per change-bearing package; proven-independent packages may run concurrently. The Coordinator waits and writes no code on either path. Each worker owns package code, focused tests, exact result commit, changed paths, decisions, risks, and non-obvious line-rationale drafts. The Coordinator owns exact-commit inspection, integration, proportionate final validation, anchor validation, and provider publication.
+Read the complete Design, applicable answers, selected TASKs and required SPECs/dependencies. Confirm base/worktree, ownership, shared interfaces and required checks. Implement and self-test within that scope; recover derivable facts and pause only work affected by missing or conflicting requirements. Keep durable specifications current, without turning temporary development stages into product requirements.
 
-Coordinator code is allowed only on the narrow direct-PR fast path with no selected Design/TASK and no user delegation request; file count does not select it. Unmanaged paths use ordinary Git and project tests. Do not manufacture Implement, PROCESS, workspace lifecycle, role receipt, typed rationale, evidence, or another phase artifact merely to record delegation.
+Run affected checks and explicit gates. After they pass, expand testing only for a change, failure or concrete unresolved risk. Evidence names the revision actually checked; after a repair rerun affected checks and preserve reused evidence at its original revision. Report the candidate, results, gaps and remaining review needs. Self-tests do not constitute independent review or approval. Do not dispatch a reviewer, publish, push or merge as a workflow side effect.
 
-Before implementation review or PR/MR publication, read [Implementation Review and Publication](../issue-spec-workflow/references/implementation-review.md) completely. Do not load it for Proposal/Design authoring.
+Delegation remains optional and requires actual authorization. Each assigned owner implements and tests its bounded package; any designated convergence owner handles shared changes and integration. Do not manufacture phase artifacts, PROCESS or role receipts to record ordinary single-owner work.
 
-For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator worker with the packet below. Preserve exact base, ownership, DCO, tests, generators, dependency order, managed worktree isolation, and bounded handoff. These controls are implementation safety only: they do not create review, verification, rationale evidence, receipt, coverage, finalization, or delivery-acceptance authority.
+For requested implementation review or publication, read [Implementation Review and Publication](../issue-spec-workflow/references/implementation-review.md) completely. Do not load it for Proposal/Design authoring.
+
+For selected managed PROCESS work, use the assignment below with its actual owner, which may be the current agent. Preserve exact base, ownership, DCO, tests, generators, dependency order, managed worktree isolation, and bounded handoff. These controls are implementation safety only: they do not create review, verification, rationale evidence, receipt, coverage, finalization, or delivery-acceptance authority.
 
 ## Implementation Role Packet
 
-Relay this packet verbatim to the worker; the Coordinator MUST NOT execute it.
+Apply this packet only when managed PROCESS execution is selected. A delegated owner receives the bounded assignment; a direct owner may execute it in its assigned worktree.
 
 1. Accept only the sealed implementation assignment for the exact PROCESS, base revision, worktree, write ownership, focused tests, generators, result schema, and design_context. Do not load proposal bodies, the complete DAG, link matrices, human merge policy, provider routing, or unrelated artifacts.
 2. Require design_context.read_mode=complete-issue-body and conflict_policy=design-authoritative-stop. Read the complete Design with issue-spec read issue --repo higress-group/issue-spec --issue <design_context.source_url> without comments, timeline, history, or gates. Recover derivable metadata. Stop and report any conflict in scope, authority, ownership, or contracts; routine private choices are not conflicts.
 3. Work only in the assigned worktree and owned paths. Preserve the named invariant, decisions, must_preserve, must_not, and minimum_verification exactly. Do not collect or pass runtime session IDs.
 4. Implement the invariant, run assigned generators, finish exactly one DCO commit when required, and leave the tree clean. Collect zero or more line-rationale drafts only for non-obvious decisions: repository-relative path, stable symbol plus changed-line anchor, and concise why/tradeoff/risk without secret, raw payload, or credential. Do not guess a provider diff position or create filler. If cohesion fails, stop with stable-interface split options and acceptance consequences.
 5. Complete the assigned behavior and fix introduced failures. Run every assigned generator and focused test; expand or repeat only for changes, failures, concrete risks, or required gates. Return the exact result commit, changed paths, command outcomes, decisions, risks, and line-rationale drafts. Do not create a role receipt, decision file, or evidence carrier. Provider access and final diff positions are not worker responsibilities.
-6. An amendment invalidates the returned revision; rerun affected and explicitly required checks. Reused results keep their original revision and require justified applicability. Leave integration, cleanup, review, anchor validation, publication, and workspace completion to the Coordinator; it publishes worker-authored text but does not author it.
+6. An amendment invalidates the returned revision; rerun affected and explicitly required checks. Reused results keep their original revision and require justified applicability. Leave shared integration and lifecycle completion to the designated convergence owner. Do not impersonate another writer when publishing rationale.
 
 ## PROCESS Write Ownership
 
@@ -49,6 +51,7 @@ Relay this packet verbatim to the worker; the Coordinator MUST NOT execute it.
 - Workflow Source: `builtin`
 - Workflow Schema: `issue-spec`
 - Workflow Config: `issue-spec/config.yaml`
+- Read the workflow config once for project context, rules and references. Load only guidance.shared and the current phase's guidance.propose, guidance.apply or guidance.review. Paths are relative to the repository root. Project files supplement this shared workflow; do not edit generated skills to customize it.
 
 Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, and QUESTION artifacts remain in the selected issue backend's issue-native storage; historical REVIEW and VERIFY artifacts are audit-only. Repository-mode durable specs are materialized and checked on the implementation branch.
 

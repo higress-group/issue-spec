@@ -127,36 +127,25 @@ done
 
 generated_assets="$root/.agents/skills/issue-spec-workflow/SKILL.md
 $root/.agents/skills/issue-spec-apply/SKILL.md
-$root/.agents/skills/issue-spec-propose/SKILL.md
-$root/.claude/commands/issue-spec/apply.md
-$root/.claude/commands/issue-spec/propose.md"
-rationale_assets="$root/.agents/skills/issue-spec-workflow/SKILL.md
-$root/.agents/skills/issue-spec-apply/SKILL.md
-$root/.agents/skills/issue-spec-github/SKILL.md
-$root/.claude/commands/issue-spec/apply.md"
-for asset in $rationale_assets; do
-  grep -Fq -- '### Implementation Rationale' "$asset" || {
-    echo "active generated workflow omits the human review rationale: $asset" >&2
+$root/.agents/skills/issue-spec-propose/SKILL.md"
+for asset in $generated_assets; do
+  grep -Fq 'guidance.shared' "$asset" || {
+    echo "generated skill omits project guidance hook: $asset" >&2
     exit 1
   }
 done
-for asset in \
-  "$root/.agents/skills/issue-spec-workflow/SKILL.md" \
-  "$root/.agents/skills/issue-spec-apply/SKILL.md" \
-  "$root/.claude/commands/issue-spec/apply.md"; do
-  for phrase in \
-    'line-rationale drafts' \
-    'stable symbol plus changed-line anchor' \
-    'secret, raw payload, or credential' \
-    'non-blocking inline discussion' \
-    'path:symbol/line' \
-    'Invalid, stale, or sensitive drafts'; do
-    grep -Fq -- "$phrase" "$asset" || {
-      echo "active generated workflow omits worker-owned inline rationale rule '$phrase': $asset" >&2
-      exit 1
-    }
-  done
+for name in workflow apply propose github; do
+  link="$root/.claude/skills/issue-spec-$name"
+  test -L "$link" || { echo "missing per-skill Claude link: $link" >&2; exit 1; }
+  test "$(readlink "$link")" = "../../.agents/skills/issue-spec-$name" || exit 1
 done
+test ! -L "$root/.claude/skills"
+test ! -e "$root/.claude/commands/issue-spec/apply.md"
+test ! -e "$root/.claude/commands/issue-spec/propose.md"
+if grep -E 'Coordinator MUST NOT write code|requires a real non-Coordinator|dispatch one real read-only reviewer' $generated_assets; then
+  echo "generated skills restore mandatory role separation" >&2
+  exit 1
+fi
 for phrase in 'commit_id' 'side=RIGHT' 'never rewrite them while claiming worker authorship'; do
   grep -Fq -- "$phrase" "$root/.agents/skills/issue-spec-github/SKILL.md" || {
     echo "generated GitHub guidance omits inline rationale publication rule '$phrase'" >&2

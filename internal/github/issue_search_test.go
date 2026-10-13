@@ -95,3 +95,17 @@ func TestGHBackendIssueSearchUsesSameRequestContract(t *testing.T) {
 		t.Fatalf("args=%#v want=%#v", runner.command.Args, want)
 	}
 }
+
+func TestGitHubDiscussionSearchKeepsOrdinaryIssuesAndCommentMatches(t *testing.T) {
+	query, options, err := githubIssueSearchQuery("o/r", IssueSearchOptions{Query: "decision", State: "all", Scope: "discussion", Page: 2, PerPage: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(query, "label:") || !strings.Contains(query, "in:title,body,comments") {
+		t.Fatalf("wrong scope %s", query)
+	}
+	page := normalizeGitHubIssueSearch("o/r", options, githubIssueSearchResponse{TotalCount: 11, Items: []githubIssueSearchItem{{Number: 103, RepositoryURL: "https://api.github.com/repos/o/r", State: "open", TextMatches: []githubIssueTextMatch{{ObjectType: "IssueComment", Property: "body", Fragment: "a decision"}}}}})
+	if len(page.Items) != 1 || page.Items[0].Matches[0].Source != "comment" || page.Total != 11 {
+		t.Fatalf("lost discussion match: %+v", page)
+	}
+}

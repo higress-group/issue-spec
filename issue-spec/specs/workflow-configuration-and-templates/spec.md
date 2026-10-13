@@ -14,12 +14,12 @@ Proposal Issues:
 
 ### Requirement: workflow configuration discovery is deterministic
 
-The CLI MUST resolve repository-local issue-spec workflow configuration before compatible legacy configuration and built-in defaults, MUST preserve explicit durable_specs mode selection, and the built-in fallback MUST provide a bounded simple-Issue path plus optional Proposal, SPEC, QUESTION, Design, TASK, and PROCESS planning ending at human PR or MR handoff without REVIEW, VERIFY, final verification, Archive, merge-check, conditional merge, or post-merge reconciliation stages. Selected Design/TASK implementation MUST delegate each change-bearing package to one real non-coordinator owner: the unmanaged bounded path has exactly one worker without requiring Implement or PROCESS, while managed PROCESS may coordinate multiple concurrent packages. Direct coordinator edits are limited to an unplanned narrow direct-PR fast path.
+The CLI MUST resolve repository-local issue-spec workflow configuration before compatible legacy configuration and built-in defaults, MUST preserve explicit durable_specs mode selection, and the built-in fallback MUST provide a bounded simple-Issue path plus optional Proposal, SPEC, QUESTION, Design, TASK, and PROCESS planning ending at human handoff with optional authorized PR or MR publication without REVIEW, VERIFY, final verification, Archive, merge-check, conditional merge, or post-merge reconciliation stages. The current agent MAY own authorized planning, implementation and self-tests. Coordinator-only roles and stage review MAY be supplied by project guidance; Design/TASK selection does not require delegation.
 
 #### Scenario: built-in workflow ends at human handoff
 
 - **WHEN** no project or compatible legacy workflow configuration exists
-- **THEN** the CLI selects optional planning and implementation guidance whose terminal provider operation is PR or MR creation plus ordinary review context
+- **THEN** the CLI selects optional planning and implementation guidance that reports the candidate and validation results, with provider publication only when authorized
 
 #### Scenario: repository configuration still wins deterministically
 
@@ -243,3 +243,26 @@ The workflow resolver MUST recognize normalized REVIEW and VERIFY artifacts as r
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/425#issuecomment-5176867003
+
+### Requirement: project supplements do not fork generated workflow bodies
+
+Shared skills MUST reference the selected config for context, rules and general references instead of embedding copies. Optional `guidance.shared`, `guidance.propose`, `guidance.apply` and `guidance.review` lists MUST name existing files within the checkout using repository-relative paths. Agents load only the shared and selected phase guidance. Invalid phases, missing paths and paths escaping the checkout MUST fail validation. Project guidance supplements authorized steps and MUST NOT alter canonical carriers or imply new authorization.
+
+#### Scenario: changing a project rule needs no template fork
+
+- **WHEN** a project changes its stage-review or validation guidance
+- **THEN** both hosts consume the project-owned file through the same config hook without editing generated skills
+
+### Requirement: workflow updates protect local ownership
+
+`workflow update --dry-run` MUST report planned file changes and conflicts without modifying repository files or remote state. Default delivery MUST be skills. Canonical skills live under `.agents/skills`; Claude links each selected generated skill using a checkout-relative directory symlink. The updater MUST preserve unrelated files, skills and host-specific exposure. An old whole-directory link MAY migrate to individual links preserving its existing exposure. A release manifest records managed file hashes; modified or untracked collisions MUST block all generated-file writes. Unmodified retired managed files MAY be removed. A write failure MUST roll back replaced entries; repeated generation MUST produce no changes. Legacy command delivery remains explicit.
+
+#### Scenario: a locally modified skill blocks an upgrade
+
+- **WHEN** a managed skill differs from its recorded hash
+- **THEN** update reports that path and writes none of the candidate files
+
+#### Scenario: Claude receives only selected shared skills
+
+- **WHEN** a new project-owned Codex-only skill is added under `.agents/skills`
+- **THEN** a subsequent update does not create a Claude link for it

@@ -11,7 +11,7 @@ import (
 const (
 	// CompactSummarySchemaVersion is intentionally independent of the full
 	// Report JSON contract so compact consumers can negotiate additive changes.
-	CompactSummarySchemaVersion = 1
+	CompactSummarySchemaVersion = 2
 	compactAffectedLimit        = 10
 	compactArtifactID           = "{artifact_id}"
 )
@@ -25,7 +25,14 @@ type CompactSummary struct {
 	Subject       *CompactSubject           `json:"subject,omitempty"`
 	Counts        map[string]map[string]int `json:"counts,omitempty"`
 	Blockers      []CompactBlockerGroup     `json:"blockers"`
-	Relationships relationships.Index       `json:"relationships"`
+	Relationships CompactRelationships      `json:"relationships"`
+	Detail        Remediation               `json:"detail"`
+}
+
+type CompactRelationships struct {
+	Totals         relationships.Totals `json:"totals"`
+	Truncated      bool                 `json:"truncated"`
+	DetailsOmitted bool                 `json:"details_omitted"`
 }
 
 type CompactGate struct {
@@ -148,7 +155,8 @@ func ProjectCompactSummary(report Report, counts map[string]map[string]int, subj
 		OK:            report.Ready,
 		Gate:          CompactGate{Target: report.Target, Mode: report.Mode, PointInTime: report.PointInTime},
 		Subject:       cloneCompactSubject(subject), Counts: cloneCounts(counts), Blockers: blockers,
-		Relationships: relationshipIndex,
+		Relationships: CompactRelationships{Totals: relationshipIndex.Totals, Truncated: relationshipIndex.Truncated, DetailsOmitted: true},
+		Detail:        cloneRemediation(detail),
 	}
 }
 

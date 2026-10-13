@@ -121,7 +121,7 @@ func writeWorkflowArtifactsResolved(root, repo, delivery string, tools []workflo
 	return writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery, tools, plan, nil)
 }
 
-func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, tools []workflowTool, plan workflow.Plan, provider *workflow.ProviderPlan) (workflowGenerationResult, error) {
+func renderWorkflowArtifacts(root, repo, delivery string, tools []workflowTool, plan workflow.Plan, provider *workflow.ProviderPlan) (workflowGenerationResult, error) {
 	result := workflowGenerationResult{Delivery: delivery, WorkflowSource: string(plan.Source.Kind), WorkflowSchema: plan.Source.SchemaName}
 	for _, tool := range tools {
 		result.Tools = append(result.Tools, tool.ID)
@@ -129,21 +129,6 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 	if len(tools) == 0 {
 		return result, nil
 	}
-	if delivery != workflowDeliveryCommands && workflowToolSelected(tools, "claude") {
-		if err := validateClaudeSkillsLinkMigration(root); err != nil {
-			return result, err
-		}
-	}
-	pruned, err := pruneManagedWorkflowAssets(root, delivery, tools, provider != nil)
-	if err != nil {
-		return result, err
-	}
-	result.PrunedFiles = pruned
-	htmlReviewPruned, err := pruneManagedHTMLReviewReference(root, delivery, plan.HTMLReviewEnabled())
-	if err != nil {
-		return result, err
-	}
-	result.PrunedFiles = append(result.PrunedFiles, htmlReviewPruned...)
 
 	if delivery != workflowDeliveryCommands {
 		skillsDir := filepath.Join(root, ".agents", "skills")
@@ -166,11 +151,17 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 			}
 		}
 		if workflowToolSelected(tools, "claude") {
-			link, err := installClaudeSkillsLink(root)
-			if err != nil {
-				return result, err
+			for _, skill := range workflowSkillsWithProvider(repo, plan, provider) {
+				path := filepath.Join(root, ".claude", "skills", skill.Name)
+				target := "../../.agents/skills/" + skill.Name
+				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+					return result, err
+				}
+				if err := os.Symlink(target, path); err != nil {
+					return result, err
+				}
+				result.SkillLinks = append(result.SkillLinks, ".claude/skills/"+skill.Name+" -> "+target)
 			}
-			result.SkillLinks = append(result.SkillLinks, link)
 		}
 	}
 
@@ -322,90 +313,6 @@ func workflowToolSelected(tools []workflowTool, id string) bool {
 	return false
 }
 
-func validateClaudeSkillsLinkMigration(root string) error {
-	claudeSkills := filepath.Join(root, ".claude", "skills")
-	info, err := os.Lstat(claudeSkills)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect Claude skills path %s: %w", claudeSkills, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		matches, target, err := symlinkMatchesPath(claudeSkills, filepath.Join(root, ".agents", "skills"))
-		if err != nil {
-			return fmt.Errorf("inspect Claude skills link %s: %w", claudeSkills, err)
-		}
-		if !matches {
-			return fmt.Errorf("Claude skills link %s targets %q; expected ../.agents/skills", claudeSkills, target)
-		}
-		return nil
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("Claude skills path %s must be a directory or a symlink to ../.agents/skills", claudeSkills)
-	}
-
-	entries, err := os.ReadDir(claudeSkills)
-	if err != nil {
-		return fmt.Errorf("inspect Claude skills directory %s: %w", claudeSkills, err)
-	}
-	agentsSkills := filepath.Join(root, ".agents", "skills")
-	for _, entry := range entries {
-		source := filepath.Join(claudeSkills, entry.Name())
-		target := filepath.Join(agentsSkills, entry.Name())
-		if !entry.IsDir() {
-			return fmt.Errorf("Claude skills directory contains non-directory entry %s; move it before init can create the shared skills link", source)
-		}
-		if managedIssueSpecSkillDirectory(source) {
-			continue
-		}
-		covered, err := directoryTreeCoveredByTarget(source, target)
-		if err != nil {
-			return fmt.Errorf("compare Claude skill %s with canonical skills: %w", source, err)
-		}
-		if !covered {
-			return fmt.Errorf("Claude skill %s differs from or is missing in .agents/skills; reconcile it manually before init can replace .claude/skills with a symlink", source)
-		}
-	}
-	return nil
-}
-
-func installClaudeSkillsLink(root string) (string, error) {
-	if err := validateClaudeSkillsLinkMigration(root); err != nil {
-		return "", err
-	}
-	claudeDir := filepath.Join(root, ".claude")
-	claudeSkills := filepath.Join(claudeDir, "skills")
-	linkTarget := filepath.Join("..", ".agents", "skills")
-	info, err := os.Lstat(claudeSkills)
-	if err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return workflowLinkDescription(root, claudeSkills, linkTarget)
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("inspect Claude skills path %s: %w", claudeSkills, err)
-	}
-	if err == nil {
-		if err := os.RemoveAll(claudeSkills); err != nil {
-			return "", fmt.Errorf("remove safely migrated Claude skills directory %s: %w", claudeSkills, err)
-		}
-	}
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
-		return "", fmt.Errorf("create Claude workflow directory %s: %w", claudeDir, err)
-	}
-	if err := os.Symlink(linkTarget, claudeSkills); err != nil {
-		return "", fmt.Errorf("link Claude skills %s to %s: %w", claudeSkills, linkTarget, err)
-	}
-	return workflowLinkDescription(root, claudeSkills, linkTarget)
-}
-
-func workflowLinkDescription(root, linkPath, target string) (string, error) {
-	relative, err := filepath.Rel(root, linkPath)
-	if err != nil {
-		return "", fmt.Errorf("describe workflow link %s: %w", linkPath, err)
-	}
-	return filepath.ToSlash(relative) + " -> " + filepath.ToSlash(target), nil
-}
-
 func symlinkMatchesPath(linkPath, expectedPath string) (bool, string, error) {
 	target, err := os.Readlink(linkPath)
 	if err != nil {
@@ -424,14 +331,6 @@ func symlinkMatchesPath(linkPath, expectedPath string) (bool, string, error) {
 		return false, target, err
 	}
 	return filepath.Clean(resolved) == filepath.Clean(expectedPath), target, nil
-}
-
-func managedIssueSpecSkillDirectory(path string) bool {
-	body, err := os.ReadFile(filepath.Join(path, "SKILL.md"))
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(body), `generatedBy: "issue-spec"`)
 }
 
 func directoryTreeCoveredByTarget(source, target string) (bool, error) {
@@ -493,85 +392,6 @@ func directoryTreeCoveredByTarget(source, target string) (bool, error) {
 		return nil
 	})
 	return covered, err
-}
-
-func pruneManagedWorkflowAssets(root, delivery string, tools []workflowTool, keepProvider bool) ([]string, error) {
-	type candidate struct {
-		path string
-		name string
-	}
-	retired := []string{"archive", "review", "verify"}
-	if !keepProvider {
-		retired = append(retired, "code-provider")
-	}
-	var candidates []candidate
-	if delivery != workflowDeliveryCommands {
-		for _, name := range retired {
-			candidates = append(candidates, candidate{path: filepath.Join(root, ".agents", "skills", "issue-spec-"+name, "SKILL.md"), name: name})
-			if workflowToolSelected(tools, "claude") {
-				candidates = append(candidates, candidate{path: filepath.Join(root, ".claude", "skills", "issue-spec-"+name, "SKILL.md"), name: name})
-			}
-		}
-	}
-	if delivery != workflowDeliverySkills {
-		for _, tool := range tools {
-			if tool.ID == "claude" {
-				for _, name := range retired {
-					candidates = append(candidates, candidate{path: filepath.Join(root, ".claude", "commands", "issue-spec", name+".md"), name: name})
-				}
-			}
-		}
-	}
-	var pruned []string
-	for _, candidate := range candidates {
-		body, err := os.ReadFile(candidate.path)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("inspect managed retired workflow asset %s: %w", candidate.path, err)
-		}
-		content := string(body)
-		title := strings.ToUpper(candidate.name[:1]) + candidate.name[1:]
-		managedSkill := strings.Contains(content, `generatedBy: "issue-spec"`) && strings.Contains(content, "name: issue-spec-"+candidate.name+"\n")
-		managedCommand := strings.Contains(content, `name: "Issue Spec: `+title+`"`) &&
-			strings.Contains(content, `category: "Workflow"`) && strings.Contains(content, "# Issue Spec "+title+"\n")
-		if !managedSkill && !managedCommand {
-			continue
-		}
-		if err := os.Remove(candidate.path); err != nil {
-			return nil, fmt.Errorf("prune managed retired workflow asset %s: %w", candidate.path, err)
-		}
-		pruned = append(pruned, cleanGeneratedPath(candidate.path))
-	}
-	return pruned, nil
-}
-
-func pruneManagedHTMLReviewReference(root, delivery string, enabled bool) ([]string, error) {
-	if enabled || delivery == workflowDeliveryCommands {
-		return nil, nil
-	}
-	skillDir := filepath.Join(root, ".agents", "skills", "issue-spec-workflow")
-	if !managedIssueSpecSkillDirectory(skillDir) {
-		return nil, nil
-	}
-	var pruned []string
-	for _, resource := range templates.HumanReviewProjectionResources() {
-		path, err := skillResourcePath(skillDir, resource.Path)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := os.Lstat(path); os.IsNotExist(err) {
-			continue
-		} else if err != nil {
-			return nil, fmt.Errorf("inspect managed HTML review resource %s: %w", path, err)
-		}
-		if err := os.Remove(path); err != nil {
-			return nil, fmt.Errorf("prune managed HTML review resource %s: %w", path, err)
-		}
-		pruned = append(pruned, cleanGeneratedPath(path))
-	}
-	return pruned, nil
 }
 
 func installGlobalCodexPrompts(root, repo string, provider *workflow.ProviderPlan, options globalPromptInstallOptions, result *workflowGenerationResult) error {
@@ -681,7 +501,7 @@ func workflowCommandContentsWithProvider(repo string, plan workflow.Plan, provid
 func normalizeWorkflowDelivery(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "" {
-		return workflowDeliveryBoth, nil
+		return workflowDeliverySkills, nil
 	}
 	switch value {
 	case workflowDeliveryBoth, workflowDeliverySkills, workflowDeliveryCommands:

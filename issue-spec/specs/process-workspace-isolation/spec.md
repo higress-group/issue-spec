@@ -94,6 +94,12 @@ Issue-spec MUST track portable workspace lifecycle metadata for each coordinator
 - **WHEN** a branch or worktree is not associated with the active PROCESS workspace lease
 - **THEN** automated cleanup MUST skip it and report the ownership mismatch instead of deleting it
 
+#### Scenario: Pool inspection uses an aliased parent directory
+
+- **WHEN** a PROCESS pool is inspected through a symlinked parent directory, including a platform temporary-directory alias
+- **THEN** lease and Git worktree ownership MUST be matched using the canonical pool identity, including when an active lease's worktree directory is missing
+- **AND** deletion MUST still validate the literal managed target and reject a symlinked pool entry rather than deleting its destination
+
 #### Scenario: Runner exposes a session-scoped workspace pool
 
 - **WHEN** a coordinator ACPX session is prepared in runner mode

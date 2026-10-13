@@ -99,26 +99,11 @@ func workflowNotice(plan workflow.Plan) string {
 	if plan.Source.TemplateDir != "" {
 		fmt.Fprintf(&b, "- Workflow Template Directory: `%s`\n", plan.Source.TemplateDir)
 	}
-	if len(plan.Config.Context) > 0 {
-		b.WriteString("- Workflow Context:\n")
-		writeNoticeJSONBlock(&b, plan.Config.Context)
-	}
-	if len(plan.Config.Rules) > 0 {
-		b.WriteString("- Workflow Rules:\n")
-		writeNoticeJSONBlock(&b, plan.Config.Rules)
+	if plan.Source.ConfigPath != "" {
+		b.WriteString("- Read the workflow config once for project context, rules and references. Load only guidance.shared and the current phase's guidance.propose, guidance.apply or guidance.review. Paths are relative to the repository root. Project files supplement this shared workflow; do not edit generated skills to customize it.\n")
 	}
 	if hasArtifactInstructions(plan.Artifacts) {
-		b.WriteString("- Artifact Instructions:\n")
-		for _, artifact := range plan.Artifacts {
-			instructions := strings.TrimSpace(artifact.Instructions)
-			if instructions == "" {
-				continue
-			}
-			fmt.Fprintf(&b, "  - `%s` (%s):\n", artifact.ID, artifact.Type)
-			for _, line := range strings.Split(instructions, "\n") {
-				fmt.Fprintf(&b, "    %s\n", strings.TrimRight(line, " \t"))
-			}
-		}
+		b.WriteString("- This schema has artifact instructions. Inspect `issue-spec workflow which --repo <repo> --json` and apply the selected artifact's instructions before authoring it.\n")
 	}
 	if len(plan.Diagnostics) > 0 {
 		b.WriteString("- Workflow Diagnostics:\n")
