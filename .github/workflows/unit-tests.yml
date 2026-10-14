@@ -78,6 +78,7 @@ jobs:
         run: >-
           go test -count=1
           ./internal/server/admin
+          ./internal/server/api/github/issues
           ./internal/server/auth
           ./internal/server/auth/delegation
           ./internal/server/authz
