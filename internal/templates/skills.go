@@ -53,6 +53,8 @@ func IssueSpecSkillsWithOptions(repo string, options WorkflowAuthoringOptions) [
 		if tmpl.Name == "issue-spec-workflow" {
 			reviewPath = "references/implementation-review.md"
 		}
+		body = strings.ReplaceAll(body, "{{planning-scope}}", "Before authoring or revising Proposal/SPEC or Design/TASK, read [Requirement scope and verification ownership](../issue-spec-workflow/references/planning-scope.md).")
+		body = strings.ReplaceAll(body, "{{durable-maintenance}}", "For repository durable specs, follow [Durable contract maintenance](../issue-spec-workflow/references/durable-maintenance.md) to reconcile the requested increment with the complete current contract before handoff.")
 		body = strings.ReplaceAll(body, "{{implementation-review}}", "For requested implementation review or publication, read [Implementation Review and Publication]("+reviewPath+") completely. Do not load it for Proposal/Design authoring.")
 		if strings.TrimSpace(tmpl.SkillOnly) != "" {
 			body = strings.TrimRight(body, "\n") + "\n\n" + strings.TrimSpace(tmpl.SkillOnly) + "\n"
@@ -61,7 +63,9 @@ func IssueSpecSkillsWithOptions(repo string, options WorkflowAuthoringOptions) [
 		if tmpl.Name == "issue-spec-workflow" {
 			skill.Resources = []RenderedSkillResource{{Path: "references/implementation-review.md", Content: implementationReviewReference},
 				{Path: "references/progressive-reading.md", Content: strings.ReplaceAll(progressiveReadingReference, "{{repo}}", repo)},
-				{Path: "references/question-decisions.md", Content: strings.ReplaceAll(questionDecisionsReference, "{{repo}}", repo)}}
+				{Path: "references/question-decisions.md", Content: strings.ReplaceAll(questionDecisionsReference, "{{repo}}", repo)},
+				{Path: "references/planning-scope.md", Content: planningScopeReference},
+				{Path: "references/durable-maintenance.md", Content: durableMaintenanceReference}}
 			if options.HTMLReviewEnabled {
 				skill.Resources = append(skill.Resources, HumanReviewProjectionResources()...)
 			}
@@ -89,7 +93,7 @@ func IssueSpecCommandContentsWithOptions(repo string, options WorkflowAuthoringO
 			Description: tmpl.Description,
 			Category:    "Workflow",
 			Tags:        []string{"workflow", "issue-spec"},
-			Body:        strings.ReplaceAll(tmpl.Body, "{{implementation-review}}", implementationReviewReference),
+			Body:        strings.NewReplacer("{{implementation-review}}", implementationReviewReference, "{{planning-scope}}", planningScopeReference, "{{durable-maintenance}}", durableMaintenanceReference).Replace(tmpl.Body),
 		})
 	}
 	return out
@@ -176,6 +180,8 @@ Use for /issue-spec:propose or issue-native planning in a selected issue-spec ch
 
 ` + typedIDAllocationGuidance + `
 
+{{planning-scope}}
+
 1. Validate workflow config, search related issues, and open only selected discussions. If the issue is already in a later phase, continue that phase rather than duplicating it.
 2. Keep unconfirmed investigation in a simple issue with issue-spec issue create simple; a proposal states a confirmed problem and intended change, so never promote an investigation issue into the proposal or attach SPEC/Design to it. Create phase issues with body files, starting with issue-spec issue create proposal --repo {{repo}} --body-file <file>. Follow ` + "`rules.language`" + ` and ` + "`rules.language_instructions`" + `. For localized titles, pass an explicit ` + "`--title`" + ` for Proposal, Design, and Implement; the derived title retains an English stage prefix. Keep standardized stage prefixes and avoid style-only title rewrites.
 3. Perform the Proposal's first QUESTION discovery/create pass. Record each genuine unresolved decision as a blocking typed QUESTION with issue-spec question create, attaching credible options; never leave an open decision as body or projection prose. Do not manufacture a question or reopen a settled choice; keep unresolved decisions distinct from evidence-dependent items. Resolve routine private details within the confirmed scope; self-contained contracts need not prescribe every helper or layout.
@@ -207,6 +213,8 @@ Implement the authorized change directly in the current session. Use issue-spec-
 ## Implementation and Handoff
 
 Read the complete Design, applicable answers, selected TASKs and required SPECs/dependencies. Confirm base/worktree, ownership, shared interfaces and required checks. Implement and self-test within that scope; recover derivable facts and pause only work affected by missing or conflicting requirements. Keep durable specifications current, without turning temporary development stages into product requirements.
+
+{{durable-maintenance}}
 
 Run affected checks and explicit gates. After they pass, expand testing only for a change, failure or concrete unresolved risk. Evidence names the revision actually checked; after a repair rerun affected checks and preserve reused evidence at its original revision. Report the candidate, results, gaps and remaining review needs. Self-tests do not constitute independent review or approval. Do not dispatch a reviewer, publish, push or merge as a workflow side effect.
 

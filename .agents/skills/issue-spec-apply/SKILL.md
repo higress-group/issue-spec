@@ -21,6 +21,8 @@ Every new typed ID MUST be `<TYPE>-<issue><three-digit sequence>`: Issue 1 start
 
 Read the complete Design, applicable answers, selected TASKs and required SPECs/dependencies. Confirm base/worktree, ownership, shared interfaces and required checks. Implement and self-test within that scope; recover derivable facts and pause only work affected by missing or conflicting requirements. Keep durable specifications current, without turning temporary development stages into product requirements.
 
+For repository durable specs, follow [Durable contract maintenance](../issue-spec-workflow/references/durable-maintenance.md) to reconcile the requested increment with the complete current contract before handoff.
+
 Run affected checks and explicit gates. After they pass, expand testing only for a change, failure or concrete unresolved risk. Evidence names the revision actually checked; after a repair rerun affected checks and preserve reused evidence at its original revision. Report the candidate, results, gaps and remaining review needs. Self-tests do not constitute independent review or approval. Do not dispatch a reviewer, publish, push or merge as a workflow side effect.
 
 Delegation remains optional and requires actual authorization. Each assigned owner implements and tests its bounded package; any designated convergence owner handles shared changes and integration. Do not manufacture phase artifacts, PROCESS or role receipts to record ordinary single-owner work.

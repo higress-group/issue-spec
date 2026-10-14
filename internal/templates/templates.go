@@ -40,13 +40,13 @@ func ProposalIssueWithOptions(change string, options WorkflowAuthoringOptions) (
 	b.WriteString(fillSection("Scope", "State what is in scope, precisely enough that another agent can tell whether a given change belongs here."))
 	b.WriteString(fillSection("Non-Goals", "List what is explicitly out of scope to prevent scope creep."))
 	b.WriteString(plainSection("Key Constraints", "- Active change artifacts live in this GitHub proposal/design/implement issue set."))
-	b.WriteString(fillSection("Related Specs Analysis", "Summarize the existing SPECs or durable specs this interacts with and how, so a reader need not rediscover them."))
+	b.WriteString(fillSection("Related Specs Analysis", "Summarize current behavior from code, applicable SPECs or durable specs, and representative tests. Identify reusable capabilities, actual gaps or changed behavior, and inherited contracts, with repository references; distinguish observed implementation from intended requirements."))
 	b.WriteString(fillSection("Existing Assumptions Impact", "Record the assumptions in force and how this change affects or depends on them."))
 	b.WriteString(plainSection("Question Convergence Check", "- Canonical carrier: any genuine unresolved decision belongs only in a blocking typed QUESTION comment attached to this Proposal, not this issue body.\n- Issue-body policy: summarize only settled decisions and assumptions."))
 	if options.HTMLReviewEnabled {
 		b.WriteString(plainSection("Human Review Projection", "- Timing: after the first QUESTION discovery/create pass and before complete SPEC authoring.\n- Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.\n- Presentation: lead with an affected person or operator and one concrete before/after case before introducing technical structure.\n- Coverage: build a coverage ledger and present the complete current problem, outcome, boundaries, non-goals, assumptions, risks, decisions, alternatives, and expected SPEC coverage; do not emit only a delta or executive summary.\n- Context: projection HTML source is excluded from default Agent context."))
 	}
-	b.WriteString(fillSection("Capabilities", "List the capability areas this change introduces or modifies."))
+	b.WriteString(fillSection("Capabilities", "State the new, changed or corrected observable capabilities this change requires on top of the current baseline. Keep unchanged capabilities as context, and put concrete verification work in Design TASKs rather than separate product requirements."))
 	b.WriteString(fillSection("Impact", "Describe the expected impact on users, agents, and the workflow."))
 	body := strings.TrimRight(b.String(), "\n") + "\n"
 	title := IssueTitle("proposal", change, body, "")
@@ -74,7 +74,7 @@ func DesignIssueWithOptions(change, proposalRef string, options WorkflowAuthorin
 	b.WriteString(fillSection("Candidate Plans", "Present the candidate plans considered, with enough detail to compare them."))
 	b.WriteString(fillSection("Decisions", "State the decisions made and the environment-independent rationale behind each."))
 	b.WriteString(fillSection("Rejected Alternatives", "Record the alternatives rejected and why, so they are not re-litigated."))
-	b.WriteString(fillSection("Test Strategy and Acceptance Criteria", "Describe how each SPEC is verified and what acceptance looks like."))
+	b.WriteString(fillSection("Test Strategy and Acceptance Criteria", "Describe how each SPEC is verified and what acceptance looks like. Assign concrete cases, environments, commands or test entry points, and expected results/evidence to the relevant TASKs; reference the product SPECs they verify without inventing validation-only requirements."))
 	b.WriteString(fillSection("Rollout / Rollback Notes", "Note rollout and rollback considerations."))
 	b.WriteString(plainSection("Confirmation Checklist", "- [ ] SPEC comments are linked and testable.\n- [ ] Proposal and Design blocking QUESTION comments are resolved or explicitly accepted as assumptions."))
 	body := strings.TrimRight(b.String(), "\n") + "\n"

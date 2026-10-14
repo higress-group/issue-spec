@@ -3,11 +3,11 @@
   "release": "development",
   "source_revision": "unknown",
   "requirements_skill_content_id": "sha256:35e55ba3b52b377acbd36ca4305cd958e3bd593008d576a7a82c9b06ab862ed1",
-  "content_digest": "sha256:7de7a521b3c00e51f1d28547aa55a5367088ac250818b7afc63de4abaad099e6",
+  "content_digest": "sha256:032b1f7c0363e1283687f13c186486bec9c93c60ab89dc15beb6ac23da9f706e",
   "files": [
     {
       "path": ".agents/skills/issue-spec-apply/SKILL.md",
-      "sha256": "1a82037b15cb811eae02c5db504256a25b834ca110dde9146ef7e0e4600cb924"
+      "sha256": "8e45e6e38085f9243d89f2e6aef67eaf5de17bd27970ab70b3a1e4016b6c57a2"
     },
     {
       "path": ".agents/skills/issue-spec-github/SKILL.md",
@@ -15,15 +15,23 @@
     },
     {
       "path": ".agents/skills/issue-spec-propose/SKILL.md",
-      "sha256": "a6199c7baad64541497c2b1d2fb25d6c6d88c42c9fbccc1577cc229bbb44c09e"
+      "sha256": "2b7752c2dad7f7164b183c9b9ae2d9b719c502af31fdc93c90aebdedb827b7b5"
     },
     {
       "path": ".agents/skills/issue-spec-workflow/SKILL.md",
       "sha256": "bc48b5f608258aa5b821738100c68e6d2fa4d8e24aafc1ec615649482369869a"
     },
     {
+      "path": ".agents/skills/issue-spec-workflow/references/durable-maintenance.md",
+      "sha256": "22c082a779ba0de7fa8ec50c90fd4aa4711c365166972ea9ff81707be012aa5c"
+    },
+    {
       "path": ".agents/skills/issue-spec-workflow/references/implementation-review.md",
       "sha256": "448cfd953d847f0966aa12f0d880f603272abb73caba9a4709e4c6bf44ee5368"
+    },
+    {
+      "path": ".agents/skills/issue-spec-workflow/references/planning-scope.md",
+      "sha256": "e61e7e754b3643c4fdaa4e7b7d485f024d66756f77cbbce28a3db6f05306cc1f"
     },
     {
       "path": ".agents/skills/issue-spec-workflow/references/progressive-reading.md",

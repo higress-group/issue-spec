@@ -3,7 +3,6 @@ package durable
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -41,19 +40,6 @@ type operationInput struct {
 	Source SourceInput
 	Value  Operation
 }
-
-type requirementBlock struct {
-	Title string
-	Body  string
-}
-
-type durableDocument struct {
-	Capability string
-	Prefix     string
-	Blocks     []requirementBlock
-}
-
-var durableRequirementHeading = regexp.MustCompile(`(?m)^### Requirement: ([^\r\n]+)$`)
 
 func CompilePlan(input CompileInput) (Plan, error) {
 	if !planRepository.MatchString(strings.TrimSpace(input.Repository)) || input.Proposal <= 0 ||
@@ -287,44 +273,6 @@ func newDurableDocument(capability, proposalURL string) durableDocument {
 	return durableDocument{Capability: capability, Prefix: prefix.String()}
 }
 
-func parseDurableDocument(body, capability string) (durableDocument, error) {
-	if strings.Contains(body, "\r") || !strings.HasSuffix(body, "\n") {
-		return durableDocument{}, errors.New("durable target must use LF newlines and one trailing newline")
-	}
-	header := "# " + capability + "\n"
-	if !strings.HasPrefix(body, header) {
-		return durableDocument{}, fmt.Errorf("durable target heading does not match capability %q", capability)
-	}
-	marker := "## Requirements\n\n"
-	if strings.Count(body, marker) != 1 || strings.Count(body, "\n## Purpose\n") != 1 {
-		return durableDocument{}, errors.New("durable target must contain one canonical Purpose and Requirements section")
-	}
-	index := strings.Index(body, marker)
-	prefix, section := body[:index+len(marker)], body[index+len(marker):]
-	section = strings.TrimSuffix(section, "\n")
-	if strings.TrimSpace(section) == "" {
-		return durableDocument{Capability: capability, Prefix: prefix}, nil
-	}
-	locations := durableRequirementHeading.FindAllStringIndex(section, -1)
-	if len(locations) == 0 || strings.TrimSpace(section[:locations[0][0]]) != "" {
-		return durableDocument{}, errors.New("durable target Requirements section contains content outside Requirement blocks")
-	}
-	document := durableDocument{Capability: capability, Prefix: prefix}
-	for index, location := range locations {
-		end := len(section)
-		if index+1 < len(locations) {
-			end = locations[index+1][0]
-		}
-		block := strings.TrimSpace(section[location[0]:end])
-		match := durableRequirementHeading.FindStringSubmatch(block)
-		if len(match) != 2 || strings.TrimSpace(match[1]) != match[1] || match[1] == "" {
-			return durableDocument{}, errors.New("durable target has an invalid Requirement identity")
-		}
-		document.Blocks = append(document.Blocks, requirementBlock{Title: match[1], Body: block})
-	}
-	return document, nil
-}
-
 func duplicateRequirementTitles(blocks []requirementBlock) []string {
 	counts := map[string]int{}
 	for _, block := range blocks {
@@ -338,17 +286,6 @@ func duplicateRequirementTitles(blocks []requirementBlock) []string {
 	}
 	sort.Strings(result)
 	return result
-}
-
-func renderDurableDocument(document durableDocument) string {
-	if len(document.Blocks) == 0 {
-		return document.Prefix
-	}
-	blocks := make([]string, len(document.Blocks))
-	for index, block := range document.Blocks {
-		blocks[index] = strings.TrimSpace(block.Body)
-	}
-	return document.Prefix + strings.Join(blocks, "\n\n") + "\n"
 }
 
 func applyOperationToDocument(document *durableDocument, item operationInput, plan *Plan) []Finding {
