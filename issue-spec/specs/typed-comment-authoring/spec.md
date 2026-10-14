@@ -87,6 +87,22 @@ Generated guidance MUST use canonical generators and validators for selected SPE
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/417#issuecomment-5165960908
 
+### Requirement: planning guidance separates capability changes from verification work
+
+Generated Proposal authoring guidance and built-in issue template prompts MUST direct authors to establish current capabilities, reusable behavior, actual gaps or changes, and inherited contracts from repository evidence before defining Proposal SPECs. Proposal SPECs MUST describe self-contained new, changed or corrected observable product contracts with behavioral WHEN/THEN scenarios. Unchanged capabilities remain baseline or constraints rather than separate new deliverables. A new integration boundary MAY require a SPEC even when it reuses existing implementation.
+
+Generated guidance MUST assign concrete verification cases, environments, commands or test entry points, and expected results/evidence to Design TASKs, with the overall strategy in Design. Validation work MUST reference the contracts it verifies rather than require an invented validation-only SPEC. Platform support MAY remain a product requirement when it changes supported behavior. This authoring guidance MUST NOT introduce a new mandatory artifact, phase, approval or semantic validation gate. Repository durable specs MUST continue to describe the complete current contract, not only the change delta.
+
+#### Scenario: a new consumer reuses an existing capability
+
+- **WHEN** an author plans a consumer integration over an existing engine
+- **THEN** generated guidance directs the author to specify the consumer's missing observable behavior, identify the reused engine as baseline, and put concrete integration verification in Design TASKs
+
+#### Scenario: evidence is missing for unchanged behavior
+
+- **WHEN** the required work is to verify an already implemented contract
+- **THEN** generated guidance keeps that work in the selected Design/TASK or simple Issue without inventing a product SPEC or requiring a new planning phase
+
 ### Requirement: new typed comment identities are scoped by their owning Issue
 
 Every newly created typed comment ID MUST use `<TYPE>-<issue><three-digit sequence>`, where the Issue number is the owning target Issue and the non-zero, zero-padded sequence is allocated only within that Issue and type. Generated workflow, propose, and apply guidance MUST repeat this rule at each typed-comment writing entry point rather than relying on cross-skill discovery.

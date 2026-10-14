@@ -32,7 +32,7 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	if got, want := len(result.SkillFiles), 4; got != want {
 		t.Fatalf("skill file count = %d, want %d", got, want)
 	}
-	if got, want := len(result.SkillResourceFiles), len(templates.HumanReviewProjectionResources())+4; got != want {
+	if got, want := len(result.SkillResourceFiles), len(templates.HumanReviewProjectionResources())+5; got != want {
 		t.Fatalf("skill resource file count = %d, want %d", got, want)
 	}
 	if got, want := len(result.SkillLinks), 4; got != want {

@@ -107,6 +107,9 @@ func TestRenderedSkillRoutingMetadataAndCommandParity(t *testing.T) {
 			if strings.Contains(command.Body, "{{") || (command.ID == "apply" && !strings.Contains(command.Body, implementationReviewReference)) {
 				t.Errorf("command-only %s delivery lost self-contained review instructions", command.ID)
 			}
+			if command.ID == "propose" && !strings.Contains(command.Body, planningScopeReference) {
+				t.Error("command-only propose delivery lost self-contained requirement scope guidance")
+			}
 		}
 	}
 }

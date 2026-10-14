@@ -37,3 +37,6 @@ var progressiveReadingReference string
 
 //go:embed assets/question-decisions.md
 var questionDecisionsReference string
+
+//go:embed assets/planning-scope.md
+var planningScopeReference string

@@ -92,7 +92,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 	skills := IssueSpecSkillsWithOptions("owner/repo", disabled)
 	for _, skill := range skills {
 		for _, resource := range skill.Resources {
-			if skill.Name != "issue-spec-workflow" || (resource.Path != "references/implementation-review.md" && resource.Path != "references/progressive-reading.md" && resource.Path != "references/question-decisions.md") {
+			if skill.Name != "issue-spec-workflow" || (resource.Path != "references/implementation-review.md" && resource.Path != "references/progressive-reading.md" && resource.Path != "references/question-decisions.md" && resource.Path != "references/planning-scope.md") {
 				t.Fatalf("disabled HTML review emitted projection resource for %s: %s", skill.Name, resource.Path)
 			}
 		}
