@@ -40,3 +40,6 @@ var questionDecisionsReference string
 
 //go:embed assets/planning-scope.md
 var planningScopeReference string
+
+//go:embed assets/durable-maintenance.md
+var durableMaintenanceReference string

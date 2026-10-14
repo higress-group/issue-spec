@@ -3,11 +3,11 @@
   "release": "development",
   "source_revision": "unknown",
   "requirements_skill_content_id": "sha256:35e55ba3b52b377acbd36ca4305cd958e3bd593008d576a7a82c9b06ab862ed1",
-  "content_digest": "sha256:569db51b60d899b0ba03198547cbf670d965fca7188ea5b0809b9f5979458029",
+  "content_digest": "sha256:29c9c408f21586a27fdea50042f6f22eeced8926f4373e2decb2ecc75adc7486",
   "files": [
     {
       "path": ".agents/skills/issue-spec-apply/SKILL.md",
-      "sha256": "1a82037b15cb811eae02c5db504256a25b834ca110dde9146ef7e0e4600cb924"
+      "sha256": "8e45e6e38085f9243d89f2e6aef67eaf5de17bd27970ab70b3a1e4016b6c57a2"
     },
     {
       "path": ".agents/skills/issue-spec-github/SKILL.md",
@@ -20,6 +20,10 @@
     {
       "path": ".agents/skills/issue-spec-workflow/SKILL.md",
       "sha256": "bc48b5f608258aa5b821738100c68e6d2fa4d8e24aafc1ec615649482369869a"
+    },
+    {
+      "path": ".agents/skills/issue-spec-workflow/references/durable-maintenance.md",
+      "sha256": "582f9037b0ec382a1706899b88ebb55d871a59eb0cb3a6824b46157cb9187978"
     },
     {
       "path": ".agents/skills/issue-spec-workflow/references/implementation-review.md",

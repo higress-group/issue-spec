@@ -54,6 +54,7 @@ func IssueSpecSkillsWithOptions(repo string, options WorkflowAuthoringOptions) [
 			reviewPath = "references/implementation-review.md"
 		}
 		body = strings.ReplaceAll(body, "{{planning-scope}}", "Before authoring or revising Proposal/SPEC or Design/TASK, read [Requirement scope and verification ownership](../issue-spec-workflow/references/planning-scope.md).")
+		body = strings.ReplaceAll(body, "{{durable-maintenance}}", "For repository durable specs, follow [Durable contract maintenance](../issue-spec-workflow/references/durable-maintenance.md) to reconcile the requested increment with the complete current contract before handoff.")
 		body = strings.ReplaceAll(body, "{{implementation-review}}", "For requested implementation review or publication, read [Implementation Review and Publication]("+reviewPath+") completely. Do not load it for Proposal/Design authoring.")
 		if strings.TrimSpace(tmpl.SkillOnly) != "" {
 			body = strings.TrimRight(body, "\n") + "\n\n" + strings.TrimSpace(tmpl.SkillOnly) + "\n"
@@ -63,7 +64,8 @@ func IssueSpecSkillsWithOptions(repo string, options WorkflowAuthoringOptions) [
 			skill.Resources = []RenderedSkillResource{{Path: "references/implementation-review.md", Content: implementationReviewReference},
 				{Path: "references/progressive-reading.md", Content: strings.ReplaceAll(progressiveReadingReference, "{{repo}}", repo)},
 				{Path: "references/question-decisions.md", Content: strings.ReplaceAll(questionDecisionsReference, "{{repo}}", repo)},
-				{Path: "references/planning-scope.md", Content: planningScopeReference}}
+				{Path: "references/planning-scope.md", Content: planningScopeReference},
+				{Path: "references/durable-maintenance.md", Content: durableMaintenanceReference}}
 			if options.HTMLReviewEnabled {
 				skill.Resources = append(skill.Resources, HumanReviewProjectionResources()...)
 			}
@@ -91,7 +93,7 @@ func IssueSpecCommandContentsWithOptions(repo string, options WorkflowAuthoringO
 			Description: tmpl.Description,
 			Category:    "Workflow",
 			Tags:        []string{"workflow", "issue-spec"},
-			Body:        strings.NewReplacer("{{implementation-review}}", implementationReviewReference, "{{planning-scope}}", planningScopeReference).Replace(tmpl.Body),
+			Body:        strings.NewReplacer("{{implementation-review}}", implementationReviewReference, "{{planning-scope}}", planningScopeReference, "{{durable-maintenance}}", durableMaintenanceReference).Replace(tmpl.Body),
 		})
 	}
 	return out
@@ -211,6 +213,8 @@ Implement the authorized change directly in the current session. Use issue-spec-
 ## Implementation and Handoff
 
 Read the complete Design, applicable answers, selected TASKs and required SPECs/dependencies. Confirm base/worktree, ownership, shared interfaces and required checks. Implement and self-test within that scope; recover derivable facts and pause only work affected by missing or conflicting requirements. Keep durable specifications current, without turning temporary development stages into product requirements.
+
+{{durable-maintenance}}
 
 Run affected checks and explicit gates. After they pass, expand testing only for a change, failure or concrete unresolved risk. Evidence names the revision actually checked; after a repair rerun affected checks and preserve reused evidence at its original revision. Report the candidate, results, gaps and remaining review needs. Self-tests do not constitute independent review or approval. Do not dispatch a reviewer, publish, push or merge as a workflow side effect.
 

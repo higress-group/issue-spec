@@ -103,6 +103,22 @@ Generated guidance MUST assign concrete verification cases, environments, comman
 - **WHEN** the required work is to verify an already implemented contract
 - **THEN** generated guidance keeps that work in the selected Design/TASK or simple Issue without inventing a product SPEC or requiring a new planning phase
 
+### Requirement: implementation guidance reconciles durable contracts
+
+Generated implementation guidance MUST assign affected repository durable-spec maintenance to the current implementation owner, on the implementation branch with the code. The owner MUST reconcile existing contracts with confirmed change requirements and effective decisions, retaining still-applicable behavior and scenarios and applying only authorized changes or removals. Durable requirements MUST be organized by lasting capability rather than requiring one file or requirement per Proposal SPEC. Code and tests inform reconciliation but MUST NOT justify weakening a contract to match incomplete implementation.
+
+Guidance for the durable projection protocol MUST explain that MODIFIED replaces a whole Requirement block, that `current-spec` is appropriate only for an already complete durable requirement, and that `inline` can carry a consolidated complete replacement. Preview/apply/check verify the declared projection and its structural and revision consistency; guidance MUST NOT present them as proof of semantic completeness or product correctness. Simple-Issue changes MAY maintain durable files directly without creating Proposal artifacts solely for projection. Durable review belongs in the implementation handoff without an additional archive phase or approval gate.
+
+#### Scenario: an incremental SPEC modifies an existing contract
+
+- **WHEN** an implementation change extends a durable Requirement with existing failure and compatibility scenarios
+- **THEN** generated guidance directs the owner to retain still-applicable scenarios in a complete replacement and use an inline projection when the Proposal SPEC alone is not that replacement
+
+#### Scenario: a declared projection omits an unchanged constraint
+
+- **WHEN** the candidate matches its declared durable projection but an unchanged constraint has been omitted
+- **THEN** generated guidance still requires semantic reconciliation of that omission and does not treat a passing projection check as proof that the contract is correct
+
 ### Requirement: new typed comment identities are scoped by their owning Issue
 
 Every newly created typed comment ID MUST use `<TYPE>-<issue><three-digit sequence>`, where the Issue number is the owning target Issue and the non-zero, zero-padded sequence is allocated only within that Issue and type. Generated workflow, propose, and apply guidance MUST repeat this rule at each typed-comment writing entry point rather than relying on cross-skill discovery.
