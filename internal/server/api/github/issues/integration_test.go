@@ -121,19 +121,8 @@ func TestIssueCommentHTTPCompatibilityMarkerAndAuthorization(t *testing.T) {
 	future := "<!-- issue-spec:type=SPEC id=SPEC-777 version=9 -->\nfuture raw\r\n"
 	response = request(t, mux, http.MethodPatch, fmt.Sprintf("/repos/acme/widgets/issues/comments/%d", comment.ID),
 		jsonBody(map[string]any{"body": future}), "owner")
-	if response.Code != http.StatusOK {
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "invalid_marker_version") {
 		t.Fatalf("future marker response=%d %s", response.Code, response.Body.String())
-	}
-	var updated codec.Comment
-	decode(t, response, &updated)
-	if updated.Body != future {
-		t.Fatalf("future raw body = %q", updated.Body)
-	}
-	assertProjectionCounts(t, environment.pool, 0, 1)
-	response = request(t, mux, http.MethodPatch, fmt.Sprintf("/repos/acme/widgets/issues/comments/%d", comment.ID),
-		jsonBody(map[string]any{"body": typed}), "owner")
-	if response.Code != http.StatusOK {
-		t.Fatalf("marker repair response=%d %s", response.Code, response.Body.String())
 	}
 	assertProjectionCounts(t, environment.pool, 1, 0)
 
@@ -791,7 +780,7 @@ func TestPublicContributorIssueCompatibility(t *testing.T) {
 
 	standardComments := []string{
 		"<!-- issue-spec:type=SPEC id=SPEC-001 version=1 -->\nAgent: Requirements\nType: SPEC\nID: SPEC-001\nStatus: confirmed\nScope: external requirement\nLinks:\n\n## Raw\nThe export MUST omit credentials.\n",
-		"<!-- issue-spec:type=QUESTION id=QUESTION-001 version=1 -->\nAgent: Requirements\nType: QUESTION\nID: QUESTION-001\nStatus: open\nScope: external requirement\nLinks:\n\n## Question\nShould the first version exclude attachments?\n",
+		"<!-- issue-spec:type=QUESTION id=QUESTION-001 version=1 -->\nAgent: Requirements\nType: QUESTION\nID: QUESTION-001\nStatus: confirmed\nScope: external requirement\nLinks:\n\n## Question\nShould the first version exclude attachments?\n",
 		"Attachments can remain out of scope for the first version.",
 	}
 	var discussion codec.Comment

@@ -50,7 +50,7 @@ func TestNotificationHooksShareMutationTransactionsAndKeepArtifactMailExclusive(
 	}
 }
 
-func TestMentionFirstSeenAndCompletedLifecycleNotifyOnce(t *testing.T) {
+func TestMentionFirstSeenAndDeprecatedCompletedLifecycleNotProduced(t *testing.T) {
 	environment := newEnvironment(t, models.VisibilityPrivate)
 	recipient := environment.addMember(t, "recipient", "member")
 	setNotificationRecipient(t, environment, recipient.User.ID)
@@ -88,6 +88,9 @@ func TestMentionFirstSeenAndCompletedLifecycleNotifyOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Closed-only lifecycle cutover: closing every stage plus a historical
+	// VERIFY closure carrier must not synthesize the deprecated completed
+	// lifecycle or a completed-milestone delivery.
 	verifyBody := "<!-- issue-spec:type=VERIFY id=VERIFY-001 version=1 -->\n" +
 		"Agent: verifier\nType: VERIFY\nID: VERIFY-001\nStatus: done\nScope: final\nLinks:\n" +
 		"- PR: https://code.example/acme/widgets/changes/42\n"
@@ -97,14 +100,14 @@ func TestMentionFirstSeenAndCompletedLifecycleNotifyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := countNotificationRows(t, environment, `SELECT count(*) FROM change_notification_milestones
-		WHERE change_key_key = 'complete-flow' AND milestone = 'completed'`); got != 1 {
+		WHERE change_key_key = 'complete-flow' AND milestone = 'completed'`); got != 0 {
 		t.Fatalf("completed milestone facts = %d", got)
 	}
 	if got := countNotificationRows(t, environment, `SELECT count(*) FROM email_deliveries d
 		JOIN change_notification_milestones m ON m.organization_id = d.organization_id
 		AND m.repository_id = d.repository_id AND m.id = d.milestone_id
 		WHERE d.kind = 'change_milestone' AND m.change_key_key = 'complete-flow'
-		AND m.milestone = 'completed'`); got != 1 {
+		AND m.milestone = 'completed'`); got != 0 {
 		t.Fatalf("completed milestone deliveries = %d", got)
 	}
 	if _, _, err := environment.service.UpdateComment(t.Context(), "acme", "widgets", commentCompatibilityID(t, environment, verify.Comment.ID),
@@ -112,7 +115,7 @@ func TestMentionFirstSeenAndCompletedLifecycleNotifyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := countNotificationRows(t, environment, `SELECT count(*) FROM change_notification_milestones
-		WHERE change_key_key = 'complete-flow' AND milestone = 'completed'`); got != 1 {
+		WHERE change_key_key = 'complete-flow' AND milestone = 'completed'`); got != 0 {
 		t.Fatalf("completed milestone re-entry facts = %d", got)
 	}
 }
