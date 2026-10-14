@@ -100,6 +100,18 @@ addresses remain denied even when a configured CIDR contains them. The same DNS
 resolver and policy are used for subscription preflight and the actual delivery
 connection.
 
+## Optional browser session lifetime
+
+Browser sessions use two operator-tunable lifetimes: `SESSION_IDLE_TTL`
+(default `12h`, the inactivity window that refreshes on use) and
+`SESSION_ABSOLUTE_TTL` (default `168h`, the hard cap from login). Both accept Go
+duration syntax, must be positive, and the absolute lifetime must not be
+shorter than the idle lifetime. The session cookie's `Max-Age` follows the
+absolute lifetime. For example, `SESSION_IDLE_TTL=720h` with
+`SESSION_ABSOLUTE_TTL=720h` keeps a browser signed in for up to one month.
+Changing the values affects only sessions created after a restart; existing
+sessions keep the lifetimes they were issued with.
+
 ## Optional PostgreSQL issue search
 
 Search is explicit and disabled by default. Leave `SEARCH_MODE=disabled` when

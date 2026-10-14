@@ -142,7 +142,8 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
-	sessions, err := session.New(database.Pool(), secrets, session.Config{Secure: origins.Posture.SecureCookies()})
+	sessions, err := session.New(database.Pool(), secrets, session.Config{Secure: origins.Posture.SecureCookies(),
+		IdleTTL: cfg.SessionIdleTTL, AbsoluteTTL: cfg.SessionAbsoluteTTL})
 	if err != nil {
 		return fail(err)
 	}

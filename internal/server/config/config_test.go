@@ -27,6 +27,9 @@ func TestLoadDefaultsAndExplicitValues(t *testing.T) {
 	if cfg.GracefulShutdownTimeout != 30*time.Second || cfg.HealthReadTimeout != 5*time.Second || cfg.HealthWriteTimeout != 5*time.Second {
 		t.Fatalf("duration defaults = %s, %s, %s", cfg.GracefulShutdownTimeout, cfg.HealthReadTimeout, cfg.HealthWriteTimeout)
 	}
+	if cfg.SessionIdleTTL != 12*time.Hour || cfg.SessionAbsoluteTTL != 7*24*time.Hour {
+		t.Fatalf("session ttl defaults = %s, %s", cfg.SessionIdleTTL, cfg.SessionAbsoluteTTL)
+	}
 	if got := fmt.Sprint(cfg.TrustedProxies); got != "[10.0.0.0/8 2001:db8::/32]" {
 		t.Fatalf("TrustedProxies = %s", got)
 	}
@@ -47,6 +50,12 @@ func TestLoadValidation(t *testing.T) {
 		{name: "graceful duration", env: baseEnv(GracefulShutdownTimeoutEnv, "0s"), wantErr: "positive duration"},
 		{name: "read duration", env: baseEnv(HealthReadTimeoutEnv, "later"), wantErr: "positive duration"},
 		{name: "write duration", env: baseEnv(HealthWriteTimeoutEnv, "-1s"), wantErr: "positive duration"},
+		{name: "session idle duration", env: baseEnv(SessionIdleTTLEnv, "0s"), wantErr: "positive duration"},
+		{name: "session absolute duration", env: baseEnv(SessionAbsoluteTTLEnv, "-1h"), wantErr: "positive duration"},
+		{name: "session absolute below idle", env: map[string]string{
+			ListenAddrEnv: ":8080", DatabaseURLEnv: "postgres://db/issue_spec",
+			SessionIdleTTLEnv: "720h", SessionAbsoluteTTLEnv: "168h",
+		}, wantErr: "SESSION_ABSOLUTE_TTL >= SESSION_IDLE_TTL"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -315,6 +324,7 @@ func resetEnv(t *testing.T) {
 		SMTPConfigFileEnv,
 		DeliveryConcurrencyEnv, DeliveryLeaseDurationEnv, DeliveryPollIntervalEnv,
 		DelegationAudienceEnv, DelegationSubjectEnv, TransportPostureEnv, SearchModeEnv,
+		SessionIdleTTLEnv, SessionAbsoluteTTLEnv,
 	} {
 		t.Setenv(name, "")
 	}
