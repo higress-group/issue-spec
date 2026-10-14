@@ -161,6 +161,8 @@ Source SPEC comments:
 
 Repository durable-spec operations MUST target issue-spec/specs/<capability>/spec.md by default. An already-existing openspec/specs/<capability>/spec.md target MAY remain updateable as explicit compatibility, but new legacy paths MUST NOT be created. The durable-spec preview/apply/check protocol MUST use exact declared paths and MUST NOT rely on post-merge Archive path inference.
 
+The capability slug and declared path MUST establish target identity independently of a document's human-readable level-one title. Existing titles and content outside the canonical Requirements section MUST be preserved. Requirement operations MUST be bounded by document-level Markdown headings, ignoring heading-like content in fenced examples. An independent level-two section after Requirements, such as Implementation references, MUST remain separate from the last Requirement. Ambiguous document structure MUST block writes rather than silently discard content.
+
 #### Scenario: new durable target uses issue-spec specs
 
 - **WHEN** an authorized ADDED operation targets a capability without an existing legacy durable file
@@ -175,6 +177,16 @@ Repository durable-spec operations MUST target issue-spec/specs/<capability>/spe
 
 - **WHEN** durable materialization runs for an implementation change
 - **THEN** the CLI MUST consume exact confirmed operation paths and MUST NOT create or select a post-merge Archive target
+
+#### Scenario: update an existing capability with a readable title and reference section
+
+- **WHEN** an authorized operation adds, modifies, removes or renames a Requirement in a document with a readable title and an independent trailing reference section
+- **THEN** preview/apply/check MUST preserve the title and trailing section, place additions inside Requirements, and limit replacement or removal to the targeted Requirement
+
+#### Scenario: examples contain heading-like text
+
+- **WHEN** a Requirement contains fenced Markdown examples with Purpose, Requirements or Requirement headings
+- **THEN** projection MUST preserve those examples as content rather than treating them as document or operation boundaries
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452933
