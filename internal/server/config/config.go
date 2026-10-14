@@ -45,6 +45,8 @@ const (
 	DelegationSubjectEnv       = "DELEGATION_SUBJECT"
 	TransportPostureEnv        = "TRANSPORT_POSTURE"
 	SearchModeEnv              = "SEARCH_MODE"
+	SessionIdleTTLEnv          = "SESSION_IDLE_TTL"
+	SessionAbsoluteTTLEnv      = "SESSION_ABSOLUTE_TTL"
 
 	DefaultGracefulShutdownTimeout = 30 * time.Second
 	DefaultHealthReadTimeout       = 5 * time.Second
@@ -54,6 +56,8 @@ const (
 	DefaultDeliveryConcurrency     = 8
 	DefaultDelegationAudience      = "issue-spec-api"
 	DefaultDelegationSubject       = "issue-spec-runner"
+	DefaultSessionIdleTTL          = 12 * time.Hour
+	DefaultSessionAbsoluteTTL      = 7 * 24 * time.Hour
 	MaxSecretFileBytes             = 64 << 10
 )
 
@@ -149,6 +153,8 @@ type Config struct {
 	DeliveryPollInterval    time.Duration    `json:"delivery_poll_interval"`
 	DelegationAudience      string           `json:"delegation_audience"`
 	DelegationSubject       string           `json:"delegation_subject"`
+	SessionIdleTTL          time.Duration    `json:"session_idle_ttl"`
+	SessionAbsoluteTTL      time.Duration    `json:"session_absolute_ttl"`
 }
 
 // MailEnabled reports operator capability only. Product controls must still
@@ -183,6 +189,8 @@ func Load() (Config, error) {
 		DeliveryPollInterval:    DefaultDeliveryPollInterval,
 		DelegationAudience:      DefaultDelegationAudience,
 		DelegationSubject:       DefaultDelegationSubject,
+		SessionIdleTTL:          DefaultSessionIdleTTL,
+		SessionAbsoluteTTL:      DefaultSessionAbsoluteTTL,
 	}
 
 	if value := env(EnvironmentEnv); value != "" {
@@ -234,6 +242,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.DeliveryPollInterval, err = parseDuration(DeliveryPollIntervalEnv, cfg.DeliveryPollInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.SessionIdleTTL, err = parseDuration(SessionIdleTTLEnv, cfg.SessionIdleTTL); err != nil {
+		return Config{}, err
+	}
+	if cfg.SessionAbsoluteTTL, err = parseDuration(SessionAbsoluteTTLEnv, cfg.SessionAbsoluteTTL); err != nil {
 		return Config{}, err
 	}
 	if value := env(DeliveryConcurrencyEnv); value != "" {
@@ -313,6 +327,10 @@ func (c Config) Validate() error {
 	}
 	if c.DeliveryConcurrency < 1 || c.DeliveryConcurrency > 256 || c.DeliveryLeaseDuration <= 0 || c.DeliveryPollInterval <= 0 {
 		return fmt.Errorf("delivery worker configuration is invalid")
+	}
+	if c.SessionIdleTTL <= 0 || c.SessionAbsoluteTTL < c.SessionIdleTTL {
+		return fmt.Errorf("%s and %s must be positive durations with %s >= %s",
+			SessionIdleTTLEnv, SessionAbsoluteTTLEnv, SessionAbsoluteTTLEnv, SessionIdleTTLEnv)
 	}
 	if !validBinding(c.DelegationAudience) || !validBinding(c.DelegationSubject) {
 		return fmt.Errorf("delegation audience and subject must be printable values of at most 128 bytes")

@@ -278,10 +278,22 @@ func NormalizeUserURL(issuer, raw string, production bool) (string, error) {
 	return canonical, nil
 }
 
+// httpsOnlyProxy routes only HTTPS requests through the environment proxy.
+// The profile request carries the OAuth bearer token, so plaintext HTTP
+// destinations stay direct: an environment-controlled proxy must never be able
+// to observe the token. HTTPS goes through a CONNECT tunnel whose TLS is
+// end-to-end with the provider, so the proxy sees only the destination host.
+func httpsOnlyProxy(req *http.Request) (*url.URL, error) {
+	if req.URL.Scheme != "https" {
+		return nil, nil
+	}
+	return http.ProxyFromEnvironment(req)
+}
+
 func newProfileClient(token *oauth2.Token) *http.Client {
 	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 	base := &http.Transport{
-		Proxy:                  nil,
+		Proxy:                  httpsOnlyProxy,
 		DialContext:            dialer.DialContext,
 		ForceAttemptHTTP2:      true,
 		MaxIdleConns:           8,

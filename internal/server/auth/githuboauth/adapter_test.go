@@ -108,6 +108,29 @@ func TestProfileClientDoesNotForwardTokenAcrossRedirectOrProxy(t *testing.T) {
 	}
 }
 
+func TestProfileProxyUsesEnvironmentProxyOnlyForHTTPS(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://proxy.example.test:8080")
+	t.Setenv("HTTPS_PROXY", "http://proxy.example.test:8080")
+	t.Setenv("NO_PROXY", "")
+
+	httpsReq, err := http.NewRequest(http.MethodGet, "https://api.github.com/user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := httpsOnlyProxy(httpsReq)
+	if err != nil || proxy == nil || proxy.String() != "http://proxy.example.test:8080" {
+		t.Fatalf("https proxy = %v, %v", proxy, err)
+	}
+
+	httpReq, err := http.NewRequest(http.MethodGet, "http://api.github.com/user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxy, err = httpsOnlyProxy(httpReq); err != nil || proxy != nil {
+		t.Fatalf("http proxy = %v, %v", proxy, err)
+	}
+}
+
 func TestProfileResponseIsStrictlyBounded(t *testing.T) {
 	valid := `{"id":1,"login":"octocat"}`
 	if user, err := decodeProfileUser(strings.NewReader(valid)); err != nil || user.ID != 1 {
