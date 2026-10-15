@@ -596,6 +596,32 @@ func observeDurableWorkflowAtRevision(ctx context.Context, root, revision string
 		// checkout-local custom schema. A built-in schema override keeps config
 		// parsing and validation exact without reading any other working-tree file.
 		resolved, err := workflow.ResolveWithOptions(workflow.ResolveOptions{Root: temporaryRoot, Schema: workflow.BuiltinSchemaName})
+		if err != nil && len(resolved.Config.Guidance) > 0 {
+			// Validate guidance from the exact subject, never a working-tree copy.
+			for _, paths := range resolved.Config.Guidance {
+				for _, guidancePath := range paths {
+					clean := filepath.Clean(filepath.FromSlash(guidancePath))
+					if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+						return durable.WorkflowAuthority{}, errors.New("exact subject guidance escapes repository root")
+					}
+					guidance, found, readErr := readGitRegularFileAtRevision(ctx, root, revision, filepath.ToSlash(clean))
+					if readErr != nil {
+						return durable.WorkflowAuthority{}, readErr
+					}
+					if !found {
+						return durable.WorkflowAuthority{}, fmt.Errorf("exact subject guidance is missing: %s", guidancePath)
+					}
+					destination := filepath.Join(temporaryRoot, clean)
+					if mkdirErr := os.MkdirAll(filepath.Dir(destination), 0o700); mkdirErr != nil {
+						return durable.WorkflowAuthority{}, mkdirErr
+					}
+					if writeErr := os.WriteFile(destination, guidance, 0o600); writeErr != nil {
+						return durable.WorkflowAuthority{}, writeErr
+					}
+				}
+			}
+			resolved, err = workflow.ResolveWithOptions(workflow.ResolveOptions{Root: temporaryRoot, Schema: workflow.BuiltinSchemaName})
+		}
 		if err != nil {
 			return durable.WorkflowAuthority{}, err
 		}
