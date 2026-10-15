@@ -194,6 +194,23 @@ func TestDurableSpecCheckReadsExactTreesAndSavedDetailWithoutWorktreeMutation(t 
 
 func TestDurableSpecCheckUsesExactSubjectWorkflowAcrossConflictingCheckouts(t *testing.T) {
 	root, baseline := durableCommandRepository(t)
+
+	wantConfig := []byte("schema: issue-spec\ndurable_specs:\n  mode: repository\nguidance:\n  shared: [guides/shared.md]\n  propose: [guides/propose.md]\n  apply: [guides/apply.md]\n  review: [guides/review.md]\n")
+	if err := os.WriteFile(filepath.Join(root, "issue-spec/config.yaml"), wantConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"shared", "propose", "apply", "review"} {
+		path := filepath.Join(root, "guides", phase+".md")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("Committed "+phase+" guidance.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	durableCommandGit(t, root, "add", "issue-spec/config.yaml", "guides")
+	durableCommandGit(t, root, "commit", "-q", "-m", "declare committed project guidance")
+	baseline = durableCommandGitOutput(t, root, "rev-parse", "HEAD")
 	specBody := durableCommandSpec(t, `{"version":1,"intent":"OPERATIONS","operations":[{"id":"SPEC-001-OP-01","kind":"ADDED","capability":"cap","path":"issue-spec/specs/cap/spec.md","new_requirement":"Durable command","projection":{"source":"current-spec"}}]}`)
 	backend := durableCommandBackend(specBody)
 	planPath := filepath.Join(filepath.Dir(root), "cross-checkout-plan.json")
@@ -229,7 +246,6 @@ func TestDurableSpecCheckUsesExactSubjectWorkflowAcrossConflictingCheckouts(t *t
 		return compact
 	}
 
-	wantConfig := []byte("schema: issue-spec\ndurable_specs:\n  mode: repository\n")
 	wantAuthority := durable.WorkflowAuthority{ConfigPath: "issue-spec/config.yaml", ConfigDigest: filecas.FileDigest(wantConfig), Mode: durable.ModeRepository}
 	canonical := runCheck(t, root)
 	if !canonical.OK || canonical.Workflow != wantAuthority {
@@ -239,6 +255,13 @@ func TestDurableSpecCheckUsesExactSubjectWorkflowAcrossConflictingCheckouts(t *t
 	other := filepath.Join(t.TempDir(), "conflicting-checkout")
 	durableCommandGit(t, filepath.Dir(other), "clone", "-q", root, other)
 	configPath := filepath.Join(other, "issue-spec", "config.yaml")
+	// Neither a local guidance edit nor missing local guidance may override the committed subject.
+	if err := os.WriteFile(filepath.Join(other, "guides/shared.md"), []byte("Uncommitted local guidance.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(other, "guides/apply.md")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(configPath, []byte("schema: issue-spec\ndurable_specs:\n  mode: none\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
