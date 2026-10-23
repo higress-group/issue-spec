@@ -139,12 +139,15 @@ func TestSpecCommentRendersVisibleStrictDurableIntent(t *testing.T) {
 }
 
 func TestSpecCommentRendersCurrentSpecAndInlineOperations(t *testing.T) {
+	before, after := "Route policy.", "Route ownership and audit policy."
 	body, err := SpecComment(SpecCommentOptions{
 		Common: CommonOptions{ID: "SPEC-003", Status: "confirmed"},
 		Input: SpecInput{
 			Requirement: SpecRequirementInput{Title: "route ownership", Text: "Every public route MUST name an owner."},
 			Scenarios:   []SpecScenarioInput{{Title: "owned route", When: "a route is public", Then: "it names an owner"}},
 			Durable: &durable.Intent{Version: 1, Kind: durable.IntentOperations, Operations: []durable.Operation{
+				{ID: "SPEC-003-OP-05", Kind: durable.OperationSectionModified, Capability: "route-policy", Path: "issue-spec/specs/route-policy/spec.md",
+					Section: "Purpose", Before: &before, Projection: &durable.Projection{Source: durable.ProjectionInline, Text: &after}},
 				{ID: "SPEC-003-OP-04", Kind: durable.OperationRenamed, Capability: "route-policy", Path: "issue-spec/specs/route-policy/spec.md",
 					CurrentRequirement: "old audit", NewRequirement: "renamed audit"},
 				{ID: "SPEC-003-OP-03", Kind: durable.OperationRemoved, Capability: "route-policy", Path: "issue-spec/specs/route-policy/spec.md",
@@ -163,7 +166,7 @@ func TestSpecCommentRendersCurrentSpecAndInlineOperations(t *testing.T) {
 	}
 	first, second := strings.Index(body, "SPEC-003-OP-01"), strings.Index(body, "SPEC-003-OP-02")
 	if first < 0 || second <= first || !strings.Contains(body, `"source": "inline"`) || !strings.Contains(body, `"source": "current-spec"`) ||
-		!strings.Contains(body, `"kind": "REMOVED"`) || !strings.Contains(body, `"kind": "RENAMED"`) {
+		!strings.Contains(body, `"kind": "REMOVED"`) || !strings.Contains(body, `"kind": "RENAMED"`) || !strings.Contains(body, `"kind": "SECTION_MODIFIED"`) {
 		t.Fatalf("durable operations were not canonicalized:\n%s", body)
 	}
 }

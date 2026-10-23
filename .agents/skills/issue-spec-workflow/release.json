@@ -3,7 +3,7 @@
   "release": "development",
   "source_revision": "unknown",
   "requirements_skill_content_id": "sha256:35e55ba3b52b377acbd36ca4305cd958e3bd593008d576a7a82c9b06ab862ed1",
-  "content_digest": "sha256:032b1f7c0363e1283687f13c186486bec9c93c60ab89dc15beb6ac23da9f706e",
+  "content_digest": "sha256:8fc0d4e9ce20902351fdfb4bd6ba253fc68713a9f2a6d0662fd3ccbe95411d02",
   "files": [
     {
       "path": ".agents/skills/issue-spec-apply/SKILL.md",
@@ -23,7 +23,7 @@
     },
     {
       "path": ".agents/skills/issue-spec-workflow/references/durable-maintenance.md",
-      "sha256": "22c082a779ba0de7fa8ec50c90fd4aa4711c365166972ea9ff81707be012aa5c"
+      "sha256": "9bb0eebc211468f2a8d660fd25099a6025c581e6c8712154a624227a48a4a29a"
     },
     {
       "path": ".agents/skills/issue-spec-workflow/references/implementation-review.md",

@@ -2,6 +2,7 @@ package durable
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/yuin/goldmark"
@@ -19,17 +20,24 @@ type durableDocument struct {
 	Prefix     string
 	Blocks     []requirementBlock
 	Suffix     string
+	// Preserve untouched Requirement bytes for section-only projections.
+	RequirementsText *string
 }
 
 type documentHeading struct {
 	Level int
 	Start int
 	Line  string
+	Title string
 }
 
 // Only document-level headings delimit the contract. Markdown examples in
 // fences, lists and block quotes are content, not durable section identities.
 func documentHeadings(body string) []documentHeading {
+	// Parsing fragments must not change their exact stored bytes or require a final LF.
+	if !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
 	root := goldmark.DefaultParser().Parse(text.NewReader([]byte(body)))
 	var headings []documentHeading
 	for node := root.FirstChild(); node != nil; node = node.NextSibling() {
@@ -40,7 +48,7 @@ func documentHeadings(body string) []documentHeading {
 		segment := heading.Lines().At(0)
 		start := strings.LastIndex(body[:segment.Start], "\n") + 1
 		end := strings.IndexByte(body[start:], '\n') + start
-		headings = append(headings, documentHeading{Level: heading.Level, Start: start, Line: body[start:end]})
+		headings = append(headings, documentHeading{Level: heading.Level, Start: start, Line: body[start:end], Title: string(heading.Text([]byte(body)))})
 	}
 	return headings
 }
@@ -92,7 +100,8 @@ func parseDurableDocument(body, capability string) (durableDocument, error) {
 			blocks = append(blocks, heading)
 		}
 	}
-	document := durableDocument{Capability: capability, Prefix: body[:start], Suffix: body[end:]}
+	requirementsText := body[start:end]
+	document := durableDocument{Capability: capability, Prefix: body[:start], Suffix: body[end:], RequirementsText: &requirementsText}
 	contentStart := end
 	if len(blocks) > 0 {
 		contentStart = blocks[0].Start
@@ -115,6 +124,9 @@ func parseDurableDocument(body, capability string) (durableDocument, error) {
 }
 
 func renderDurableDocument(document durableDocument) string {
+	if document.RequirementsText != nil {
+		return document.Prefix + *document.RequirementsText + document.Suffix
+	}
 	if len(document.Blocks) == 0 {
 		return document.Prefix + document.Suffix
 	}
@@ -127,4 +139,87 @@ func renderDurableDocument(document durableDocument) string {
 		body += "\n" + document.Suffix
 	}
 	return body
+}
+
+// Section bodies exclude only the surrounding LF delimiters. Horizontal spaces
+// and internal newlines are significant preimage bytes, not normalized prose.
+func validateSectionBody(name, body string) error {
+	if strings.TrimSpace(body) == "" || len(body) > maxTextBytes {
+		return fmt.Errorf("%s must contain 1..%d bytes of section content", name, maxTextBytes)
+	}
+	if strings.Contains(body, "\r") || strings.HasPrefix(body, "\n") || strings.HasSuffix(body, "\n") {
+		return fmt.Errorf("%s must use LF and exclude surrounding LF delimiters", name)
+	}
+	if len(documentHeadings(body)) != 0 {
+		return fmt.Errorf("%s must not contain document-level Markdown headings", name)
+	}
+	return nil
+}
+
+func replaceDocumentSection(document *durableDocument, section, before, after string) (string, error) {
+	body := renderDurableDocument(*document)
+	headings := documentHeadings(body)
+	matches := []int{}
+	for index, heading := range headings {
+		if heading.Level == 2 && heading.Title == section {
+			matches = append(matches, index)
+		}
+	}
+	if len(matches) == 0 {
+		return BlockTargetMissing, fmt.Errorf("document section %q is missing at baseline", section)
+	}
+	if len(matches) != 1 {
+		return BlockTargetAmbiguous, fmt.Errorf("document section %q is ambiguous at baseline", section)
+	}
+	index := matches[0]
+	heading := headings[index]
+	if heading.Line != "## "+section {
+		return BlockTargetFileInvalid, fmt.Errorf("document section %q must use its canonical level-two heading", section)
+	}
+	end := len(body)
+	for _, next := range headings[index+1:] {
+		if next.Level <= 2 {
+			end = next.Start
+			break
+		}
+	}
+	// Purpose lives before Requirements; references must be an independent
+	// trailing section. Neither operation may reach a Requirement block.
+	suffixStart := len(body) - len(document.Suffix)
+	if (section == "Purpose" && end > len(document.Prefix)) ||
+		(section == "Implementation references" && heading.Start < suffixStart) {
+		return BlockTargetFileInvalid, fmt.Errorf("document section %q is not in its admitted position", section)
+	}
+	start := heading.Start + len(heading.Line) + 1
+	for start < end && body[start] == '\n' {
+		start++
+	}
+	for end > start && body[end-1] == '\n' {
+		end--
+	}
+	if body[start:end] != before {
+		return BlockProjectionInvalid, fmt.Errorf("document section %q before does not match the exact baseline body", section)
+	}
+	updatedBody := body[:start] + after + body[end:]
+	updatedHeadings := documentHeadings(updatedBody)
+	if len(headings) != len(updatedHeadings) {
+		return BlockProjectionInvalid, fmt.Errorf("document section %q projection changes document heading boundaries", section)
+	}
+	for index, original := range headings {
+		updated := updatedHeadings[index]
+		if original.Level != updated.Level || original.Line != updated.Line || original.Title != updated.Title {
+			return BlockProjectionInvalid, fmt.Errorf("document section %q projection changes document heading boundaries", section)
+		}
+	}
+	if _, err := parseDurableDocument(updatedBody, document.Capability); err != nil {
+		return BlockProjectionInvalid, fmt.Errorf("document section %q projection invalidates the document: %w", section, err)
+	}
+	if section == "Purpose" {
+		document.Prefix = document.Prefix[:start] + after + document.Prefix[end:]
+	} else {
+		start -= suffixStart
+		end -= suffixStart
+		document.Suffix = document.Suffix[:start] + after + document.Suffix[end:]
+	}
+	return "", nil
 }
