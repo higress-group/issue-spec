@@ -57,6 +57,7 @@ type PlannedOperation struct {
 	SourceSpecURL        string        `json:"source_spec_url"`
 	Kind                 OperationKind `json:"kind"`
 	Path                 string        `json:"path"`
+	Section              string        `json:"section,omitempty"`
 	CurrentRequirement   string        `json:"current_requirement,omitempty"`
 	NewRequirement       string        `json:"new_requirement,omitempty"`
 	BlockPreimageDigest  string        `json:"block_preimage_digest,omitempty"`

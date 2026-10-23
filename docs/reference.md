@@ -366,6 +366,68 @@ issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scop
 
 The rendered body contains a `## Requirement:` heading, normative MUST/SHALL language, and one or more `### Scenario:` sections with `**WHEN**`/`**THEN**` bullets. Unknown JSON fields are rejected so schema drift fails fast.
 
+### Explicit durable document sections
+
+With `durable_specs.mode: repository`, a confirmed source SPEC can include a
+`durable` intent in the generator input. The existing `ADDED`, `MODIFIED`,
+`REMOVED`, and `RENAMED` operations target Requirement blocks. `SECTION_MODIFIED`
+(version 1) authorizes a bounded update to an existing document section:
+
+```json
+{
+  "version": 1,
+  "intent": "OPERATIONS",
+  "operations": [
+    {
+      "id": "SPEC-1001-OP-01",
+      "kind": "SECTION_MODIFIED",
+      "capability": "service-policy",
+      "path": "issue-spec/specs/service-policy/spec.md",
+      "section": "Purpose",
+      "before": "Describe the service policy.",
+      "projection": {
+        "source": "inline",
+        "text": "Describe the service policy and its admission behavior."
+      }
+    }
+  ]
+}
+```
+
+Use this object as the `durable` field alongside the SPEC's normal requirement
+and scenarios. The generated `## Durable Intent` carries the same object. Older
+CLIs that do not support `SECTION_MODIFIED` reject it; authoring, preview, apply,
+and check must use a supporting revision.
+
+- `section` is exactly `Purpose` or `Implementation references`. Its one real
+  document-level heading must be the canonical `## <section>` line. Purpose
+  precedes Requirements; Implementation references must be an independent
+  section after Requirements. Missing, duplicate, or misplaced targets fail.
+- `before` is the exact baseline body between that heading and the next
+  document-level heading of level one or two (or end of file), with surrounding
+  LF bytes removed. `projection.text` is the complete replacement. Both are
+  nonempty, at most 4096 bytes, use LF, and exclude leading/trailing LF bytes.
+  Horizontal whitespace and internal blank lines are significant. Existing
+  surrounding LF bytes and the heading are preserved exactly.
+- Both bodies must exclude document-level Markdown headings, including Setext
+  headings. Heading-like text in fenced examples, lists, and quotes is content.
+  A replacement must preserve the full document's heading boundaries; for
+  example, an unclosed fence cannot absorb the following Requirements or Notes.
+- Only `inline` with `text` is accepted; requirement identities, inline
+  `requirement`/`scenarios`, and `current-spec` are forbidden. Requirement
+  operations cannot use `section`, `before`, or projection `text`.
+- One operation owns each section on a path across all source SPECs. Distinct
+  sections and Requirement operations on the same path may compose. All other
+  document bytes remain governed by the existing full-file projection check.
+
+Preview against the exact intended baseline, inspect the complete result, apply
+with its expected plan digest, and check the exact candidate revision. Apply
+still checks the source representation, workflow configuration, baseline, and
+whole-file preimage; a retry of an already applied plan is unchanged. Check
+independently reconstructs the full document, including unauthorized prefix,
+suffix, title, and other-section edits. These checks establish declared
+projection consistency, not semantic completeness or product correctness.
+
 ### TASK and PROCESS generator input JSON
 
 TASK bodies carry the PROCESS-planning metadata a coordinator needs to decompose work. The `execution_planning` object renders the required `### Execution Planning` section:

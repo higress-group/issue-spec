@@ -161,7 +161,7 @@ Source SPEC comments:
 
 Repository durable-spec operations MUST target issue-spec/specs/<capability>/spec.md by default. An already-existing openspec/specs/<capability>/spec.md target MAY remain updateable as explicit compatibility, but new legacy paths MUST NOT be created. The durable-spec preview/apply/check protocol MUST use exact declared paths and MUST NOT rely on post-merge Archive path inference.
 
-The capability slug and declared path MUST establish target identity independently of a document's human-readable level-one title. Existing titles and content outside the canonical Requirements section MUST be preserved. Requirement operations MUST be bounded by document-level Markdown headings, ignoring heading-like content in fenced examples. An independent level-two section after Requirements, such as Implementation references, MUST remain separate from the last Requirement. Ambiguous document structure MUST block writes rather than silently discard content.
+The capability slug and declared path MUST establish target identity independently of a document's human-readable level-one title. Requirement operations MUST preserve existing titles and content outside the canonical Requirements section. An explicitly declared SECTION_MODIFIED operation MAY replace only the body of an existing canonical Purpose section or independent trailing Implementation references section. It MUST provide an exact baseline body in before and a complete inline text projection, preserve the heading and surrounding LF delimiters, and leave all other content under the full-file projection check. Both bodies MUST be nonempty, at most 4096 bytes, LF-only with no leading or trailing LF, and contain no document-level Markdown headings. Internal blank lines and horizontal whitespace MUST remain significant. Replacement MUST preserve all document heading boundaries. Missing, ambiguous or misplaced section targets, mismatched preimages, unsupported fields or sources, and duplicate section targets across Source SPECs MUST block writes. Distinct section targets and Requirement targets on the same path MAY compose; source, baseline, workflow and full-file CAS authority MUST remain required. Requirement operations MUST be bounded by document-level Markdown headings, ignoring heading-like content in fenced examples. An independent level-two section after Requirements, such as Implementation references, MUST remain separate from the last Requirement. Ambiguous document structure MUST block writes rather than silently discard content.
 
 #### Scenario: new durable target uses issue-spec specs
 
@@ -187,6 +187,16 @@ The capability slug and declared path MUST establish target identity independent
 
 - **WHEN** a Requirement contains fenced Markdown examples with Purpose, Requirements or Requirement headings
 - **THEN** projection MUST preserve those examples as content rather than treating them as document or operation boundaries
+
+#### Scenario: authorize document context alongside requirement changes
+
+- **WHEN** confirmed Source SPECs declare distinct Purpose, Implementation references and Requirement operations against an existing baseline document
+- **THEN** preview/apply/check MUST compose them while preserving the title, neighboring sections, unowned requirements and exact section delimiters, and a repeated apply MUST be unchanged
+
+#### Scenario: stale or structurally unsafe section update
+
+- **WHEN** a section preimage is stale, a duplicate operation targets the same section, or a replacement introduces a real heading or absorbs a neighboring heading through an unclosed Markdown block
+- **THEN** preview MUST return blockers without executable mutations, while apply MUST continue to reject source, baseline or file drift and check MUST reject every undeclared document byte change
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452933

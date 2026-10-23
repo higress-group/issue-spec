@@ -135,7 +135,7 @@ func CompilePlan(input CompileInput) (Plan, error) {
 		operation := item.Value
 		plan.Operations = append(plan.Operations, PlannedOperation{ID: operation.ID, SourceSpecID: item.Source.ID,
 			SourceSpecURL: item.Source.URL, Kind: operation.Kind, Path: operation.Path,
-			CurrentRequirement: operation.CurrentRequirement, NewRequirement: operation.NewRequirement})
+			CurrentRequirement: operation.CurrentRequirement, NewRequirement: operation.NewRequirement, Section: operation.Section})
 		byPath[operation.Path] = append(byPath[operation.Path], item)
 	}
 	paths := make([]string, 0, len(byPath))
@@ -166,6 +166,11 @@ func CompilePlan(input CompileInput) (Plan, error) {
 			preimage.Content = ""
 		}
 		for _, item := range items {
+			if item.Value.Kind == OperationSectionModified && !baseline.Exists {
+				findings = append(findings, Finding{Code: BlockTargetMissing, OperationID: item.Value.ID,
+					SourceSpecID: item.Source.ID, Path: targetPath, Message: "SECTION_MODIFIED requires an existing baseline document"})
+				continue
+			}
 			operationFindings := applyOperationToDocument(&document, item, &plan)
 			findings = append(findings, operationFindings...)
 		}
@@ -214,13 +219,11 @@ func collisionFindings(operations []operationInput) []Finding {
 	for _, item := range operations {
 		operation := item.Value
 		ids[operation.ID] = append(ids[operation.ID], item)
-		title := operation.CurrentRequirement
-		if operation.Kind == OperationAdded {
-			title = operation.NewRequirement
-		}
-		targets[operation.Path+"\x00"+title] = append(targets[operation.Path+"\x00"+title], item)
+		target := operationTarget(operation)
+		targets[target] = append(targets[target], item)
 		if operation.Kind == OperationRenamed {
-			renameEndpoints[operation.Path+"\x00"+operation.NewRequirement] = append(renameEndpoints[operation.Path+"\x00"+operation.NewRequirement], item)
+			endpoint := targetKey(operation.Path, operation.NewRequirement)
+			renameEndpoints[endpoint] = append(renameEndpoints[endpoint], item)
 		}
 	}
 	for id, items := range ids {
@@ -295,6 +298,17 @@ func applyOperationToDocument(document *durableDocument, item operationInput, pl
 		return []Finding{{Code: BlockTargetFileInvalid, OperationID: operation.ID, SourceSpecID: source.ID,
 			Path: operation.Path, Message: "operation capability differs from target document"}}
 	}
+	if operation.Kind == OperationSectionModified {
+		code, err := replaceDocumentSection(document, operation.Section, *operation.Before, *operation.Projection.Text)
+		if err != nil {
+			return []Finding{{Code: code, OperationID: operation.ID, SourceSpecID: source.ID, Path: operation.Path, Message: err.Error()}}
+		}
+		planned.BlockPreimageDigest = filecas.FileDigest([]byte(*operation.Before))
+		planned.BlockPostimageDigest = filecas.FileDigest([]byte(*operation.Projection.Text))
+		return nil
+	}
+	// Requirement operations retain their existing canonical block rendering.
+	document.RequirementsText = nil
 	currentTitle := operation.CurrentRequirement
 	if operation.Kind == OperationAdded {
 		currentTitle = operation.NewRequirement

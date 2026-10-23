@@ -47,10 +47,11 @@ const (
 type OperationKind string
 
 const (
-	OperationAdded    OperationKind = "ADDED"
-	OperationModified OperationKind = "MODIFIED"
-	OperationRemoved  OperationKind = "REMOVED"
-	OperationRenamed  OperationKind = "RENAMED"
+	OperationAdded           OperationKind = "ADDED"
+	OperationModified        OperationKind = "MODIFIED"
+	OperationRemoved         OperationKind = "REMOVED"
+	OperationRenamed         OperationKind = "RENAMED"
+	OperationSectionModified OperationKind = "SECTION_MODIFIED"
 )
 
 type ProjectionSource string
@@ -73,11 +74,14 @@ type Operation struct {
 	Path               string        `json:"path"`
 	CurrentRequirement string        `json:"current_requirement,omitempty"`
 	NewRequirement     string        `json:"new_requirement,omitempty"`
+	Section            string        `json:"section,omitempty"`
+	Before             *string       `json:"before,omitempty"`
 	Projection         *Projection   `json:"projection,omitempty"`
 }
 
 type Projection struct {
 	Source      ProjectionSource  `json:"source"`
+	Text        *string           `json:"text,omitempty"`
 	Requirement *RequirementInput `json:"requirement,omitempty"`
 	Scenarios   []ScenarioInput   `json:"scenarios,omitempty"`
 }
@@ -182,10 +186,18 @@ func NormalizeIntent(intent Intent, opts ValidationOptions) (Intent, error) {
 	clone := intent
 	clone.Operations = append([]Operation(nil), intent.Operations...)
 	for index := range clone.Operations {
+		if before := intent.Operations[index].Before; before != nil {
+			value := *before
+			clone.Operations[index].Before = &value
+		}
 		if intent.Operations[index].Projection == nil {
 			continue
 		}
 		projection := *intent.Operations[index].Projection
+		if projection.Text != nil {
+			value := *projection.Text
+			projection.Text = &value
+		}
 		projection.Scenarios = append([]ScenarioInput(nil), projection.Scenarios...)
 		if projection.Requirement != nil {
 			requirement := *projection.Requirement
@@ -279,7 +291,25 @@ func validateOperation(operation Operation, opts ValidationOptions) error {
 		return err
 	}
 
+	if operation.Kind != OperationSectionModified && (operation.Section != "" || operation.Before != nil) {
+		return errors.New("requirement operations forbid section and before")
+	}
 	switch operation.Kind {
+	case OperationSectionModified:
+		if operation.Section != "Purpose" && operation.Section != "Implementation references" {
+			return errors.New("SECTION_MODIFIED section must be Purpose or Implementation references")
+		}
+		if operation.CurrentRequirement != "" || operation.NewRequirement != "" || operation.Before == nil || operation.Projection == nil {
+			return errors.New("SECTION_MODIFIED requires before and projection and forbids requirement identities")
+		}
+		projection := operation.Projection
+		if projection.Source != ProjectionInline || projection.Text == nil || projection.Requirement != nil || len(projection.Scenarios) != 0 {
+			return errors.New("SECTION_MODIFIED requires inline projection.text and forbids requirement and scenarios")
+		}
+		if err := validateSectionBody("before", *operation.Before); err != nil {
+			return err
+		}
+		return validateSectionBody("projection.text", *projection.Text)
 	case OperationAdded:
 		if operation.CurrentRequirement != "" || operation.NewRequirement == "" || operation.Projection == nil {
 			return errors.New("ADDED requires new_requirement and projection and forbids current_requirement")
@@ -309,6 +339,9 @@ func validateOperation(operation Operation, opts ValidationOptions) error {
 }
 
 func validateProjection(projection Projection, targetRequirement, currentSpecRequirement string) error {
+	if projection.Text != nil {
+		return errors.New("requirement projections forbid text")
+	}
 	switch projection.Source {
 	case ProjectionCurrentSpec:
 		if projection.Requirement != nil || len(projection.Scenarios) != 0 {
@@ -440,6 +473,9 @@ func validateRequiredText(name, value string) error {
 }
 
 func operationTarget(operation Operation) string {
+	if operation.Kind == OperationSectionModified {
+		return operation.Path + "\x00section:" + operation.Section
+	}
 	if operation.Kind == OperationAdded {
 		return targetKey(operation.Path, operation.NewRequirement)
 	}
@@ -447,7 +483,7 @@ func operationTarget(operation Operation) string {
 }
 
 func targetKey(targetPath, requirement string) string {
-	return targetPath + "\x00" + requirement
+	return targetPath + "\x00requirement:" + requirement
 }
 
 func displayTarget(key string) string {
