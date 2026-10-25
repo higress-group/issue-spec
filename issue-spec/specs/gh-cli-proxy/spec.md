@@ -56,6 +56,21 @@ Issue-spec MUST make GitHub backend selection deterministic and debuggable.
 - **WHEN** a proxied `gh` command fails
 - **THEN** issue-spec MUST return an error that includes enough command/endpoint context for debugging without leaking tokens.
 
+#### Scenario: explicit hostname conflicts with the selected profile
+
+- **WHEN** an issue or authentication command uses an existing backend profile and its explicitly supplied hostname conflicts with that resolved profile
+- **THEN** issue-spec MUST reject the target before credential lookup or network access, identify the profile, selection source and API origin, and explain how to choose the intended profile without automatically switching profiles or credentials.
+
+#### Scenario: omitted hostname preserves the selected self-hosted profile
+
+- **WHEN** a self-hosted profile is selected and the caller omits the hostname flag
+- **THEN** the implicit GitHub hostname default MUST NOT override that profile or trigger a target conflict; existing explicit, environment, project and saved-default profile precedence MUST remain unchanged.
+
+#### Scenario: REST issue or comment request fails
+
+- **WHEN** an issue or comment request through the selected REST backend fails, including a conditional comment mutation
+- **THEN** the diagnostic MUST identify the selected profile and selection source while preserving credential redaction and programmatic HTTP or conflict error classification.
+
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/9#issuecomment-4850077678
 
 ### Requirement: generic external CLI backend abstraction

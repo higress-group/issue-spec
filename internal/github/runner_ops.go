@@ -362,7 +362,8 @@ func (c *Client) AddCommentReaction(ctx context.Context, repo string, commentID 
 	return RunnerReactionResult{Metadata: meta}, err
 }
 
-func (c *Client) doRunnerJSON(ctx context.Context, method, path string, query url.Values, in any, conditional ConditionalRequest, allowNotModified bool, out any) (ResponseMetadata, error) {
+func (c *Client) doRunnerJSON(ctx context.Context, method, path string, query url.Values, in any, conditional ConditionalRequest, allowNotModified bool, out any) (metadata ResponseMetadata, resultErr error) {
+	defer func() { resultErr = c.withProfileContext(resultErr) }()
 	var body io.Reader
 	if in != nil {
 		data, err := json.Marshal(in)

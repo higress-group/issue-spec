@@ -105,6 +105,10 @@ issue-spec workflow update --repo owner/repo --tools codex,claude
 
 ## CLI 参考
 
+Backend profile 的优先级保持不变：显式 `--profile`、`ISSUE_SPEC_PROFILE`、兼容入口 `ISSUE_SPEC_API_URL`、仓库 GitHub 标记、已保存的默认 profile，最后是内置 GitHub。使用已有 backend 的命令如果显式传入 `--hostname`，它必须与解析出的 profile 匹配；冲突会在读取凭据或发送请求前失败，并显示 profile、`selection_source`、API origin 和修复方法。已保存自托管默认连接时，可用 `--profile github` 明确访问 GitHub，或省略 `--hostname` 使用所选 profile。flag 隐含的 `github.com` 默认值不会覆盖自托管 profile。通过 `auth login` 配置 profile 时，显式 hostname 会与本次构建的 profile 比较，而不是与已保存的默认 profile 比较。
+
+`--repo` 仍只接受 `owner/name`，不接受仓库 URL。REST issue/comment 请求失败时，会在原有 HTTP 诊断中补充所选 profile 与 `selection_source`；凭据脱敏和错误分类保持不变。
+
 ```bash
 issue-spec auth status
 issue-spec auth login

@@ -686,6 +686,10 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	if err := fs.Parse(args); err != nil {
 		return commentrunner.Config{}, opts, false
 	}
+	if err := a.captureHostname(fs); err != nil {
+		a.errorf("%v\n", err)
+		return commentrunner.Config{}, opts, false
+	}
 	seen := visitedFlags(fs)
 	if includePollFlags {
 		opts.Once = *once
@@ -849,6 +853,12 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	if err := cfg.Validate(); err != nil {
 		a.errorf("%v\n", err)
 		return commentrunner.Config{}, opts, false
+	}
+	if a.hostnameExplicit {
+		if _, _, err := a.resolveProfile(cfg.Profile, cfg.Hostname); err != nil {
+			a.errorf("runner profile: %v\n", err)
+			return commentrunner.Config{}, opts, false
+		}
 	}
 	return cfg, opts, true
 }

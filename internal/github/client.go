@@ -14,12 +14,14 @@ import (
 )
 
 type Client struct {
-	Host       string
-	BaseURL    string
-	Token      string
-	HTTPClient HTTPDoer
-	apiOrigin  string
-	configErr  error
+	Host            string
+	BaseURL         string
+	Token           string
+	HTTPClient      HTTPDoer
+	apiOrigin       string
+	configErr       error
+	profileName     string
+	selectionSource string
 }
 
 type HTTPDoer interface {
@@ -486,7 +488,10 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) (
 	return c.doWithHeaders(ctx, method, path, in, out, nil)
 }
 
-func (c *Client) doWithHeaders(ctx context.Context, method, path string, in any, out any, headers http.Header) (*http.Response, error) {
+func (c *Client) doWithHeaders(ctx context.Context, method, path string, in any, out any, headers http.Header) (response *http.Response, resultErr error) {
+	defer func() {
+		resultErr = c.withProfileContext(resultErr)
+	}()
 	var body io.Reader
 	if in != nil {
 		data, err := json.Marshal(in)
@@ -539,6 +544,13 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, in any,
 		return resp, fmt.Errorf("decode GitHub response from %s: %w", endpoint, err)
 	}
 	return resp, nil
+}
+
+func (c *Client) withProfileContext(err error) error {
+	if err == nil || c.profileName == "" {
+		return err
+	}
+	return fmt.Errorf("profile %q (selection_source=%s): %w", c.profileName, c.selectionSource, err)
 }
 
 func (c *Client) endpoint(path string) (string, error) {

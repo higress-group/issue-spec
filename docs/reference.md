@@ -105,6 +105,10 @@ Runtime initialization still applies: GitHub init writes `.issue-spec/config.jso
 
 ## CLI Reference
 
+Backend profile precedence is unchanged: explicit `--profile`, `ISSUE_SPEC_PROFILE`, the legacy `ISSUE_SPEC_API_URL`, a repository GitHub marker, the saved default, then built-in GitHub. For commands using an existing backend, an explicit `--hostname` must match the resolved profile; a conflict fails before credentials or network access and reports the profile, `selection_source`, API origin, and remedy. Use `--profile github` to target GitHub while a self-hosted default is saved, or omit `--hostname` to use the selected profile. The implicit `github.com` flag default does not override a self-hosted profile. When `auth login` configures a profile, the explicit hostname is checked against that new profile rather than the saved default.
+
+`--repo` continues to accept only `owner/name`, not repository URLs. REST issue/comment request errors include the selected profile and `selection_source` alongside the existing HTTP diagnostic; credential redaction and error classification are preserved.
+
 ```bash
 issue-spec auth status
 issue-spec auth login
