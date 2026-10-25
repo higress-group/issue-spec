@@ -3,11 +3,11 @@
   "release": "development",
   "source_revision": "unknown",
   "requirements_skill_content_id": "sha256:35e55ba3b52b377acbd36ca4305cd958e3bd593008d576a7a82c9b06ab862ed1",
-  "content_digest": "sha256:8fc0d4e9ce20902351fdfb4bd6ba253fc68713a9f2a6d0662fd3ccbe95411d02",
+  "content_digest": "sha256:bd55e4b181277cdc8ad399b033395034c1ab9e2ad50b4cca64bb2a80542f6258",
   "files": [
     {
       "path": ".agents/skills/issue-spec-apply/SKILL.md",
-      "sha256": "8e45e6e38085f9243d89f2e6aef67eaf5de17bd27970ab70b3a1e4016b6c57a2"
+      "sha256": "6703d5d5899d79e95cf4608773eda3ee8fcf59d72e1a74b98095cbce21ec028a"
     },
     {
       "path": ".agents/skills/issue-spec-github/SKILL.md",
