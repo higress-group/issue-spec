@@ -203,7 +203,7 @@ func (a *app) runCodeChangeAttach(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	profile, _, err := a.resolveProfile(a.profileName, *host)
 	if err != nil {
 		return a.codeChangeAttachError(*jsonOut, "profile_unavailable", "resolve issue backend profile", err, nil)
 	}
@@ -361,7 +361,7 @@ func (a *app) runCodeChangeLinkProcess(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	profile, _, err := a.resolveProfile(a.profileName, *host)
 	if err != nil {
 		return a.codeChangeLinkProcessError(*jsonOut, "profile_unavailable", "resolve issue backend profile", err, nil)
 	}

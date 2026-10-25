@@ -25,10 +25,12 @@ import (
 )
 
 type app struct {
-	in          io.Reader
-	out         io.Writer
-	err         io.Writer
-	profileName string
+	in               io.Reader
+	out              io.Writer
+	err              io.Writer
+	profileName      string
+	explicitHostname string
+	hostnameExplicit bool
 
 	selectGitHubBackend             func(context.Context, string) (auth.GitHubBackendSelection, error)
 	selectRunnerBackend             func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
@@ -222,6 +224,7 @@ Usage:
   issue-spec comment edit --repo owner/repo --comment-id N --body-file reply.md [--json]
   issue-spec comment delete --repo owner/repo --comment-id N [--json]
   issue-spec comment generate --type SPEC --id SPEC-1001 --input-file spec.json [--status confirmed] [--scope "..."]
+  issue-spec comment generate --type SPEC|TASK --example
   issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file file.md [--allow-noncanonical]
   issue-spec comment transition --repo owner/repo --issue 2 --id TASK-2001 --to done [--expected-version N|--expected-digest SHA256]
   issue-spec comment list --repo owner/repo --issue N [--type SPEC] [--json]
@@ -274,7 +277,30 @@ func (a *app) parseFlagSet(fs *flag.FlagSet, args []string) (bool, int) {
 	if err := fs.Parse(args); err != nil {
 		return false, 2
 	}
+	if err := a.captureHostname(fs); err != nil {
+		a.errorf("%v\n", err)
+		return false, 2
+	}
 	return true, 0
+}
+
+func (a *app) captureHostname(fs *flag.FlagSet) error {
+	// The default hostname must not override a selected self-hosted profile.
+	// Remember only an explicit target; validate it when a backend is needed,
+	// so local-only operations never read profile configuration here.
+	a.explicitHostname = ""
+	a.hostnameExplicit = false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "hostname" {
+			a.explicitHostname = f.Value.String()
+			a.hostnameExplicit = true
+		}
+	})
+	if a.hostnameExplicit {
+		_, err := parseExplicitHostname(a.explicitHostname)
+		return err
+	}
+	return nil
 }
 
 func printFlagSetUsage(out io.Writer, name string, fs *flag.FlagSet) {
@@ -346,9 +372,12 @@ func (a *app) selectBackendForProfile(ctx context.Context, host, profile string)
 
 func (a *app) selectBackend(ctx context.Context, host string) (auth.GitHubBackendSelection, error) {
 	profileName := strings.TrimSpace(a.profileName)
-	profile, source, profileErr := auth.ResolveProfile(profileName, host)
+	profile, source, profileErr := a.resolveProfile(profileName, host)
 	if profileErr != nil {
-		return auth.GitHubBackendSelection{}, profileErr
+		if profile.Name == "" {
+			return auth.GitHubBackendSelection{}, profileErr
+		}
+		return (auth.GitHubBackendSelection{SelectionSource: "profile:" + source}).WithProfile(profile, source), profileErr
 	}
 	if (source == "builtin" || source == "project") && auth.IsBuiltinGitHubProfile(profile) {
 		var selection auth.GitHubBackendSelection
@@ -374,7 +403,7 @@ func (a *app) selectBackend(ctx context.Context, host string) (auth.GitHubBacken
 
 func (a *app) selectBackendForRunner(ctx context.Context, cfg commentrunner.Config) (auth.GitHubBackendSelection, error) {
 	cfg = cfg.Normalized()
-	profile, source, profileErr := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	profile, source, profileErr := a.resolveProfile(cfg.Profile, cfg.Hostname)
 	if profileErr != nil {
 		return auth.GitHubBackendSelection{}, profileErr
 	}
@@ -424,6 +453,7 @@ func defaultNewGitHubBackend(_ context.Context, selection auth.GitHubBackendSele
 		if selection.Profile.Name != "" {
 			return github.NewClientWithOptions(github.ClientOptions{
 				Host: selection.Host, BaseURL: selection.Profile.APIURL, Token: selection.Token.Value, CAFile: selection.Profile.CAFile,
+				ProfileName: selection.Profile.Name, SelectionSource: selection.SelectionSource,
 			})
 		}
 		return github.NewClient(selection.Host, selection.Token.Value), nil

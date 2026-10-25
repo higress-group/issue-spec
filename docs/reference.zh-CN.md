@@ -105,6 +105,10 @@ issue-spec workflow update --repo owner/repo --tools codex,claude
 
 ## CLI 参考
 
+Backend profile 的优先级保持不变：显式 `--profile`、`ISSUE_SPEC_PROFILE`、兼容入口 `ISSUE_SPEC_API_URL`、仓库 GitHub 标记、已保存的默认 profile，最后是内置 GitHub。使用已有 backend 的命令如果显式传入 `--hostname`，它必须与解析出的 profile 匹配；冲突会在读取凭据或发送请求前失败，并显示 profile、`selection_source`、API origin 和修复方法。已保存自托管默认连接时，可用 `--profile github` 明确访问 GitHub，或省略 `--hostname` 使用所选 profile。flag 隐含的 `github.com` 默认值不会覆盖自托管 profile。通过 `auth login` 配置 profile 时，显式 hostname 会与本次构建的 profile 比较，而不是与已保存的默认 profile 比较。
+
+`--repo` 仍只接受 `owner/name`，不接受仓库 URL。REST issue/comment 请求失败时，会在原有 HTTP 诊断中补充所选 profile 与 `selection_source`；凭据脱敏和错误分类保持不变。
+
 ```bash
 issue-spec auth status
 issue-spec auth login
@@ -323,6 +327,17 @@ issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scop
 ```
 
 `comment generate` 会把一个完整的类型化评论 Markdown 正文（marker + 可见头 + canonical 内容）写到 stdout，且从不触网。该命令族用类型专属的 JSON 形态渲染 `SPEC`、`TASK` 与 `PROCESS` 正文；REVIEW 与 VERIFY 生成已被删除。
+
+要获取与当前 CLI 版本配套、可直接运行的完整 SPEC 或 TASK 输入示例，可以先保存一份再编辑：
+
+```bash
+issue-spec comment generate --type SPEC --example > spec.json
+issue-spec comment generate --type TASK --example > task.json
+issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --input-file spec.json
+issue-spec comment generate --type TASK --id TASK-2001 --input-file task.json
+```
+
+`--example` 只输出 JSON，不要求 `--id` 或 `--input-file`，也不读取工作流或后端/profile 配置。它不能与 `--input-file` 同用，目前只支持 SPEC 和 TASK 示例。SPEC 示例包含属于 `SPEC-1001` 的完整 `durable` ADDED 操作；可在 `--example` 时传入 `--id SPEC-41001` 来调整操作标识，后续生成评论时须使用相同 ID。其他操作形式见[英文 durable 文档](reference.md#explicit-durable-document-sections)。TASK 示例包含全部 `execution_planning` 字段。发布前，应按实际变更调整示例中的需求、durable intent、路径、SPEC 覆盖关系及规划内容。示例用于说明输入格式，不代表变更授权。
 
 ### SPEC 生成器输入 JSON
 

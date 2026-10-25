@@ -29,11 +29,13 @@ func (e *UnsafeOriginError) Error() string {
 }
 
 type ClientOptions struct {
-	Host       string
-	BaseURL    string
-	Token      string
-	CAFile     string
-	HTTPClient *http.Client
+	Host            string
+	BaseURL         string
+	Token           string
+	CAFile          string
+	HTTPClient      *http.Client
+	ProfileName     string
+	SelectionSource string
 }
 
 // NewClientWithOptions validates the API base, installs custom CA trust, and
@@ -51,6 +53,7 @@ func NewClientWithOptions(options ClientOptions) (*Client, error) {
 	return &Client{
 		Host: normalizeHost(options.Host), BaseURL: base, Token: options.Token,
 		HTTPClient: httpClient, apiOrigin: origin,
+		profileName: options.ProfileName, selectionSource: options.SelectionSource,
 	}, nil
 }
 

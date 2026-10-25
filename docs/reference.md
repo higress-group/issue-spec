@@ -105,6 +105,10 @@ Runtime initialization still applies: GitHub init writes `.issue-spec/config.jso
 
 ## CLI Reference
 
+Backend profile precedence is unchanged: explicit `--profile`, `ISSUE_SPEC_PROFILE`, the legacy `ISSUE_SPEC_API_URL`, a repository GitHub marker, the saved default, then built-in GitHub. For commands using an existing backend, an explicit `--hostname` must match the resolved profile; a conflict fails before credentials or network access and reports the profile, `selection_source`, API origin, and remedy. Use `--profile github` to target GitHub while a self-hosted default is saved, or omit `--hostname` to use the selected profile. The implicit `github.com` flag default does not override a self-hosted profile. When `auth login` configures a profile, the explicit hostname is checked against that new profile rather than the saved default.
+
+`--repo` continues to accept only `owner/name`, not repository URLs. REST issue/comment request errors include the selected profile and `selection_source` alongside the existing HTTP diagnostic; credential redaction and error classification are preserved.
+
 ```bash
 issue-spec auth status
 issue-spec auth login
@@ -345,6 +349,17 @@ issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scop
 ```
 
 `comment generate` writes a complete typed-comment Markdown body (marker + visible header + canonical content) to stdout and never touches the network. The command family renders `SPEC`, `TASK`, and `PROCESS` bodies with type-specific JSON shapes; REVIEW and VERIFY generation has been removed.
+
+Save a complete, runnable SPEC or TASK input example for the installed CLI, then edit it for your change:
+
+```bash
+issue-spec comment generate --type SPEC --example > spec.json
+issue-spec comment generate --type TASK --example > task.json
+issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --input-file spec.json
+issue-spec comment generate --type TASK --id TASK-2001 --input-file task.json
+```
+
+`--example` writes only JSON, requires neither `--id` nor `--input-file`, and does not load workflow or backend/profile configuration. It cannot be combined with `--input-file`; only SPEC and TASK examples are supported. The SPEC example includes a complete `durable` ADDED operation for `SPEC-1001`; pass `--id SPEC-41001` with `--example` to use that operation identity, then use the same ID when generating the comment. See [durable document sections](#explicit-durable-document-sections) for other supported operations. The TASK example includes every `execution_planning` field. Before publishing, adapt the example's requirement, durable intent, paths, SPEC coverage, and planning values to the actual change. Examples describe input format; they do not authorize a change.
 
 ### SPEC generator input JSON
 

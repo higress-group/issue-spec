@@ -207,7 +207,7 @@ func (a *app) runQuestionAnswer(ctx context.Context, args []string) int {
 		a.errorf("--custom is exclusive with --select\n")
 		return 2
 	}
-	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	profile, _, err := a.resolveProfile(a.profileName, *host)
 	if err != nil {
 		a.errorf("resolve issue backend profile: %v\n", err)
 		return 1

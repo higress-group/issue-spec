@@ -66,7 +66,7 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		a.errorf("configure global Codex prompts: %v\n", err)
 		return 2
 	}
-	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	profile, _, err := a.resolveProfile(a.profileName, *host)
 	if err != nil {
 		a.errorf("resolve init profile: %v\n", err)
 		return 1

@@ -57,7 +57,7 @@ func (c *Client) UpdateCommentConditional(ctx context.Context, repo string, comm
 		var apiErr *APIError
 		if errorAsAPI(err, &apiErr) && (apiErr.StatusCode == http.StatusConflict || apiErr.StatusCode == http.StatusPreconditionFailed) {
 			current, _ := strconv.ParseInt(strings.TrimSpace(resp.Header.Get(HeaderRepresentationVersion)), 10, 64)
-			return CommentRepresentation{}, &CommentMutationConflictError{Expected: expected, Current: current}
+			return CommentRepresentation{}, c.withProfileContext(&CommentMutationConflictError{Expected: expected, Current: current})
 		}
 		return CommentRepresentation{}, err
 	}
@@ -86,7 +86,8 @@ func positiveRepresentationVersion(header http.Header) (int64, error) {
 	return value, nil
 }
 
-func (c *Client) doCommentRequest(ctx context.Context, method, path string, headers http.Header, input, output any) (*http.Response, error) {
+func (c *Client) doCommentRequest(ctx context.Context, method, path string, headers http.Header, input, output any) (response *http.Response, resultErr error) {
+	defer func() { resultErr = c.withProfileContext(resultErr) }()
 	var body io.Reader
 	if input != nil {
 		data, err := json.Marshal(input)

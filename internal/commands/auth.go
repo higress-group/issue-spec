@@ -95,7 +95,17 @@ func (a *app) runAuthLogin(ctx context.Context, args []string) int {
 		Name: *profileName, Kind: *kind, APIURL: *apiURL, NativeAPIURL: *nativeAPIURL,
 		WebURL: *webURL, InstanceID: *instanceID, CAFile: *caFile, MakeDefault: *makeDefault,
 	}
-	profile, configured, err := resolveAuthLoginProfile(profileFlags, *host)
+	var profile auth.Profile
+	var configured bool
+	var err error
+	if profileFlags.configProvided() {
+		profile, configured, err = resolveAuthLoginProfile(profileFlags, *host)
+		if err == nil {
+			err = a.validateProfileTarget(profile, "flags")
+		}
+	} else {
+		profile, _, err = a.resolveProfile(profileFlags.Name, *host)
+	}
 	if err != nil {
 		a.errorf("resolve profile: %v\n", err)
 		return 1
@@ -352,7 +362,7 @@ func (a *app) runAuthLogout(ctx context.Context, args []string) int {
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
-	profile, _, err := auth.ResolveProfile(*profileName, *host)
+	profile, _, err := a.resolveProfile(*profileName, *host)
 	if err != nil {
 		a.errorf("resolve profile: %v\n", err)
 		return 1

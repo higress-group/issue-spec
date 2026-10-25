@@ -3,7 +3,7 @@
   "release": "development",
   "source_revision": "unknown",
   "requirements_skill_content_id": "sha256:35e55ba3b52b377acbd36ca4305cd958e3bd593008d576a7a82c9b06ab862ed1",
-  "content_digest": "sha256:bd55e4b181277cdc8ad399b033395034c1ab9e2ad50b4cca64bb2a80542f6258",
+  "content_digest": "sha256:9527021bcd711983c2c0503e465dbb318a7f4f08bf0b24513c09f3b7e90f6da9",
   "files": [
     {
       "path": ".agents/skills/issue-spec-apply/SKILL.md",
@@ -15,7 +15,7 @@
     },
     {
       "path": ".agents/skills/issue-spec-propose/SKILL.md",
-      "sha256": "2b7752c2dad7f7164b183c9b9ae2d9b719c502af31fdc93c90aebdedb827b7b5"
+      "sha256": "4e7c1e0a0f36f42fed90bece63ca8525ddd96aafbbf4fc1572ca33b1fbd25ff2"
     },
     {
       "path": ".agents/skills/issue-spec-workflow/SKILL.md",

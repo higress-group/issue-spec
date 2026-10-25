@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -103,5 +104,44 @@ func TestConditionalCommentClientRejectsInvalidExpectedVersion(t *testing.T) {
 	client := &Client{}
 	if _, err := client.UpdateCommentConditional(context.Background(), "o/r", 7, 0, "body"); err == nil {
 		t.Fatal("zero expected version should fail")
+	}
+}
+
+func TestConditionalCommentRequestErrorsRetainProfileContext(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusPreconditionFailed} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set(HeaderConditionalCommentMutation, ConditionalCommentMutationVersion)
+				w.Header().Set(HeaderRepresentationVersion, "3")
+				if r.Method == http.MethodGet {
+					_, _ = w.Write([]byte(`{"id":7,"body":"before"}`))
+					return
+				}
+				w.Header().Set(HeaderRepresentationVersion, "4")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"message":"conditional-secret"}`))
+			}))
+			defer server.Close()
+			client, err := NewClientWithOptions(ClientOptions{Host: "self.test", BaseURL: server.URL, Token: "conditional-secret",
+				ProfileName: "team", SelectionSource: "profile:config"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.UpdateCommentConditional(t.Context(), "o/r", 7, 3, "after")
+			if err == nil || !strings.Contains(err.Error(), `profile "team"`) || !strings.Contains(err.Error(), "selection_source=profile:config") || strings.Contains(err.Error(), "conditional-secret") {
+				t.Fatalf("diagnostics=%v", err)
+			}
+			if status == http.StatusNotFound {
+				var apiErr *APIError
+				if !errors.As(err, &apiErr) || apiErr.StatusCode != status {
+					t.Fatalf("API error lost: %v", err)
+				}
+			} else {
+				var conflict *CommentMutationConflictError
+				if !errors.As(err, &conflict) || conflict.Current != 4 || !errors.Is(err, ErrCommentMutationConflict) {
+					t.Fatalf("conflict lost: %v", err)
+				}
+			}
+		})
 	}
 }
