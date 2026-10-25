@@ -26,6 +26,20 @@ The CLI MUST provide a command or template flow that generates canonical SPEC co
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/12#issuecomment-4850688258
 
+### Requirement: discover complete generator input examples offline
+
+`comment generate --type SPEC|TASK --example` MUST write complete, parseable input JSON for the installed CLI without requiring an ID, input file, valid workflow configuration, or backend/profile access. The SPEC example MUST include a valid durable operation, defaulting to `SPEC-1001` and using a caller-supplied `--id` when present. The TASK example MUST include meaningful values for every execution-planning field. Examples MUST remain directly usable by the corresponding canonical generator with the same SPEC identity; they do not authorize the sample change.
+
+#### Scenario: obtain input format before configuring a project
+
+- **WHEN** a caller requests a SPEC or TASK example outside an initialized project or with invalid local workflow/profile configuration
+- **THEN** the CLI SHALL emit only input JSON without contacting a backend, and the example SHALL generate a canonical body once used with valid workflow configuration and the matching ID
+
+#### Scenario: conflicting input or unsupported example type
+
+- **WHEN** a caller combines `--example` with `--input-file` or requests an example for a type other than SPEC or TASK
+- **THEN** the CLI MUST reject the request with a diagnostic and emit no example JSON
+
 ### Requirement: validate canonical SPEC discipline on upsert by default
 
 `issue-spec comment upsert --type SPEC` MUST validate canonical SPEC body discipline by default before creating or updating the remote typed comment.

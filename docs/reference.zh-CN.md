@@ -324,6 +324,17 @@ issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scop
 
 `comment generate` 会把一个完整的类型化评论 Markdown 正文（marker + 可见头 + canonical 内容）写到 stdout，且从不触网。该命令族用类型专属的 JSON 形态渲染 `SPEC`、`TASK` 与 `PROCESS` 正文；REVIEW 与 VERIFY 生成已被删除。
 
+要获取与当前 CLI 版本配套、可直接运行的完整 SPEC 或 TASK 输入示例，可以先保存一份再编辑：
+
+```bash
+issue-spec comment generate --type SPEC --example > spec.json
+issue-spec comment generate --type TASK --example > task.json
+issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --input-file spec.json
+issue-spec comment generate --type TASK --id TASK-2001 --input-file task.json
+```
+
+`--example` 只输出 JSON，不要求 `--id` 或 `--input-file`，也不读取工作流或后端/profile 配置。它不能与 `--input-file` 同用，目前只支持 SPEC 和 TASK 示例。SPEC 示例包含属于 `SPEC-1001` 的完整 `durable` ADDED 操作；可在 `--example` 时传入 `--id SPEC-41001` 来调整操作标识，后续生成评论时须使用相同 ID。其他操作形式见[英文 durable 文档](reference.md#explicit-durable-document-sections)。TASK 示例包含全部 `execution_planning` 字段。发布前，应按实际变更调整示例中的需求、durable intent、路径、SPEC 覆盖关系及规划内容。示例用于说明输入格式，不代表变更授权。
+
 ### SPEC 生成器输入 JSON
 
 ```json

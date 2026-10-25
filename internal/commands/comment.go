@@ -374,8 +374,9 @@ func hostnameOnly(raw string) string {
 func (a *app) runCommentGenerate(_ context.Context, args []string) int {
 	fs := newFlagSet("comment generate", a.err)
 	commentType := fs.String("type", "", "typed comment type")
-	id := fs.String("id", "", "typed comment id")
-	inputFile := fs.String("input-file", "", "structured input JSON file, or - for stdin")
+	id := fs.String("id", "", "typed comment id (SPEC --example defaults to SPEC-1001; reuse the same id when generating)")
+	inputFile := fs.String("input-file", "", "structured input JSON file, or - for stdin; use --example for SPEC/TASK input")
+	example := fs.Bool("example", false, "print complete SPEC/TASK input JSON without reading workflow config or contacting a backend")
 	agent := fs.String("agent", "Coordinator", "logical agent identity")
 	status := fs.String("status", "", "typed comment status")
 	scope := fs.String("scope", "", "typed comment scope")
@@ -385,6 +386,24 @@ func (a *app) runCommentGenerate(_ context.Context, args []string) int {
 	if strings.TrimSpace(*commentType) == "" {
 		a.errorf("--type is required\n")
 		return 2
+	}
+	if *example {
+		if visitedFlags(fs)["input-file"] {
+			a.errorf("--example cannot be combined with --input-file\n")
+			return 2
+		}
+		input, err := typedCommentInputExample(*commentType, *id)
+		if err != nil {
+			a.errorf("generate input example: %v\n", err)
+			return 2
+		}
+		encoder := json.NewEncoder(a.out)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(input); err != nil {
+			a.errorf("write input example: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	if strings.TrimSpace(*id) == "" {
 		a.errorf("--id is required\n")
