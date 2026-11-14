@@ -2,179 +2,169 @@
 
 **English | [简体中文](README.zh-CN.md)**
 
-`issue-spec` is an issue-native, self-hostable spec workflow for agentic
-software development: strengthen human review of the proposal and the design
-*before* code gets written, then orchestrate the implementation as small tasks
-that each go to the right agent.
+**Open-source project governance for the agent era, built on GitHub.**
 
-```text
--> review requirements and design first, code second
--> active changes in issues and typed comments, durable specs in the repo
--> human review rendered as rich HTML, human decisions as structured answers
--> implementation as an agent DAG, each PROCESS owned by the right agent
--> agents read the same state through a lean CLI, without the HTML weight
+`issue-spec` gives project maintainers a formal, controlled way to shape a
+contributor's agent context **before implementation** through Proposal and
+Design Issues. Requirements, design constraints, and human decisions become
+structured, reviewable inputs to the agent's work, with explicit trust
+boundaries and safety controls to reduce prompt-injection risk. The community
+collaborates in GitHub Issues and pull requests; maintainers keep control of
+approval and merge.
+
+## Shape agent context before code is written
+
+Agents can produce code faster than maintainers can review it. A useful
+contribution starts with agreement on the problem, scope, and design.
+Issue-spec gives maintainers a formal, traceable way to guide that work while
+those decisions are still inexpensive to change.
+
+| Review surface | What maintainers can shape | What the contributor's agent carries forward |
+| --- | --- | --- |
+| **Proposal Issue** | The problem, intended behavior, scope, and non-goals | Requirements and acceptance scenarios in `SPEC` comments |
+| **Design Issue** | Architecture, compatibility constraints, tradeoffs, and verification plan | The agreed implementation approach and `TASK` comments linked to requirements |
+| **Structured decisions** | Questions that need a human decision before work proceeds | Blocking `QUESTION` comments with recorded resolutions or `ANSWER` choices |
+
+The contributor and their agent read the current Design, applicable decisions,
+and selected tasks through the CLI before implementing. Maintainers can ask
+for a narrower scope, reject an approach, or require a concrete verification
+plan in the public discussion. Those decisions remain available when another
+contributor or agent picks up the work.
+
+```mermaid
+flowchart LR
+    P[Proposal Issue<br/>Scope and requirements] --> D[Design Issue<br/>Approach and verification]
+    M[Maintainer review<br/>Constraints and decisions] --> P
+    M --> D
+    D --> A[Contributor and agent<br/>Implement agreed scope]
+    A --> PR[GitHub PR<br/>Review, checks, and merge]
 ```
 
-Every substantial change moves through three issues — **Proposal** (what and
-why), **Design** (how and acceptance), **Implement** (execution DAG) — with
-typed `SPEC`, `QUESTION`, `TASK`, `PROCESS`, `REVIEW`, and `VERIFY` comments
-keeping traceability from requirement to merged line.
+Start with a simple Issue for a bounded change. Add Proposal, Design, or an
+Implement Issue when the project needs that planning or coordination. Projects
+decide when maintainer approval is required; CLI artifact validation and task
+status do not grant that approval.
 
-## A self-hosted workspace for your team
+## Built for open-source collaboration on GitHub
 
-Run an operator-controlled issue-spec server on your own infrastructure:
-browser workspace, GitHub-compatible issue API, organization and repository
-authorization, service accounts, provider-neutral code evidence, runners,
-webhooks, and durable PostgreSQL state — while source code, PRs/MRs, reviews,
-and CI stay on the code host your team already uses.
+- **Review direction early.** Discuss requirements and design before investing
+  in a large implementation or asking maintainers to review its diff.
+- **Keep decisions public and reusable.** Issues, typed comments, and linked
+  PRs preserve the reasoning for contributors across organizations and time
+  zones, beyond any one agent session.
+- **Connect intent to evidence.** Link requirements to implementation tasks,
+  record checks and results, and carry that context into PR review. Projects
+  can also keep durable capability specs versioned in the repository.
+- **Keep community authority explicit.** Maintainers define contribution
+  policy; GitHub owns PR reviews, checks, branch protection, and merge.
 
-### Review surfaces built for human decisions
+Use your existing `gh` login with github.com or GitHub Enterprise. Contributors
+read and discuss ordinary Markdown in GitHub, while their agents use the CLI
+to retrieve and validate structured artifacts. No issue-spec server is needed
+for this workflow.
 
-Agents publish each phase as a sandboxed `html-preview` review projection: a
-rendered brief that shows what changed, what is settled, and what still needs a
-decision. Open decisions are typed `QUESTION` comments, answered right on the
-issue page with native controls; every confirmed choice becomes an immutable
-`ANSWER` record that later agents and workflow gates consume.
+## Structured context with prompt-injection defenses
 
-The **Proposal** choice brief separates settled boundaries from the decisions a
-human still owns, with the native answer panel right below it:
+Public Issues and comments can contain attacker-controlled instructions.
+Issue-spec separates project guidance and authorized commands from fetched
+discussion content:
 
-[![Proposal choice brief with native question answering](docs/self-hosting/assets/self-hosted-review-proposal.png)](docs/self-hosting/README.md)
+- **Explicit untrusted-data boundaries.** CLI Issue/PR reads and search results
+  label fetched content as untrusted. Text output encloses user-authored fields
+  in boundaries with a fresh random nonce, making forged boundary markers
+  harder to pass off as trusted instructions. Agent guidance says artifact
+  bodies cannot override its instructions or execution contract.
+- **Validated planning artifacts.** Canonical formats, typed IDs, and declared
+  relationships make requirements, decisions, and tasks inspectable. Approval
+  still follows project governance; an instruction embedded in a comment does
+  not acquire authority merely by appearing in an Issue.
+- **Authorized, isolated Runner execution.** If a project enables the optional
+  comment Runner, command authors must pass its allow-list and repository
+  permission checks. Linux execution uses bubblewrap by default and fails
+  closed when sandbox prerequisites are missing; disabling isolation requires
+  an explicit operator choice.
 
-The **Design** explainer renders the data flow, invariants, rejected
-alternatives, and acceptance checks:
+These controls reduce risk; they do not guarantee that an agent will resist
+every injection. Maintainer review, agent permissions, and the configured
+execution environment remain part of the safety boundary. See the
+[CLI read boundaries](internal/commands/read.go),
+[search contracts](docs/reference.md#cli-reference), and
+[Runner security and operations](docs/runner.md).
 
-[![Design explainer with data flow and invariants](docs/self-hosting/assets/self-hosted-review-design.png)](docs/self-hosting/README.md)
+## In practice: Higress
 
-The **Implement** execution brief shows the PROCESS DAG: what runs in parallel,
-what is blocked, and which agent owns each node:
+[Higress](https://github.com/higress-group/higress) provides a concrete example
+of governing agent-assisted contributions in an open-source community. Its
+[governance model](https://github.com/higress-group/community/blob/main/GOVERNANCE.md)
+keeps significant decisions and their rationale in public discussion.
 
-[![Implement execution brief with the PROCESS DAG](docs/self-hosting/assets/self-hosted-review-implement.png)](docs/self-hosting/README.md)
+Under its
+[agent-assisted contribution policy](https://github.com/higress-group/higress/blob/main/docs/developers/agent-assisted-contributions.md),
+materially agent-assisted contributions normally need maintainer-approved
+Proposal and Design Issues before implementation. The Design includes a
+verification plan; implementation and verification tasks preserve traceability
+to the agreed requirements. PRs disclose agent involvement and link the work
+and evidence for human review. The policy also defines exceptions and their
+verification requirements.
 
-The HTML stays out of agent context: agents read proposals, designs, questions,
-and effective answers through the `issue-spec` CLI, which returns the compact
-canonical artifacts instead of the rendered review surfaces — human-friendly
-review without token-heavy agent reads.
+This illustrates how maintainers can shape contributor agents' context through
+reviewed requirements and design, then assess the result through GitHub.
+These are Higress's project rules; other communities can set their own planning
+and approval requirements using issue-spec's shared workflow and project guidance.
 
-### Issues, search, and change management
+## Quick start on GitHub
 
-Proposal, design, and implement issues keep the current artifact in the body
-and the full decision history in the timeline. Lists, filters, and labels keep
-in-flight changes findable across repositories.
-
-[![Issue workspace with search and filters](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.md)
-
-Full-text search finds canonical Proposals by title or body and keeps each
-result linked to its related change, so one query surfaces the earlier intent
-a new change should build on:
-
-[![Search results grouped by related change](docs/self-hosting/assets/self-hosted-search.png)](docs/self-hosting/README.md)
-
-The same capability is CLI-native — agents run
-`issue-spec search issues --repo owner/repo --query "..." --state all`
-to find prior Proposals and their decisions before proposing a new one.
-
-Change boards group the three phase issues into one change and expose
-lifecycle, TASK/PROCESS progress, and linked code changes — a GitHub pull
-request and an internal merge request can sit under the same change.
-
-[![Change board](docs/self-hosting/assets/self-hosted-change-board.png)](docs/self-hosting/README.md)
-
-### Issues and code live on separate authorities
-
-Self-hosting separates issue state from code state on purpose: the server is
-authoritative for issues and typed workflow artifacts, while the code host
-your team already uses stays authoritative for source, branches, PRs/MRs,
-reviews, CI, and merges. You connect the two with an operator-registered
-**code-provider bridge** that reports normalized, revision-bound code evidence
-(and performs only explicitly requested external mutations); the server still
-evaluates every gate itself, and one change can link providers side by side —
-a GitHub pull request and an internal merge request under the same change.
-
-```yaml
-# issue-spec/config.yaml — repository side selects the operator-registered bridge
-external_code:
-  provider_key: code.example
-  evidence:
-    required: [review, check, merge]
-    freshness: { review: 24h, check: 1h }
-```
-
-- [Integrate company code and work platforms](docs/self-hosting/enterprise-provider-integration.md) — provider inventory, source bindings, work trackers
-- [Code provider bridge protocol v1](docs/self-hosting/bridges/code-provider-v1.md) — trust boundaries, evidence ingestion
-- [Runner Git credential command v1](docs/self-hosting/bridges/git-credential-v1.md) — clone/push credentials for runners
-
-**[Self-hosted server: architecture, access model, deployment, operations →](docs/self-hosting/README.md)**
-
-## One shared context for humans and agents
-
-The `issue-spec` CLI is how agents participate in the same workflow humans
-review in the browser:
-
-- agents author and read optional typed planning artifacts (`SPEC`, `TASK`,
-  `PROCESS`, ...) with validation and safe transitions
-- the current agent can plan, implement and self-test; projects may add a
-  coordinator role and stage review through versioned project guidance
-- teammates and their agents pick up planning mid-flight because optional
-  decisions and blockers live in Issues, while current review, checks, approval,
-  and merge remain owned by people and the code provider
-- `issue-spec runner` executes authorized comment commands (`/new`, `/resume`)
-  in managed workspaces, so work can be triggered straight from an issue
-
-Shared skills are installed once under `.agents/skills`, with per-skill Claude
-links. Project rules and phase guidance stay in `issue-spec/config.yaml` and
-referenced files. `workflow update --dry-run` previews an upgrade and protects
-local edits. See [configuration and safe updates](docs/reference.md#shared-skills-and-safe-updates).
-
-Review, publication and merge follow the user's authorization and project policy;
-issue-spec does not automatically spawn a reviewer or require a rationale ceremony.
-
-## Works with GitHub too
-
-The same workflow runs directly against github.com or GitHub Enterprise using
-your `gh` login — issues, typed comments, PR review threads, and durable spec
-archive PRs. The only self-host-specific conveniences are the rendered
-`html-preview` review surfaces and the interactive QUESTION answer panel:
-GitHub shows their source as plain readable Markdown instead, and answers are
-recorded through the CLI.
-
-## Quick start
-
-Install the CLI:
+Install the CLI with the Go toolchain declared in [`go.mod`](go.mod), and make
+sure the [GitHub CLI](https://cli.github.com/) is available:
 
 ```bash
 go install github.com/higress-group/issue-spec/cmd/issue-spec@latest
+gh auth login
 ```
 
-Authenticate (GitHub mode reuses your `gh` session) and initialize a
-repository:
+For initial project setup, run this from the repository checkout, replacing
+`owner/repo` with its GitHub name:
 
 ```bash
-gh auth login
-issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery skills
+issue-spec --profile github init --repo owner/repo --create-labels --tools codex,claude --delivery skills
 ```
 
-Then drive the workflow from your agent with the generated skills or slash
-commands:
+This creates repository connection metadata, workflow labels, and shared agent
+skills under `.agents/skills`, with per-skill Claude links. Label creation needs
+repository permission; use `--skip-labels` if maintainers manage labels
+separately. Contributors to an initialized project should follow its existing
+guidance and use the committed skills.
+
+Ask your agent to use `issue-spec-workflow` for a change, or select
+`issue-spec-propose` for planning and `issue-spec-apply` for implementation.
+For example, start with:
 
 ```text
-/issue-spec:propose "your idea"
-/issue-spec:apply
-/issue-spec:review
-/issue-spec:verify
-/issue-spec:archive
+Use issue-spec-propose to plan <change> in owner/repo. Read the project rules,
+find related discussions, and prepare the requirements and design for
+maintainer review before implementation.
 ```
 
-To self-host the server for your team, start from the
-**[self-hosting guide](docs/self-hosting/README.md)**.
+After the required decisions and approvals are recorded:
+
+```text
+Use issue-spec-apply for <issue URL>. Follow the agreed Design and decisions,
+implement the authorized scope, run the required checks, and prepare a PR
+with the results for human review.
+```
+
+Project context, contribution rules, and phase-specific guidance live in
+`issue-spec/config.yaml` and referenced files. Maintainers can share the same
+rules with every contributor's agent and preview generated skill upgrades with
+`issue-spec workflow update --dry-run`. See
+[configuration and safe updates](docs/reference.md#shared-skills-and-safe-updates).
 
 ## Learn more
 
-- **[Workflow guide](docs/workflow.md)** — full walkthrough, workflow model, multi-agent coordination, review flow, GitHub-mode setup
-- **[CLI reference](docs/reference.md)** — configuration, command contracts, canonical typed comments
-- **[Runner operations](docs/runner.md)** — comment intake, authorization, sandboxing, concurrency, recovery
-- **[Workflow safety](docs/workflow-safety.md)** — gates, reconciliation, PROCESS evidence
-- **[Self-hosting](docs/self-hosting/README.md)** — architecture, authentication, bridges, operations
+- **[Workflow guide](docs/workflow.md)** — optional planning, implementation, and human review handoff
+- **[CLI reference](docs/reference.md)** — project guidance, commands, and typed comments
+- **[Runner operations](docs/runner.md)** — authorized GitHub comment commands, sandboxing, and recovery
+- **[Workflow safety](docs/workflow-safety.md)** — planning checks, workspace safety, and failure handling
 
 ## Development
 
@@ -182,19 +172,28 @@ Local builds and tests use the Go toolchain declared in [`go.mod`](go.mod):
 
 ```bash
 go build ./cmd/issue-spec
-make build-server
 go test ./...
 ```
 
-`go test ./...` is the same unit test command CI runs
-(see [`.github/workflows/unit-tests.yml`](.github/workflows/unit-tests.yml)).
-To start the Server with PostgreSQL, follow the
-[local Server development guide](docs/self-hosting/local-development.md).
+See [the CI workflow](.github/workflows/unit-tests.yml) for the test tiers,
+generated asset checks, and integration checks run on pull requests.
 
 ## Acknowledgements
 
 `issue-spec` is inspired by [OpenSpec](https://github.com/Fission-AI/OpenSpec)
-and preserves its spec-first workflow habits while adapting active change
-state, human review, and multi-agent coordination to issues and pull requests.
-See [the workflow guide](docs/workflow.md#relationship-to-openspec) for how the
-two relate.
+and adapts spec-first development to public Issues, contributor agents, and
+maintainer-led review on GitHub.
+
+## Optional: self-hosted workspace
+
+Teams that need their own issue service can run the issue-spec Server. It adds
+a browser workspace with rendered review briefs, interactive question
+answering, search, and change boards, backed by organization and repository
+permissions and PostgreSQL. Source code, PRs/MRs, reviews, and CI stay on the
+connected code host.
+
+See the **[self-hosting guide](docs/self-hosting/README.md)** for the product
+tour and deployment, [enterprise provider integration](docs/self-hosting/enterprise-provider-integration.md)
+for other code and work platforms, and the
+[local Server development guide](docs/self-hosting/local-development.md)
+for running the Server with PostgreSQL.

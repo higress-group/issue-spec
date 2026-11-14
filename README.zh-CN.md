@@ -2,130 +2,99 @@
 
 **[English](README.md) | 简体中文**
 
-`issue-spec` 是一套 issue 原生、可自托管的 spec 工作流，面向 agent 驱动的软件开发：在进入编码之前，先强化对需求（Proposal）与设计（Design）的人工评审；再把实现（Implement）编排成小任务，让每个任务分配给合适的 agent 处理。
+**面向 Agent 时代的开源项目治理，基于 GitHub 协作。**
 
-```text
--> 先评审需求与设计，再写代码
--> 进行中的变更放在 issue 与类型化评论里，长期 spec 留在仓库里
--> 人类评审以富 HTML 呈现，人类决策以结构化答案记录
--> 实现是一张 agent DAG，每个 PROCESS 由最合适的 agent 负责
--> agent 通过精简的 CLI 读取同一份状态，不背 HTML 的包袱
+`issue-spec` 让项目维护者在**实现开始之前**，通过 Proposal / Design Issue 以形式化、可控的方式干预贡献者 Agent 的上下文。需求、设计约束与人工决策成为结构化、可评审的实施依据，并通过显式信任边界等安全防护降低提示词注入风险。社区直接在 GitHub Issue 和 PR 中协作，批准与合并仍由维护者掌握。
+
+## 在写代码之前，塑造贡献者 Agent 的上下文
+
+Agent 生成代码的速度可以远超维护者评审代码的速度。有价值的贡献首先需要对问题、范围和设计达成共识。issue-spec 让维护者在调整成本还低的阶段，就能以形式化、可追溯的方式引导贡献方向。
+
+| 评审载体 | 维护者可以干预什么 | 贡献者 Agent 继续工作时依据什么 |
+| --- | --- | --- |
+| **Proposal Issue** | 要解决的问题、预期行为、范围与非目标 | `SPEC` 评论中的需求与验收场景 |
+| **Design Issue** | 架构、兼容性约束、方案取舍与验证计划 | 已达成共识的实施方案，以及关联需求的 `TASK` 评论 |
+| **结构化决策** | 继续工作前需要人类拍板的问题 | 阻塞型 `QUESTION` 评论，以及记录下来的解决结论或 `ANSWER` 选择 |
+
+贡献者及其 Agent 在实现前，通过 CLI 读取当前 Design、适用的决策和选定任务。维护者可以在公开讨论中要求收窄范围、否决某种方案，或补充具体的验证计划。即使换一位贡献者或 Agent 接手，这些决策也能继续作为工作依据。
+
+```mermaid
+flowchart LR
+    P[Proposal Issue<br/>范围与需求] --> D[Design Issue<br/>方案与验证]
+    M[维护者评审<br/>约束与决策] --> P
+    M --> D
+    D --> A[贡献者与 Agent<br/>按共识实施]
+    A --> PR[GitHub PR<br/>评审、检查与合并]
 ```
 
-每个实质性变更经过三个 issue —— **Proposal**（做什么、为什么）、**Design**（怎么做、如何验收）、**Implement**（执行 DAG）——由类型化的 `SPEC`、`QUESTION`、`TASK`、`PROCESS`、`REVIEW`、`VERIFY` 评论把可追溯性从需求一直保持到合入的每一行代码。
+范围明确的小改动可以从一个普通 Issue 开始；项目需要相应规划或协调时，再引入 Proposal、Design 或 Implement Issue。是否必须先获得维护者批准，由项目规则决定；CLI 的产物校验和任务状态本身不代表批准。
 
-## 为团队自托管一个工作台
+## 围绕 GitHub 上的开源协作
 
-在自己的基础设施上运行由团队掌控的 issue-spec Server：浏览器工作台、GitHub 兼容 issue API、组织与仓库权限、Service Account、Provider-neutral 代码证据、Runner、Webhook 与持久化 PostgreSQL 状态——而源代码、PR/MR、Review 和 CI 继续留在团队已有的代码托管平台上。
+- **提前评审方向。** 在投入大量实现、提交大篇幅 diff 之前，先讨论清楚需求与设计。
+- **让决策公开、可复用。** Issue、类型化评论和关联 PR 保留决策理由，让跨组织、跨时区的贡献者共享上下文，超越某一次 Agent 会话。
+- **把需求与证据关联起来。** 从需求关联到实施任务，记录检查过程与结果，供 PR 评审使用；项目也可以把长期能力规格保存在仓库中，随代码一起版本化。
+- **明确社区的决策权。** 维护者制定贡献规则，GitHub 承载 PR Review、检查、分支保护与合并。
 
-### 为人类决策而生的评审界面
+直接复用现有 `gh` 登录，对接 github.com 或 GitHub Enterprise。贡献者在 GitHub 中阅读和讨论普通 Markdown，Agent 通过 CLI 读取、校验结构化产物。这套流程无需部署 issue-spec Server。
 
-Agent 会把每个阶段发布为一份沙箱化的 `html-preview` 评审投影：一份渲染出来的简报，讲清楚改了什么、哪些已定、哪些还需要拍板。开放决策是类型化的 `QUESTION` 评论，直接在 issue 页面上用原生控件作答；每次确认的选择都会成为一条不可变的 `ANSWER` 记录，供后续 agent 与工作流关卡消费。
+## 结构化上下文与提示词注入防护
 
-**Proposal** 决策简报把已确认的边界与仍需人类拍板的决策分开，原生答题面板就在简报下方：
+公开 Issue 和评论可能包含攻击者编写的指令。issue-spec 将项目指导规则、经过授权的命令与读取到的讨论内容分开处理：
 
-[![提案决策简报与原生答题面板](docs/self-hosting/assets/self-hosted-review-proposal.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
+- **显式标记不可信数据。** CLI 读取 Issue / PR、检索讨论时，会将远端内容标为不可信数据；文本输出用每次随机生成的 nonce 边界包裹用户撰写的字段，提高伪造边界、冒充可信指令的难度。Agent 指引明确要求：产物正文不能覆盖 Agent 的指令或执行契约。
+- **校验规划产物。** 规范格式、类型化 ID 与声明的关联关系，让需求、决策和任务可以被检查。批准仍遵循项目治理规则，评论中的一段指令不会因为出现在 Issue 里就自动获得权限。
+- **Runner 执行有授权与隔离。** 项目按需启用评论 Runner 时，命令发起者必须通过允许名单和仓库权限检查。Linux 默认使用 bubblewrap，缺少沙箱前提条件时拒绝执行；关闭隔离必须由运维显式选择。
 
-**Design** 评审简报渲染数据流、不变量、已否决方案与验收检查：
+这些措施用于降低风险，并不保证 Agent 能抵御所有注入；维护者评审、Agent 权限与实际执行环境仍是安全边界的一部分。实现和使用说明见 [CLI 读取边界](internal/commands/read.go)、[检索与命令契约](docs/reference.zh-CN.md#cli-参考)及 [Runner 安全与运维](docs/runner.zh-CN.md)。
 
-[![带数据流与不变量的设计评审简报](docs/self-hosting/assets/self-hosted-review-design.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
+## 实践参考：Higress
 
-**Implement** 执行简报展示 PROCESS DAG：哪些可并行、哪些被阻塞、每个节点由哪个 agent 负责：
+[Higress](https://github.com/higress-group/higress) 展示了开源社区如何治理 Agent 辅助贡献。其[治理规则](https://github.com/higress-group/community/blob/main/GOVERNANCE.md)要求在公开讨论中保留重要决策及理由。
 
-[![带 PROCESS DAG 的执行简报](docs/self-hosting/assets/self-hosted-review-implement.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
+根据其 [Agent 辅助贡献政策](https://github.com/higress-group/higress/blob/main/docs/developers/agent-assisted-contributions.md)，有实质性 Agent 参与的贡献通常需要先取得维护者对 Proposal 和 Design Issue 的批准，再开始实现。Design 包含验证计划，实施与验证任务保持到已确认需求的可追溯性；PR 披露 Agent 参与情况，并关联工作记录和证据，供人类评审。该政策也明确了例外情况及对应的核验要求。
 
-这些 HTML 不会进入 agent 上下文：agent 通过 `issue-spec` CLI 读取 proposal、design、question 与生效答案，CLI 返回的是精简的 canonical 产物而非渲染后的评审界面——人类看得舒服，agent 读得省 token。
+这个实践体现了维护者如何通过评审后的需求与设计塑造贡献者 Agent 的上下文，再通过 GitHub 评审成果。这些是 Higress 的项目规则；其他社区可以利用 issue-spec 的通用工作流和项目补充指引，制定适合自己的规划与批准要求。
 
-### Issue、检索与变更管理
+## 在 GitHub 上快速开始
 
-Proposal、design、implement issue 的正文承载当前产物，时间线承载完整决策历史。列表、过滤器与标签让进行中的变更跨仓库可检索。
-
-[![带检索与过滤的 issue 工作台](docs/self-hosting/assets/self-hosted-dashboard.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
-
-全文检索会匹配 canonical Proposal 的标题或主体，并保留其关联变更导航：一次查询就能找到新变更应该参考的早期意图：
-
-[![按关联变更分组的检索结果](docs/self-hosting/assets/self-hosted-search.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
-
-同样的能力也是 CLI 原生的——agent 可以用
-`issue-spec search issues --repo owner/repo --query "..." --state all`
-在提新变更之前先找到历史 Proposal 及其决策。
-
-变更看板把三个阶段 issue 聚合为一个变更，展示生命周期、TASK/PROCESS 进度与关联代码变更——一个 GitHub pull request 和一个内部 merge request 可以挂在同一个变更下。
-
-[![变更看板](docs/self-hosting/assets/self-hosted-change-board.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
-
-### Issue 与代码分属两个权威
-
-自托管有意把 issue 状态与代码状态分开：Server 是 issue 与类型化工作流产物的权威，
-而团队已有的代码托管平台仍是源代码、分支、PR/MR、Review、CI 与合并的权威。
-两者通过运维注册的 **code-provider bridge** 连接：bridge 上报规范化、绑定修订版本的代码证据
-（并且只执行显式请求的外部变更）；关卡仍由 Server 自己评估。一个变更可以并排关联多个
-平台——同一个 Change 下同时挂一个 GitHub pull request 和一个内部 merge request。
-
-```yaml
-# issue-spec/config.yaml — 仓库侧选择运维注册的 bridge
-external_code:
-  provider_key: code.example
-  evidence:
-    required: [review, check, merge]
-    freshness: { review: 24h, check: 1h }
-```
-
-- [对接公司代码与工作平台](docs/self-hosting/enterprise-provider-integration.md) —— 平台盘点、Source Binding、工作单跟踪
-- [Code provider bridge 协议 v1](docs/self-hosting/bridges/code-provider-v1.md) —— 信任边界、证据写入
-- [Runner Git 凭据命令 v1](docs/self-hosting/bridges/git-credential-v1.md) —— Runner 的 clone/push 凭据
-
-**[自托管 Server：架构、权限模型、部署与运维 →](docs/self-hosting/README.zh-CN.md)**
-
-## 人与 agent 共享同一份上下文
-
-`issue-spec` CLI 让 agent 参与到人类在浏览器里评审的同一套工作流中：
-
-- agent 以校验、安全变更与工作流关卡为约束，编写并读取类型化产物（`SPEC`、`TASK`、`PROCESS` 等）
-- 当前 agent 可以完成授权的规划、实施与自测；项目按需通过补充规则定义专职 coordinator 和阶段评审
-- 团队成员和他们的 agent 可以中途接手任何变更，因为规划决策与阻塞保存在 Issue 中；当前评审、检查、批准和合并由人和代码平台负责
-- `issue-spec runner` 在受管工作区内执行经过授权的评论命令（`/new`、`/resume`），直接从 issue 触发工作
-
-通用技能只保留一份，Claude 逐技能链接；项目差异通过 `issue-spec/config.yaml` 和按阶段引用的补充文件维护。`workflow update --dry-run` 预览升级并保护本地修改。评审、发布和合并遵循实际授权，不自动分派 reviewer 或增加理由发布仪式。详见[配置与升级说明](docs/reference.zh-CN.md)。
-
-## 兼容对接 GitHub
-
-同一套工作流可以直接用你的 `gh` 登录对着 github.com 或 GitHub Enterprise 运行——issue、类型化评论、PR review 线程与长期 spec 归档 PR 全部可用。只有两个能力是自托管特有的便利：渲染出的 `html-preview` 评审界面与交互式 QUESTION 答题面板；在 GitHub 上它们退化为可读的普通 Markdown 源码，答案改由 CLI 记录。
-
-## 快速开始
-
-安装 CLI：
+使用 [`go.mod`](go.mod) 声明的 Go 工具链安装 CLI，并准备好 [GitHub CLI](https://cli.github.com/)：
 
 ```bash
 go install github.com/higress-group/issue-spec/cmd/issue-spec@latest
+gh auth login
 ```
 
-认证（GitHub 模式复用你的 `gh` 会话）并初始化仓库：
+首次接入项目时，在仓库检出目录中执行以下命令，将 `owner/repo` 替换为实际的 GitHub 仓库名：
 
 ```bash
-gh auth login
-issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery skills
+issue-spec --profile github init --repo owner/repo --create-labels --tools codex,claude --delivery skills
 ```
 
-然后在你的 agent 里通过生成的 skills 或 slash 命令驱动工作流：
+该命令创建仓库连接元数据、工作流标签和 `.agents/skills` 下的共享技能，并为 Claude 创建逐技能链接。创建标签需要相应仓库权限；若标签由维护者单独管理，可使用 `--skip-labels`。向已初始化的项目贡献时，应遵循其现有指引，使用仓库已提交的技能。
+
+让 Agent 使用 `issue-spec-workflow` 推进变更，或分别选择 `issue-spec-propose` 进行规划、`issue-spec-apply` 进行实现。例如，先提出：
 
 ```text
-/issue-spec:propose "your idea"
-/issue-spec:apply
-/issue-spec:review
-/issue-spec:verify
-/issue-spec:archive
+使用 issue-spec-propose 为 owner/repo 规划 <变更>。先阅读项目规则、检索相关讨论，
+在实现前准备好需求与设计，交给维护者评审。
 ```
 
-要为团队自托管 Server，请从**[自托管指南](docs/self-hosting/README.zh-CN.md)**开始。
+所需决策与批准记录完成后，再继续：
+
+```text
+使用 issue-spec-apply 处理 <Issue URL>。遵循已达成共识的 Design 与决策，
+实现授权范围，执行要求的检查，并准备附有结果的 PR 供人类评审。
+```
+
+项目上下文、贡献规则和各阶段指引保存在 `issue-spec/config.yaml` 及其引用文件中。维护者可以让每位贡献者的 Agent 读取同一套规则，并用 `issue-spec workflow update --dry-run` 预览生成技能的升级。详见[配置与安全升级](docs/reference.zh-CN.md#共享技能项目补充与安全升级)。
 
 ## 了解更多
 
-- **[工作流指南](docs/workflow.zh-CN.md)** —— 完整演示、工作流模型、多 agent 协调、review 流程、GitHub 模式配置
-- **[CLI 参考](docs/reference.zh-CN.md)** —— 配置、命令契约、canonical 类型化评论
-- **[Runner 运维](docs/runner.zh-CN.md)** —— 命令接入、授权、沙箱、并发、恢复
-- **[工作流安全](docs/workflow-safety.md)** —— 关卡、reconcile、PROCESS 证据
-- **[自托管](docs/self-hosting/README.zh-CN.md)** —— 架构、认证、Bridge、运维
+- **[工作流指南](docs/workflow.zh-CN.md)** —— 按需规划、实施与人工评审交接
+- **[CLI 参考](docs/reference.zh-CN.md)** —— 项目指引、命令和类型化评论
+- **[Runner 运维](docs/runner.zh-CN.md)** —— GitHub 评论命令授权、沙箱与恢复
+- **[工作流安全](docs/workflow-safety.md)** —— 规划检查、工作区安全与失败处理
 
 ## 开发
 
@@ -133,14 +102,17 @@ issue-spec init --repo owner/repo --create-labels --tools codex,claude --deliver
 
 ```bash
 go build ./cmd/issue-spec
-make build-server
 go test ./...
 ```
 
-`go test ./...` 与 CI 运行的单元测试命令一致（参见 [`.github/workflows/unit-tests.yml`](.github/workflows/unit-tests.yml)）。
-要连接 PostgreSQL 启动 Server，请阅读
-[本地 Server 开发指南](docs/self-hosting/local-development.zh-CN.md)。
+PR 上运行的测试分层、生成资源检查与集成检查见 [CI 工作流](.github/workflows/unit-tests.yml)。
 
 ## 致谢
 
-`issue-spec` 受 [OpenSpec](https://github.com/Fission-AI/OpenSpec) 启发，保留其 spec 优先的工作流习惯，并把进行中的变更状态、人工评审与多 agent 协调适配到 issue 与 pull request 上。两者的关系详见[工作流指南](docs/workflow.zh-CN.md#与-openspec-的关系)。
+`issue-spec` 受 [OpenSpec](https://github.com/Fission-AI/OpenSpec) 启发，将 spec 优先的开发方式应用于公开 Issue、贡献者 Agent，以及 GitHub 上由维护者主导的评审。
+
+## 可选：自托管工作台
+
+需要自有 Issue 服务的团队可以部署 issue-spec Server，获得包含评审简报、交互式问题作答、检索和变更看板的浏览器工作台，以及组织与仓库权限、PostgreSQL 持久化存储。源代码、PR/MR、Review 和 CI 继续留在接入的代码托管平台。
+
+产品展示与部署见**[自托管指南](docs/self-hosting/README.zh-CN.md)**，接入其他代码与工作平台见[企业平台集成](docs/self-hosting/enterprise-provider-integration.md)，连接 PostgreSQL 启动 Server 见[本地 Server 开发指南](docs/self-hosting/local-development.zh-CN.md)。
