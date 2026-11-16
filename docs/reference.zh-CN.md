@@ -27,14 +27,14 @@ issue-spec workflow which --repo owner/repo --json
 
 ### 工作流反馈
 
-通过 `guidance.shared` 启用可选的反馈流程。目标仓库维护者用 `issue-spec feedback configure` 发布复现阈值、优先级标签和可信报告者身份。GitHub 和自托管使用当前 Issue profile 下的同一套命令。自托管 Server 需支持按名称读取仓库标签。 [反馈指引与配置示例](../.agents/skills/issue-spec-workflow/references/workflow-feedback.md)
+常规 `issue-spec init` 后即可记录反馈、去重和计数。默认累计三次确认复现时建议标记 `priority/high`。项目可通过 `guidance.shared` 定制上报去向和授权范围。 [反馈指引与配置示例](../.agents/skills/issue-spec-workflow/references/workflow-feedback.md)
 
 ```bash
-issue-spec feedback configure --repo owner/repo --issue 17 --dry-run --json
 issue-spec feedback record --repo owner/repo --issue 42 --event-file occurrence.json --dry-run --json
+issue-spec feedback configure --repo owner/repo --issue 17 --dry-run --json
 ```
 
-在授权写入时去掉 `--dry-run`。重试沿用原始事件标识。启用后的默认行为是建议升级。自动升级还需目标仓库明确开启，并由后端校验标签权限。
+在授权写入时去掉 `--dry-run`。自定义阈值或开启自动升级时，由目标仓库维护者运行 `feedback configure`。GitHub 按标签权限校验。自托管由新版 Server 校验 Issue 创建权限，并根据已保存证据判断能否升级。
 
 ### HTML review 创作指引
 

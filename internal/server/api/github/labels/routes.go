@@ -37,6 +37,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "github.issue_labels.list", Method: http.MethodGet, Pattern: "/repos/{owner}/{repo}/issues/{number}/labels", Handler: issues.WithRequestID(authentication.AuthenticateOptional(http.HandlerFunc(h.listIssue)))},
 		{Name: "github.issue_labels.add", Method: http.MethodPost, Pattern: "/repos/{owner}/{repo}/issues/{number}/labels", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.addIssue)))},
 		{Name: "github.issue_labels.replace", Method: http.MethodPut, Pattern: "/repos/{owner}/{repo}/issues/{number}/labels", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.replaceIssue)))},
+		{Name: "github.issue_labels.feedback_promotion", Method: http.MethodPost, Pattern: "/repos/{owner}/{repo}/issues/{number}/feedback/promotion", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.promoteFeedback)))},
 		{Name: "github.issue_labels.remove", Method: http.MethodDelete, Pattern: "/repos/{owner}/{repo}/issues/{number}/labels/{name}", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.removeIssue)))},
 	}}
 	return set, set.Validate()
@@ -203,6 +204,26 @@ func (h handlers) changeIssue(w http.ResponseWriter, r *http.Request, replace bo
 	}
 	h.setIssueLabelHeaders(w, issue)
 	issues.WriteJSON(w, http.StatusOK, presentLabels(h.presenter, resource, labels))
+}
+
+func (h handlers) promoteFeedback(w http.ResponseWriter, r *http.Request) {
+	number, ok := positive(w, r, "number")
+	if !ok {
+		return
+	}
+	var input struct {
+		PolicyRef string `json:"policy_ref"`
+	}
+	if err := codec.DecodeJSON(r.Body, &input); err != nil || input.PolicyRef == "" {
+		h.validation(w, r, []codec.Violation{{Resource: "Issue", Field: "policy_ref", Code: "invalid", Message: "a published feedback policy reference is required"}})
+		return
+	}
+	result, err := h.service.PromoteFeedback(r.Context(), r.PathValue("owner"), r.PathValue("repo"), number, input.PolicyRef, issues.Subject(r))
+	if err != nil {
+		issues.WriteError(w, r, err)
+		return
+	}
+	issues.WriteJSON(w, http.StatusOK, result)
 }
 
 func (h handlers) removeIssue(w http.ResponseWriter, r *http.Request) {

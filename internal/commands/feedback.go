@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/feedback"
 )
 
@@ -53,7 +54,7 @@ func (a *app) runFeedback(ctx context.Context, args []string) int {
 		event = parsed
 	}
 
-	client, _, err := a.clientFor(ctx, *host)
+	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("select feedback Issue backend: %v\n", err)
 		return 1
@@ -81,7 +82,9 @@ func (a *app) runFeedback(ctx context.Context, args []string) int {
 		return 0
 	}
 
-	result, err := feedback.Record(ctx, backend, repo, *issue, event, *dryRun)
+	result, err := feedback.Record(ctx, backend, repo, *issue, event, feedback.RecordOptions{
+		DryRun: *dryRun, SelfHosted: token.ProfileKind == string(auth.ProfileKindHosted),
+	})
 	if err != nil {
 		a.errorf("%v\n", err)
 		return 1

@@ -240,6 +240,29 @@ func (s RepoStore) UpdateCommentCAS(ctx context.Context, compatibilityID, expect
 	return result, nil
 }
 
+// ListIssueCommentsWithPrefix reads only matching bodies on the selected Issue.
+func (s RepoStore) ListIssueCommentsWithPrefix(ctx context.Context, issueID uuid.UUID, prefix string) ([]models.Comment, error) {
+	if err := s.validate(); err != nil || issueID == uuid.Nil || prefix == "" {
+		return nil, ErrInvalidInput
+	}
+	rows, err := s.db.Query(ctx, `SELECT `+commentColumns+` FROM comments WHERE organization_id = $1
+		AND repository_id = $2 AND issue_id = $3 AND starts_with(body, $4)`,
+		s.scope.OrgID, s.scope.RepoID, issueID, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("load Issue evidence comments: %w", err)
+	}
+	defer rows.Close()
+	var comments []models.Comment
+	for rows.Next() {
+		comment, err := scanComment(rows)
+		if err != nil {
+			return nil, err
+		}
+		comments = append(comments, comment)
+	}
+	return comments, rows.Err()
+}
+
 func (s RepoStore) ListComments(ctx context.Context, options models.CommentListOptions) (models.CommentPage, error) {
 	if err := s.validate(); err != nil || options.Page < 1 || options.PerPage < 1 {
 		return models.CommentPage{}, ErrInvalidInput

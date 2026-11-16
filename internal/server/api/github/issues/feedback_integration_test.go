@@ -98,7 +98,7 @@ func TestFeedbackHiRoute495SelfHosted(t *testing.T) {
 			strconv.FormatInt(codec.StableNumericID(contributor.User.ID.String()), 10),
 		},
 	}
-	policyIssue := newIssue("Feedback policy", jsonBody(policy))
+	policyIssue := newIssue("Feedback policy", `{"threshold":2}`)
 	policyNumber := strconv.Itoa(policyIssue.Number)
 	configure := func(profile string, flags ...string) (int, string) {
 		args := append([]string{"configure", "--repo", repo, "--issue", policyNumber, "--json"}, flags...)
@@ -110,10 +110,6 @@ func TestFeedbackHiRoute495SelfHosted(t *testing.T) {
 	if _, err := owner.GetRepositoryLabel(ctx, repo, "issue-spec/feedback-policy"); !errors.Is(err, github.ErrRepositoryLabelNotFound) {
 		t.Fatalf("policy preview mutated label definition: %v", err)
 	}
-	if code, out := configure("owner"); code != 0 {
-		t.Fatalf("publish policy exit=%d output=%s", code, out)
-	}
-
 	events := make([]string, 0, 3)
 	for _, name := range []string{"release-0.6.2", "release-0.6.3", "synthetic-third-release"} {
 		data, err := os.ReadFile(filepath.Join("../../../../../testdata/workflow-feedback", name+".json"))
@@ -145,6 +141,44 @@ func TestFeedbackHiRoute495SelfHosted(t *testing.T) {
 		check("owner", issue, 0, 1, "below_threshold")
 		check("owner", issue, 1, 2, "below_threshold")
 	}
+	defaults := newIssue("HiRoute #495 default policy", "No project feedback policy was published", "existing-category")
+	initial := check("contributor", defaults, 0, 1, "below_threshold", "--dry-run")
+	if !initial.DryRun || initial.EventStatus != "would_record" {
+		t.Fatalf("default preview did not project the first occurrence: %+v", initial)
+	}
+	first := check("contributor", defaults, 0, 1, "below_threshold")
+	if first.EventStatus != "recorded" {
+		t.Fatalf("the dry-run wrote evidence: %+v", first)
+	}
+	check("owner", defaults, 1, 2, "below_threshold")
+	check("contributor", defaults, 1, 2, "below_threshold")
+	check("contributor", defaults, 2, 3, "suggested")
+	if _, err := owner.GetRepositoryLabel(ctx, repo, feedback.PolicyLabel); !errors.Is(err, github.ErrRepositoryLabelNotFound) {
+		t.Fatalf("default recording provisioned a policy label: %v", err)
+	}
+
+	publish := func() {
+		t.Helper()
+		if code, out := configure("owner"); code != 0 {
+			t.Fatalf("publish policy exit=%d output=%s", code, out)
+		}
+	}
+	updatePolicy := func(body string) {
+		t.Helper()
+		if _, err := owner.UpdateIssue(ctx, repo, policyIssue.Number, github.UpdateIssueOptions{Body: &body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish()
+	customThreshold := newIssue("HiRoute #495 custom threshold", "Only threshold is configured")
+	result := check("contributor", customThreshold, 0, 1, "below_threshold")
+	if result.Promotion.Label != "priority/high" {
+		t.Fatalf("custom threshold lost the default label: %+v", result)
+	}
+	check("owner", customThreshold, 1, 2, "suggested")
+
+	updatePolicy(jsonBody(policy))
+	publish()
 	suggest := newIssue("HiRoute #495 suggestion case", "Two independent catalog merges", "existing-category")
 	seed(suggest)
 	preview := check("owner", suggest, 1, 2, "below_threshold", "--dry-run")
@@ -170,18 +204,28 @@ func TestFeedbackHiRoute495SelfHosted(t *testing.T) {
 	check("contributor", suggest, 2, 3, "suggested")
 
 	policy.Mode = "auto"
-	policyBody := jsonBody(policy)
-	if _, err := owner.UpdateIssue(ctx, repo, policyIssue.Number, github.UpdateIssueOptions{Body: &policyBody}); err != nil {
-		t.Fatal(err)
-	}
+	updatePolicy(jsonBody(policy))
 	if _, err := record("owner", suggest, 2); err == nil || !strings.Contains(err.Error(), "differs from the published revision") {
 		t.Fatalf("an unpublished policy body became active: %v", err)
 	}
 	if code, out := configure("contributor"); code == 0 {
 		t.Fatalf("contributor altered policy label definition: %s", out)
 	}
-	if code, out := configure("owner"); code != 0 {
-		t.Fatalf("publish automatic policy exit=%d output=%s", code, out)
+	publish()
+	active, err := owner.GetRepositoryLabel(ctx, repo, feedback.PolicyLabel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contributorClient, err := github.NewClientWithOptions(github.ClientOptions{BaseURL: server.URL, Token: "contributor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkForbidden := func(err error) {
+		t.Helper()
+		var apiErr *github.APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected a permission denial: %v", err)
+		}
 	}
 
 	if missing := check("owner", suggest, 2, 3, "pending"); !strings.Contains(missing.Promotion.Reason, "label unavailable") {
@@ -190,15 +234,36 @@ func TestFeedbackHiRoute495SelfHosted(t *testing.T) {
 	if _, err := owner.CreateLabel(ctx, repo, "priority/high", "d73a4a", "High priority"); err != nil {
 		t.Fatal(err)
 	}
-	auto := newIssue("HiRoute #495 automatic case", "Independent catalog merges with automatic triage", "existing-category")
+	check("unconfirmed-reporter", suggest, 2, 3, "applied")
+	auto := newIssue("HiRoute #495 automatic case", "Independent catalog merges with automatic escalation", "existing-category")
 	seed(auto)
-	partial := check("contributor", auto, 2, 3, "pending")
-	if partial.EventStatus != "recorded" || partial.CommentID <= 0 || !strings.Contains(partial.Promotion.Reason, "HTTP 403") {
-		t.Fatalf("permission failure lost evidence: %+v", partial)
+	_, err = contributorClient.AddIssueLabels(ctx, repo, auto.Number, []string{"priority/high"})
+	checkForbidden(err)
+	if plan, err := contributorClient.PromoteFeedback(ctx, repo, auto.Number, active.Description); err != nil || plan.Status != "below_threshold" {
+		t.Fatalf("the endpoint accepted early escalation: %+v err=%v", plan, err)
 	}
-	final := check("owner", auto, 2, 3, "applied")
-	if final.CommentID != partial.CommentID || final.EventStatus != "already_recorded" {
-		t.Fatalf("label retry changed occurrence identity: %+v", final)
+	if plan, err := contributorClient.PromoteFeedback(ctx, repo, auto.Number, "stale-policy"); err != nil || plan.Status != "pending" {
+		t.Fatalf("the endpoint accepted a stale policy: %+v err=%v", plan, err)
+	}
+
+	setContribution := func(value string) {
+		t.Helper()
+		if _, err := env.pool.Exec(ctx, "UPDATE repos SET contribution_policy = $1 WHERE id = $2", value, env.scope.RepoID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setContribution("members")
+	_, err = contributorClient.PromoteFeedback(ctx, repo, auto.Number, active.Description)
+	checkForbidden(err)
+	setContribution("public")
+
+	applied := check("contributor", auto, 2, 3, "applied")
+	if applied.EventStatus != "recorded" || applied.CommentID <= 0 {
+		t.Fatalf("contributor escalation lost the recorded evidence: %+v", applied)
+	}
+	replayedPromotion := check("contributor", auto, 2, 3, "already_at_priority")
+	if replayedPromotion.CommentID != applied.CommentID || replayedPromotion.EventStatus != "already_recorded" {
+		t.Fatalf("label replay changed occurrence identity: %+v", replayedPromotion)
 	}
 	comments, err := owner.ListIssueComments(ctx, repo, auto.Number)
 	if err != nil || len(comments) != 3 {
@@ -208,18 +273,20 @@ func TestFeedbackHiRoute495SelfHosted(t *testing.T) {
 	if err != nil || !slices.ContainsFunc(current.Labels, func(label github.Label) bool { return label.Name == "existing-category" }) {
 		t.Fatalf("initial category lost: Issue=%+v err=%v", current, err)
 	}
-	check("owner", auto, 2, 3, "already_at_priority")
-
 	if _, err := owner.CreateLabel(ctx, repo, "issue-spec/feedback-hold", "bfdadc", "Maintainer hold"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.AddIssueLabels(ctx, repo, suggest.Number, []string{"issue-spec/feedback-hold"}); err != nil {
+	if _, err := owner.AddIssueLabels(ctx, repo, defaults.Number, []string{"issue-spec/feedback-hold"}); err != nil {
 		t.Fatal(err)
 	}
-	check("owner", suggest, 2, 3, "held")
+	if plan, err := contributorClient.PromoteFeedback(ctx, repo, defaults.Number, active.Description); err != nil || plan.Status != "held" {
+		t.Fatalf("the endpoint ignored the maintainer hold: %+v err=%v", plan, err)
+	}
 	closed := "closed"
-	if _, err := owner.UpdateIssue(ctx, repo, suggest.Number, github.UpdateIssueOptions{State: &closed}); err != nil {
+	if _, err := owner.UpdateIssue(ctx, repo, defaults.Number, github.UpdateIssueOptions{State: &closed}); err != nil {
 		t.Fatal(err)
 	}
-	check("owner", suggest, 2, 3, "closed")
+	if plan, err := contributorClient.PromoteFeedback(ctx, repo, defaults.Number, active.Description); err != nil || plan.Status != "closed" {
+		t.Fatalf("the endpoint ignored closure: %+v err=%v", plan, err)
+	}
 }

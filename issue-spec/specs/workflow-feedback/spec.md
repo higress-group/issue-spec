@@ -8,7 +8,7 @@ Make concrete CLI and workflow friction recoverable across tasks in a provider-n
 
 ### Requirement: count independently observed events by original identity
 
-An ordinary Issue or comment may carry versioned occurrence records. Each record MUST include the source instance, source repository, stable original event ID, observation time, impact summary and evidence link. The Issue is the scope of counting. A retry, copied report or parallel report with the same normalized identity MUST contribute at most one confirmed occurrence. Only records authored by a provider user ID trusted by the published destination policy contribute to the confirmed count. A trusted reporter may confirm an earlier untrusted or legacy report by recording the same evidenced event. Writable prose or JSON claims of authorization convey no trust.
+An ordinary Issue or comment may carry versioned occurrence records. Each record MUST include the source instance, source repository, stable original event ID, observation time, impact summary and evidence link. The Issue is the scope of counting. A retry, copied report or parallel report with the same normalized identity MUST contribute at most one confirmed occurrence. The built-in policy counts records attributed to identifiable Issue authors. A published trusted reporter list restricts confirmation to those provider user IDs. A trusted reporter may confirm an earlier untrusted or legacy report by recording the same evidenced event. Writable prose or JSON claims of authorization convey no trust.
 
 #### Scenario: retry of a release deploy
 
@@ -20,9 +20,19 @@ An ordinary Issue or comment may carry versioned occurrence records. Each record
 - **WHEN** an authenticated contributor outside the configured reporter set supplies a third independent event
 - **THEN** the Issue records the evidence and the confirmed count remains two until an authorized reporter confirms that event
 
-### Requirement: publish policy through the destination's label authority
+### Requirement: use built-in defaults and publish custom policy through the destination's label authority
 
-The CLI MUST load the policy from the selected Issue repository. Publishing MUST require the backend's permission to manage repository label definitions. The definition of `issue-spec/feedback-policy` MUST bind a policy Issue number to the SHA-256 digest of the reviewed JSON body. A missing definition disables the feedback command. A changed body MUST be validated and republished before it can govern new requests. Policy sets a positive occurrence threshold, a target label and trusted provider user IDs. Suggestion mode MUST be the default. An explicit `auto` mode permits the separate issue label mutation. The same policy operations MUST work on GitHub and self-hosted independently of the code host.
+The CLI MUST support preview, recording, deduplication and counting with the built-in policy when the selected Issue repository has no published policy. The built-in policy suggests `priority/high` at three confirmed occurrences. A custom policy may specify only a positive occurrence threshold and inherits the other defaults. Publishing MUST require permission to manage repository label definitions. The definition of `issue-spec/feedback-policy` MUST bind a policy Issue number to the SHA-256 digest of the reviewed JSON body. A changed body MUST be validated and republished before it can govern new requests. An explicit `auto` mode with trusted reporter IDs permits the priority mutation. Both backends MUST support the default and custom policy independently of the code host.
+
+#### Scenario: newly initialized repository
+
+- **WHEN** an authorized caller records three distinct evidenced occurrences after ordinary init without publishing a policy
+- **THEN** the CLI reports three confirmed occurrences and suggests `priority/high`
+
+#### Scenario: custom threshold only
+
+- **WHEN** a maintainer publishes a policy containing only the threshold
+- **THEN** the CLI uses the custom threshold with suggestion mode and the built-in priority label
 
 #### Scenario: policy publication and preview
 
@@ -36,16 +46,23 @@ The CLI MUST load the policy from the selected Issue repository. Publishing MUST
 
 ### Requirement: save evidence before permission-checked promotion
 
-An explicit record request MUST preview the selected Issue, event identity, count and priority decision without writing when dry-run is selected. A real record request MUST save its evidence before attempting priority mutation. Automatic escalation requires a qualifying confirmed count, an open, unlocked Issue without a configured or built-in hold, an existing target label, unchanged published policy and effective backend permission to add the target label. Higher-priority and unrelated labels MUST be preserved. On self-hosted, contribution governs ordinary comment creation and triage governs issue label assignment.
+An explicit record request MUST preview the selected Issue, event identity, count and priority decision without writing when dry-run is selected. A real record request MUST save its evidence before attempting priority mutation. Automatic escalation requires a qualifying confirmed count, an open, unlocked Issue without a configured or built-in hold, an existing target label and unchanged published policy. Higher-priority and unrelated labels MUST be preserved. GitHub MUST enforce its effective issue label permission. On self-hosted, the feedback promotion operation MUST enforce the same repository permission as creating an Issue. It MUST verify the published policy reference, re-evaluate the persisted evidence and Issue state in the mutation transaction, and apply only the policy's target label. Ordinary issue label assignment continues to require triage.
 
 A denied or unsuccessful label operation MUST preserve the recorded evidence and return the Issue identity, observed count and pending reason. The next request for the same occurrence MUST reconcile the existing record before retrying the label. An ambiguous comment or label response MUST be resolved by reading provider state before any repeated mutation.
 
-#### Scenario: third occurrence with separate comment and label permissions
+#### Scenario: GitHub third occurrence with separate comment and label permissions
 
 - **WHEN** an accepted third occurrence is recorded under automatic policy by a contributor who cannot assign labels
 - **THEN** the Issue contains the evidence and returns a count of three with promotion pending
 - **AND WHEN** an authorized triager retries the same event
 - **THEN** the priority label is added and the recorded event identity and count are preserved
+
+#### Scenario: self-hosted Issue creator promotes a qualifying Issue
+
+- **WHEN** a caller with permission to create issues requests promotion against a published automatic policy and the stored evidence meets its threshold
+- **THEN** the self-hosted server adds the configured priority label
+- **AND WHEN** that caller requests promotion below the threshold or against a stale policy
+- **THEN** the stored Issue labels remain intact
 
 #### Scenario: maintainer hold or closed decision
 
@@ -54,7 +71,7 @@ A denied or unsuccessful label operation MUST preserve the recorded evidence and
 
 ### Requirement: project instructions select the optional feedback procedure
 
-The generated workflow MUST offer a shared feedback reference that projects can select through `guidance.shared` with their own destination and authorization rules. The procedure MUST use existing open and closed discussion search and ordinary Issues and comments. The project can use the feedback procedure during relevant authorized work and report adoption and verification with the original Issue. Workflow update preview MUST retain its read-only behavior and project-owned instructions.
+The generated workflow MUST include a feedback reference for authorized tasks after ordinary initialization. Projects MAY refine triggering conditions, destinations and authorization through `guidance.shared`. The procedure MUST use existing open and closed discussion search and ordinary Issues and comments. The project can use the feedback procedure during relevant authorized work and report adoption and verification with the original Issue. Workflow update preview MUST retain its read-only behavior and project-owned instructions.
 
 ## Implementation references
 

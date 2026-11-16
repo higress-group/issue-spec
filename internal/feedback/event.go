@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const occurrencePrefix = "<!-- issue-spec:feedback-occurrence:v1 "
+const OccurrencePrefix = "<!-- issue-spec:feedback-occurrence:v1 "
 const occurrenceSuffix = " -->"
 
 var (
@@ -68,7 +68,7 @@ func (e Event) commentBody() (string, error) {
 		return "", err
 	}
 	var body strings.Builder
-	fmt.Fprintf(&body, "%s%s%s\n\n### Workflow feedback occurrence\n\n", occurrencePrefix, data, occurrenceSuffix)
+	fmt.Fprintf(&body, "%s%s%s\n\n### Workflow feedback occurrence\n\n", OccurrencePrefix, data, occurrenceSuffix)
 	fmt.Fprintf(&body, "%s\n\n- Observed %s\n- Source %s\n", html.EscapeString(e.Summary), e.ObservedAt.Format(time.RFC3339), e.Key())
 	if e.Revision != "" {
 		fmt.Fprintf(&body, "- Revision %s\n", html.EscapeString(e.Revision))
@@ -83,10 +83,10 @@ func (e Event) commentBody() (string, error) {
 func appendEvents(body string, yield func(Event)) {
 	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimSuffix(line, "\r")
-		if !strings.HasPrefix(line, occurrencePrefix) || !strings.HasSuffix(line, occurrenceSuffix) {
+		if !strings.HasPrefix(line, OccurrencePrefix) || !strings.HasSuffix(line, occurrenceSuffix) {
 			return
 		}
-		input := strings.TrimSuffix(strings.TrimPrefix(line, occurrencePrefix), occurrenceSuffix)
+		input := strings.TrimSuffix(strings.TrimPrefix(line, OccurrencePrefix), occurrenceSuffix)
 		if event, err := ParseEvent(input); err == nil {
 			yield(event)
 		}

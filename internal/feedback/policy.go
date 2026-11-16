@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	policyLabel = "issue-spec/feedback-policy"
+	PolicyLabel = "issue-spec/feedback-policy"
 	holdLabel   = "issue-spec/feedback-hold"
 	modeSuggest = "suggest"
 	modeAuto    = "auto"
@@ -54,17 +54,17 @@ func Configure(ctx context.Context, backend Backend, repo string, number int, dr
 	if dryRun {
 		return result, nil
 	}
-	label, err := backend.GetRepositoryLabel(ctx, repo, policyLabel)
+	label, err := backend.GetRepositoryLabel(ctx, repo, PolicyLabel)
 	if errors.Is(err, github.ErrRepositoryLabelNotFound) {
-		if _, err = backend.CreateLabel(ctx, repo, policyLabel, "536D8B", ref); err == nil {
-			label, err = backend.GetRepositoryLabel(ctx, repo, policyLabel)
+		if _, err = backend.CreateLabel(ctx, repo, PolicyLabel, "536D8B", ref); err == nil {
+			label, err = backend.GetRepositoryLabel(ctx, repo, PolicyLabel)
 		}
 	}
 	if err != nil {
 		return PolicyResult{}, fmt.Errorf("read or create feedback policy label: %w", err)
 	}
 	if label.Description != ref {
-		label, err = backend.UpdateRepositoryLabelDescription(ctx, repo, policyLabel, ref)
+		label, err = backend.UpdateRepositoryLabelDescription(ctx, repo, PolicyLabel, ref)
 		if err != nil {
 			return PolicyResult{}, fmt.Errorf("publish feedback policy: %w", err)
 		}
@@ -75,30 +75,46 @@ func Configure(ctx context.Context, backend Backend, repo string, number int, dr
 	return result, nil
 }
 
+func defaultPolicy() Policy {
+	return Policy{Threshold: 3, PriorityLabel: "priority/high", Mode: modeSuggest}
+}
+
 func loadPolicy(ctx context.Context, backend Backend, repo string) (Policy, int, string, error) {
-	label, err := backend.GetRepositoryLabel(ctx, repo, policyLabel)
-	if errors.Is(err, github.ErrRepositoryLabelNotFound) {
-		return Policy{}, 0, "", fmt.Errorf("feedback is disabled for %s until its maintainers configure a policy", repo)
+	label, err := backend.GetRepositoryLabel(ctx, repo, PolicyLabel)
+	if errors.Is(err, github.ErrRepositoryLabelNotFound) || errors.Is(err, github.ErrRepositoryLabelLookupUnsupported) {
+		return defaultPolicy(), 0, "", nil
 	}
 	if err != nil {
 		return Policy{}, 0, "", fmt.Errorf("read feedback policy label: %w", err)
 	}
-	parts := strings.Split(label.Description, ":")
+	policy, number, err := ResolvePublishedPolicy(label.Description, func(number int) (github.Issue, error) {
+		return backend.GetIssue(ctx, repo, number)
+	})
+	return policy, number, label.Description, err
+}
+
+// ResolvePublishedPolicy resolves an approved policy within its own Issue repository.
+func ResolvePublishedPolicy(reference string, readIssue func(int) (github.Issue, error)) (Policy, int, error) {
+	parts := strings.Split(reference, ":")
 	if len(parts) != 3 || parts[0] != "v1" {
-		return Policy{}, 0, "", fmt.Errorf("invalid feedback policy reference on %s", repo)
+		return Policy{}, 0, fmt.Errorf("invalid feedback policy reference")
 	}
 	number, err := strconv.Atoi(parts[1])
 	if err != nil || number <= 0 {
-		return Policy{}, 0, "", fmt.Errorf("invalid feedback policy Issue number on %s", repo)
+		return Policy{}, 0, fmt.Errorf("invalid feedback policy Issue number")
 	}
-	policy, ref, err := readPolicyIssue(ctx, backend, repo, number)
+	issue, err := readIssue(number)
 	if err != nil {
-		return Policy{}, 0, "", err
+		return Policy{}, 0, fmt.Errorf("read feedback policy Issue #%d: %w", number, err)
 	}
-	if label.Description != ref {
-		return Policy{}, 0, "", fmt.Errorf("feedback policy Issue #%d differs from the published revision", number)
+	policy, ref, err := parsePolicyIssue(issue, number)
+	if err != nil {
+		return Policy{}, 0, err
 	}
-	return policy, number, ref, nil
+	if reference != ref {
+		return Policy{}, 0, fmt.Errorf("feedback policy Issue #%d differs from the published revision", number)
+	}
+	return policy, number, nil
 }
 
 func readPolicyIssue(ctx context.Context, backend github.IssueBackend, repo string, number int) (Policy, string, error) {
@@ -106,6 +122,10 @@ func readPolicyIssue(ctx context.Context, backend github.IssueBackend, repo stri
 	if err != nil {
 		return Policy{}, "", fmt.Errorf("read feedback policy Issue #%d: %w", number, err)
 	}
+	return parsePolicyIssue(issue, number)
+}
+
+func parsePolicyIssue(issue github.Issue, number int) (Policy, string, error) {
 	if issue.PullRequest != nil {
 		return Policy{}, "", fmt.Errorf("feedback policy must refer to an Issue")
 	}
@@ -123,7 +143,7 @@ func readPolicyIssue(ctx context.Context, backend github.IssueBackend, repo stri
 }
 
 func parsePolicy(source string) (Policy, error) {
-	var policy Policy
+	policy := defaultPolicy()
 	if err := decodeJSON(source, &policy); err != nil {
 		return Policy{}, err
 	}
@@ -134,12 +154,12 @@ func parsePolicy(source string) (Policy, error) {
 		return Policy{}, fmt.Errorf("mode must be suggest or auto")
 	}
 	policy.PriorityLabel = strings.TrimSpace(policy.PriorityLabel)
-	if policy.Threshold <= 0 || policy.PriorityLabel == "" || strings.EqualFold(policy.PriorityLabel, policyLabel) ||
+	if policy.Threshold <= 0 || policy.PriorityLabel == "" || strings.EqualFold(policy.PriorityLabel, PolicyLabel) ||
 		strings.EqualFold(policy.PriorityLabel, holdLabel) || strings.EqualFold(policy.PriorityLabel, "wontfix") {
 		return Policy{}, fmt.Errorf("a positive threshold and a priority label are required")
 	}
-	if len(policy.TrustedReporterIDs) == 0 {
-		return Policy{}, fmt.Errorf("at least one trusted_reporter_ids entry is required")
+	if policy.Mode == modeAuto && len(policy.TrustedReporterIDs) == 0 {
+		return Policy{}, fmt.Errorf("auto mode requires at least one trusted_reporter_ids entry")
 	}
 	for _, reporter := range policy.TrustedReporterIDs {
 		id, err := strconv.ParseInt(reporter, 10, 64)
@@ -158,5 +178,6 @@ func parsePolicy(source string) (Policy, error) {
 }
 
 func (p Policy) trusts(author *github.User) bool {
-	return author != nil && author.ID > 0 && slices.Contains(p.TrustedReporterIDs, strconv.FormatInt(author.ID, 10))
+	return author != nil && author.ID > 0 && author.Login != "ghost" &&
+		(len(p.TrustedReporterIDs) == 0 || slices.Contains(p.TrustedReporterIDs, strconv.FormatInt(author.ID, 10)))
 }

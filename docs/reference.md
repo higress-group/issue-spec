@@ -56,14 +56,14 @@ A legacy whole-directory Claude link is split while preserving previously expose
 
 ### Workflow feedback
 
-Use the [workflow feedback reference](../.agents/skills/issue-spec-workflow/references/workflow-feedback.md) to enable optional, evidence-backed feedback in `guidance.shared`. The destination repository publishes its threshold, priority label and trusted reporter identities with `issue-spec feedback configure`. The same commands use the active GitHub or self-hosted Issue profile. Self-hosted repositories need a server that supports the repository label lookup endpoint.
+Ordinary `issue-spec init` makes feedback recording, deduplication and counting available. The built-in policy suggests `priority/high` at three confirmed occurrences. Projects can use `guidance.shared` to refine routing and standing authorization. [Workflow feedback reference](../.agents/skills/issue-spec-workflow/references/workflow-feedback.md)
 
 ```bash
-issue-spec feedback configure --repo owner/repo --issue 17 --dry-run --json
 issue-spec feedback record --repo owner/repo --issue 42 --event-file occurrence.json --dry-run --json
+issue-spec feedback configure --repo owner/repo --issue 17 --dry-run --json
 ```
 
-Omit `--dry-run` for authorized writes. Reuse the event identity for retries. An enabled repository suggests priority changes by default. Automatic promotion requires an explicit policy and issue-label permission.
+Omit `--dry-run` for authorized writes. Use `feedback configure` when the destination wants a custom threshold or automatic escalation. GitHub checks label permission. On self-hosted, the updated Server checks Issue creation permission and validates eligibility from stored evidence.
 
 ### HTML review authoring
 

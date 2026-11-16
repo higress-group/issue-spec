@@ -23,10 +23,11 @@ type Result struct {
 	Promotion      Promotion `json:"promotion"`
 }
 
-type Promotion struct {
-	Label  string `json:"label"`
-	Status string `json:"status"`
-	Reason string `json:"reason,omitempty"`
+type Promotion = github.FeedbackPromotion
+
+type RecordOptions struct {
+	DryRun     bool
+	SelfHosted bool
 }
 
 type occurrence struct {
@@ -41,7 +42,7 @@ type snapshot struct {
 	confirmed int
 }
 
-func Record(ctx context.Context, backend Backend, repo string, number int, event Event, dryRun bool) (Result, error) {
+func Record(ctx context.Context, backend Backend, repo string, number int, event Event, options RecordOptions) (Result, error) {
 	policy, policyIssue, policyRef, err := loadPolicy(ctx, backend, repo)
 	if err != nil {
 		return Result{}, err
@@ -59,18 +60,18 @@ func Record(ctx context.Context, backend Backend, repo string, number int, event
 	if err != nil {
 		return Result{}, err
 	}
-	result := Result{Repository: repo, Issue: number, URL: observed.issue.HTMLURL, EventKey: key, DryRun: dryRun}
+	result := Result{Repository: repo, Issue: number, URL: observed.issue.HTMLURL, EventKey: key, DryRun: options.DryRun}
 	recorded := observed.events[key]
 	needsRecord := !recorded.found || (trusted && !recorded.confirmed)
 	result.EventStatus = "already_recorded"
-	if dryRun && needsRecord {
+	if options.DryRun && needsRecord {
 		result.EventStatus = "would_record"
 		recorded.confirmed = trusted
 		if trusted {
 			observed.confirmed++
 		}
 	}
-	if !dryRun && needsRecord {
+	if !options.DryRun && needsRecord {
 		body, err := event.commentBody()
 		if err != nil {
 			return Result{}, err
@@ -97,10 +98,14 @@ func Record(ctx context.Context, backend Backend, repo string, number int, event
 	}
 	result.setOccurrence(recorded, observed.confirmed)
 	result.Promotion = promotionPlan(observed.issue, policy, observed.confirmed)
-	if result.Promotion.Status != "would_promote" || dryRun {
+	if result.Promotion.Status != "would_promote" || options.DryRun {
 		return result, nil
 	}
-	result.Promotion = applyPromotion(ctx, backend, repo, number, policy, policyRef, observed.confirmed)
+	if options.SelfHosted {
+		result.Promotion = applyHostedPromotion(ctx, backend, repo, number, policy.PriorityLabel, policyRef)
+	} else {
+		result.Promotion = applyPromotion(ctx, backend, repo, number, policy, policyRef, observed.confirmed)
+	}
 	return result, nil
 }
 
@@ -116,12 +121,22 @@ func observe(ctx context.Context, backend github.IssueBackend, repo string, numb
 	if err != nil {
 		return snapshot{}, fmt.Errorf("read feedback Issue #%d comments: %w", number, err)
 	}
+	return collectObservations(issue, comments, policy), nil
+}
+
+func collectObservations(issue github.Issue, comments []github.Comment, policy Policy) snapshot {
 	state := snapshot{issue: issue, events: make(map[string]occurrence)}
 	state.addBody(issue.Body, policy.trusts(issue.User), 0)
 	for _, comment := range comments {
 		state.addBody(comment.Body, policy.trusts(comment.User), comment.ID)
 	}
-	return state, nil
+	return state
+}
+
+// EvaluatePromotion makes the same decision from backend-authoritative Issue and
+// comment state, including when the self-hosted server owns the label mutation.
+func EvaluatePromotion(issue github.Issue, comments []github.Comment, policy Policy) Promotion {
+	return promotionPlan(issue, policy, collectObservations(issue, comments, policy).confirmed)
 }
 
 func (s *snapshot) addBody(body string, trusted bool, commentID int64) {
@@ -168,7 +183,7 @@ func promotionPlan(issue github.Issue, policy Policy, count int) Promotion {
 
 func applyPromotion(ctx context.Context, backend Backend, repo string, number int, policy Policy, policyRef string, count int) Promotion {
 	pending := Promotion{Label: policy.PriorityLabel, Status: "pending"}
-	label, err := backend.GetRepositoryLabel(ctx, repo, policyLabel)
+	label, err := backend.GetRepositoryLabel(ctx, repo, PolicyLabel)
 	if err != nil || label.Description != policyRef {
 		pending.Reason = "feedback policy changed or could not be rechecked"
 		return pending
@@ -188,18 +203,36 @@ func applyPromotion(ctx context.Context, backend Backend, repo string, number in
 	}
 	labels, err := backend.AddIssueLabels(ctx, repo, number, []string{policy.PriorityLabel})
 	if err != nil {
-		// The provider may have accepted an addition whose response was lost.
-		if current, readErr := backend.GetIssue(ctx, repo, number); readErr == nil && hasLabel(current.Labels, policy.PriorityLabel) {
-			return Promotion{Label: policy.PriorityLabel, Status: "applied"}
-		}
-		pending.Reason = err.Error()
-		return pending
+		return reconcilePromotion(ctx, backend, repo, number, policy.PriorityLabel, err)
 	}
 	if !hasLabel(labels, policy.PriorityLabel) {
 		pending.Reason = "the backend did not assign the label; check label existence and triage permission"
 		return pending
 	}
 	return Promotion{Label: policy.PriorityLabel, Status: "applied"}
+}
+
+func applyHostedPromotion(ctx context.Context, backend Backend, repo string, number int, label, policyRef string) Promotion {
+	promoter, ok := backend.(github.FeedbackPromotionBackend)
+	if !ok {
+		return Promotion{Label: label, Status: "pending", Reason: "the selected self-hosted backend does not support feedback promotion"}
+	}
+	result, err := promoter.PromoteFeedback(ctx, repo, number, policyRef)
+	if err != nil {
+		return reconcilePromotion(ctx, backend, repo, number, label, err)
+	}
+	if result.Label == "" {
+		result.Label = label
+	}
+	return result
+}
+
+func reconcilePromotion(ctx context.Context, backend github.IssueBackend, repo string, number int, label string, err error) Promotion {
+	// The provider may have accepted an addition whose response was lost.
+	if current, readErr := backend.GetIssue(ctx, repo, number); readErr == nil && hasLabel(current.Labels, label) {
+		return Promotion{Label: label, Status: "applied"}
+	}
+	return Promotion{Label: label, Status: "pending", Reason: err.Error()}
 }
 
 func hasLabel(labels []github.Label, name string) bool {
