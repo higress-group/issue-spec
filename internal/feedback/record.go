@@ -98,15 +98,18 @@ func Record(ctx context.Context, backend Backend, repo string, number int, event
 	}
 	result.setOccurrence(recorded, observed.confirmed)
 	result.Promotion = promotionPlan(observed.issue, policy, observed.confirmed)
-	if result.Promotion.Status != "would_promote" || options.DryRun {
+	if result.Promotion.Status != "would_promote" {
+		return result, nil
+	}
+	if options.DryRun {
+		result.Promotion = checkPromotionLabel(ctx, backend, repo, result.Promotion)
 		return result, nil
 	}
 	if options.SelfHosted {
 		result.Promotion = applyHostedPromotion(ctx, backend, repo, number, policy.PriorityLabel, policyRef)
-	} else {
-		result.Promotion = applyPromotion(ctx, backend, repo, number, policy, policyRef, observed.confirmed)
+		return result, nil
 	}
-	return result, nil
+	return applyGitHubPromotion(ctx, backend, result, policyRef), nil
 }
 
 func observe(ctx context.Context, backend github.IssueBackend, repo string, number int, policy Policy) (snapshot, error) {
@@ -181,35 +184,55 @@ func promotionPlan(issue github.Issue, policy Policy, count int) Promotion {
 	return plan
 }
 
-func applyPromotion(ctx context.Context, backend Backend, repo string, number int, policy Policy, policyRef string, count int) Promotion {
-	pending := Promotion{Label: policy.PriorityLabel, Status: "pending"}
-	label, err := backend.GetRepositoryLabel(ctx, repo, PolicyLabel)
-	if err != nil || label.Description != policyRef {
-		pending.Reason = "feedback policy changed or could not be rechecked"
-		return pending
+func applyGitHubPromotion(ctx context.Context, backend Backend, result Result, policyRef string) Result {
+	policy, _, currentRef, err := loadPolicy(ctx, backend, result.Repository)
+	if err != nil || currentRef != policyRef {
+		result.CountStale = true
+		result.Promotion.Status = "pending"
+		result.Promotion.Reason = "published feedback policy changed"
+		if err != nil {
+			result.Promotion.Reason = fmt.Sprintf("recheck feedback policy: %v", err)
+		}
+		return result
 	}
-	issue, err := backend.GetIssue(ctx, repo, number)
+
+	current, err := observe(ctx, backend, result.Repository, result.Issue, policy)
 	if err != nil {
-		pending.Reason = "could not recheck Issue state and labels"
-		return pending
+		result.CountStale = true
+		result.Promotion.Status = "pending"
+		result.Promotion.Reason = fmt.Sprintf("recheck feedback evidence and Issue state: %v", err)
+		return result
 	}
-	plan := promotionPlan(issue, policy, count)
-	if plan.Status != "would_promote" {
-		return plan
+	result.setOccurrence(current.events[result.EventKey], current.confirmed)
+	result.Promotion = promotionPlan(current.issue, policy, current.confirmed)
+	if result.Promotion.Status != "would_promote" {
+		return result
 	}
-	if _, err := backend.GetRepositoryLabel(ctx, repo, policy.PriorityLabel); err != nil {
-		pending.Reason = fmt.Sprintf("configured priority label unavailable: %v", err)
-		return pending
+
+	result.Promotion = checkPromotionLabel(ctx, backend, result.Repository, result.Promotion)
+	if result.Promotion.Status != "would_promote" {
+		return result
 	}
-	labels, err := backend.AddIssueLabels(ctx, repo, number, []string{policy.PriorityLabel})
+	labels, err := backend.AddIssueLabels(ctx, result.Repository, result.Issue, []string{policy.PriorityLabel})
 	if err != nil {
-		return reconcilePromotion(ctx, backend, repo, number, policy.PriorityLabel, err)
+		result.Promotion = reconcilePromotion(ctx, backend, result.Repository, result.Issue, policy.PriorityLabel, err)
+		return result
 	}
 	if !hasLabel(labels, policy.PriorityLabel) {
-		pending.Reason = "the backend did not assign the label; check label existence and triage permission"
-		return pending
+		result.Promotion.Status = "pending"
+		result.Promotion.Reason = "the backend did not assign the label; check label existence and triage permission"
+		return result
 	}
-	return Promotion{Label: policy.PriorityLabel, Status: "applied"}
+	result.Promotion.Status = "applied"
+	return result
+}
+
+func checkPromotionLabel(ctx context.Context, backend github.IssueLabelBackend, repo string, plan Promotion) Promotion {
+	if _, err := backend.GetRepositoryLabel(ctx, repo, plan.Label); err != nil {
+		plan.Status = "pending"
+		plan.Reason = fmt.Sprintf("configured priority label unavailable: %v", err)
+	}
+	return plan
 }
 
 func applyHostedPromotion(ctx context.Context, backend Backend, repo string, number int, label, policyRef string) Promotion {

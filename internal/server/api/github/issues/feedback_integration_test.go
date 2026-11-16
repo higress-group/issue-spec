@@ -228,6 +228,9 @@ func TestFeedbackHiRoute495SelfHosted(t *testing.T) {
 		}
 	}
 
+	if preview := check("owner", suggest, 2, 3, "pending", "--dry-run"); !preview.DryRun || !strings.Contains(preview.Promotion.Reason, "label unavailable") {
+		t.Fatalf("preview did not report the missing label: %+v", preview)
+	}
 	if missing := check("owner", suggest, 2, 3, "pending"); !strings.Contains(missing.Promotion.Reason, "label unavailable") {
 		t.Fatalf("missing label did not leave promotion pending: %+v", missing)
 	}

@@ -46,7 +46,7 @@ The CLI MUST support preview, recording, deduplication and counting with the bui
 
 ### Requirement: save evidence before permission-checked promotion
 
-An explicit record request MUST preview the selected Issue, event identity, count and priority decision without writing when dry-run is selected. A real record request MUST save its evidence before attempting priority mutation. Automatic escalation requires a qualifying confirmed count, an open, unlocked Issue without a configured or built-in hold, an existing target label and unchanged published policy. Higher-priority and unrelated labels MUST be preserved. GitHub MUST enforce its effective issue label permission. On self-hosted, the feedback promotion operation MUST enforce the same repository permission as creating an Issue. It MUST verify the published policy reference, re-evaluate the persisted evidence and Issue state in the mutation transaction, and apply only the policy's target label. Ordinary issue label assignment continues to require triage.
+An explicit record request MUST preview the selected Issue, event identity, count and priority decision without writing when dry-run is selected. A real record request MUST save its evidence before attempting priority mutation. Automatic escalation requires a qualifying confirmed count, an open, unlocked Issue without a configured or built-in hold, an existing target label and unchanged published policy. Higher-priority and unrelated labels MUST be preserved. When an automatic preview otherwise qualifies, the CLI MUST check target label existence with a read-only request. Before requesting a GitHub label write, the CLI MUST revalidate the published policy Issue digest and recompute eligibility from current evidence and Issue state. GitHub MUST enforce its effective issue label permission. On self-hosted, the feedback promotion operation MUST enforce the same repository permission as creating an Issue. It MUST verify the published policy reference, re-evaluate the persisted evidence and Issue state in the mutation transaction, and apply only the policy's target label. Ordinary issue label assignment continues to require triage.
 
 A denied or unsuccessful label operation MUST preserve the recorded evidence and return the Issue identity, observed count and pending reason. The next request for the same occurrence MUST reconcile the existing record before retrying the label. An ambiguous comment or label response MUST be resolved by reading provider state before any repeated mutation.
 
@@ -56,6 +56,16 @@ A denied or unsuccessful label operation MUST preserve the recorded evidence and
 - **THEN** the Issue contains the evidence and returns a count of three with promotion pending
 - **AND WHEN** an authorized triager retries the same event
 - **THEN** the priority label is added and the recorded event identity and count are preserved
+
+#### Scenario: GitHub evidence or policy changes before promotion
+
+- **WHEN** a GitHub promotion initially qualifies but a confirmed occurrence is withdrawn or the published policy Issue body changes before final validation
+- **THEN** the CLI stops the promotion and reports the updated count or the invalid policy
+
+#### Scenario: automatic preview with a missing label
+
+- **WHEN** an automatic promotion otherwise qualifies and its configured label is missing
+- **THEN** the preview reports the pending label requirement with no provider mutation
 
 #### Scenario: self-hosted Issue creator promotes a qualifying Issue
 
