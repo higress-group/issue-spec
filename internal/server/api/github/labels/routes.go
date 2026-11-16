@@ -32,6 +32,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 	set := routeset.RouteSet{Name: "github-labels", Routes: []routeset.Route{
 		{Name: "github.labels.list", Method: http.MethodGet, Pattern: "/repos/{owner}/{repo}/labels", Handler: issues.WithRequestID(authentication.AuthenticateOptional(http.HandlerFunc(h.list)))},
 		{Name: "github.labels.create", Method: http.MethodPost, Pattern: "/repos/{owner}/{repo}/labels", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.create)))},
+		{Name: "github.labels.get", Method: http.MethodGet, Pattern: "/repos/{owner}/{repo}/labels/{name}", Handler: issues.WithRequestID(authentication.AuthenticateOptional(http.HandlerFunc(h.get)))},
 		{Name: "github.labels.update", Method: http.MethodPatch, Pattern: "/repos/{owner}/{repo}/labels/{name}", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.update)))},
 		{Name: "github.issue_labels.list", Method: http.MethodGet, Pattern: "/repos/{owner}/{repo}/issues/{number}/labels", Handler: issues.WithRequestID(authentication.AuthenticateOptional(http.HandlerFunc(h.listIssue)))},
 		{Name: "github.issue_labels.add", Method: http.MethodPost, Pattern: "/repos/{owner}/{repo}/issues/{number}/labels", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.addIssue)))},
@@ -87,6 +88,19 @@ func (h handlers) create(w http.ResponseWriter, r *http.Request) {
 	}
 	h.setLabelHeaders(w, label)
 	issues.WriteJSON(w, http.StatusCreated, presentLabel(h.presenter, resource, label))
+}
+
+func (h handlers) get(w http.ResponseWriter, r *http.Request) {
+	resource, label, err := h.service.Get(r.Context(), r.PathValue("owner"), r.PathValue("repo"), r.PathValue("name"), issues.Subject(r))
+	if err != nil {
+		issues.WriteError(w, r, err)
+		return
+	}
+	etag := pagination.StrongETag("label", label.ID, label.RepresentationVersion)
+	if pagination.WriteNotModified(w, r, etag, label.UpdatedAt, h.conditional.Rate()) {
+		return
+	}
+	issues.WriteJSON(w, http.StatusOK, presentLabel(h.presenter, resource, label))
 }
 
 type updateInput struct {

@@ -54,6 +54,17 @@ The preview reports paths, actions, hashes and conflicts. The apply performs the
 
 A legacy whole-directory Claude link is split while preserving previously exposed entries. Later upgrades only add generated skills, never unrelated project skills. Exact redundant Claude copies can become links; differing copies block the update. Existing worktrees retain their own committed skill version. Runtime host discovery still needs verification in a fresh session.
 
+### Workflow feedback
+
+Use the [workflow feedback reference](../.agents/skills/issue-spec-workflow/references/workflow-feedback.md) to enable optional, evidence-backed feedback in `guidance.shared`. The destination repository publishes its threshold, priority label and trusted reporter identities with `issue-spec feedback configure`. The same commands use the active GitHub or self-hosted Issue profile. Self-hosted repositories need a server that supports the repository label lookup endpoint.
+
+```bash
+issue-spec feedback configure --repo owner/repo --issue 17 --dry-run --json
+issue-spec feedback record --repo owner/repo --issue 42 --event-file occurrence.json --dry-run --json
+```
+
+Omit `--dry-run` for authorized writes. Reuse the event identity for retries. An enabled repository suggests priority changes by default. Automatic promotion requires an explicit policy and issue-label permission.
+
 ### HTML review authoring
 
 HTML review authoring is enabled by default. To keep Proposal, Design, and Implement authoring on the typed Markdown workflow without loading or generating human-review projection instructions, configure the required boolean explicitly:

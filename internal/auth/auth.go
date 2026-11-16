@@ -37,6 +37,7 @@ type Token struct {
 	Value            string                    `json:"-"`
 	Source           string                    `json:"source"`
 	User             string                    `json:"user,omitempty"`
+	UserID           int64                     `json:"user_id,string,omitempty"`
 	Scopes           []string                  `json:"scopes,omitempty"`
 	Host             string                    `json:"host"`
 	Profile          string                    `json:"profile,omitempty"`

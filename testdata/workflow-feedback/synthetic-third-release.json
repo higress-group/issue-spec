@@ -1,0 +1,9 @@
+{
+  "source_instance": "github:github.com",
+  "source_repository": "higress-group/HiRoute",
+  "event_id": "release:synthetic-third@fixture",
+  "observed_at": "2026-11-16T12:00:00Z",
+  "revision": "fixture",
+  "summary": "Synthetic acceptance fixture for an independent third catalog merge failing its download-integrity check before publication.",
+  "evidence": ["https://example.test/workflow-feedback/third-release"]
+}

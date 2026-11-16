@@ -25,6 +25,17 @@ issue-spec workflow which --repo owner/repo --json
 
 新的长期 spec 默认写入 `issue-spec/specs/<capability>/spec.md`。若 `openspec/specs/<capability>/spec.md` 已存在，`durable-spec` 可以更新那个遗留的长期 spec，并报告所选的兼容路径。
 
+### 工作流反馈
+
+通过 `guidance.shared` 启用可选的反馈流程。目标仓库维护者用 `issue-spec feedback configure` 发布复现阈值、优先级标签和可信报告者身份。GitHub 和自托管使用当前 Issue profile 下的同一套命令。自托管 Server 需支持按名称读取仓库标签。 [反馈指引与配置示例](../.agents/skills/issue-spec-workflow/references/workflow-feedback.md)
+
+```bash
+issue-spec feedback configure --repo owner/repo --issue 17 --dry-run --json
+issue-spec feedback record --repo owner/repo --issue 42 --event-file occurrence.json --dry-run --json
+```
+
+在授权写入时去掉 `--dry-run`。重试沿用原始事件标识。启用后的默认行为是建议升级。自动升级还需目标仓库明确开启，并由后端校验标签权限。
+
 ### HTML review 创作指引
 
 HTML review 创作指引默认启用。若要让 Proposal、Design 与 Implement 创作只使用类型化 Markdown 工作流，而不加载或生成面向人工 review 的 projection 指令，请显式配置这个必填布尔值：

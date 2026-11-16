@@ -25,6 +25,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	commentapi "github.com/higress-group/issue-spec/internal/server/api/github/comments"
 	issueapi "github.com/higress-group/issue-spec/internal/server/api/github/issues"
+	labelapi "github.com/higress-group/issue-spec/internal/server/api/github/labels"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
@@ -1304,7 +1305,17 @@ func (e *environment) mux(t *testing.T) *http.ServeMux {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux, err := routeset.NewMux(routeset.SelfHostedPolicy(), issueRoutes, commentRoutes)
+	labels, err := labelapi.NewService(store.New(e.pool), e.authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labelRoutes, err := labelapi.NewRouteSet(labelapi.Dependencies{
+		Service: labels, Presenter: codec.Presenter{Origins: e.origins}, Authentication: authentication,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux, err := routeset.NewMux(routeset.SelfHostedPolicy(), issueRoutes, commentRoutes, labelRoutes)
 	if err != nil {
 		t.Fatal(err)
 	}

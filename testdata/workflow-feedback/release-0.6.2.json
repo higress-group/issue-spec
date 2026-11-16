@@ -1,0 +1,12 @@
+{
+  "source_instance": "github:github.com",
+  "source_repository": "higress-group/HiRoute",
+  "event_id": "release:v0.6.2@81d2a08dc0a76f4a4451b8a4cf7d9153b6b22c3b",
+  "observed_at": "2026-11-13T10:20:02Z",
+  "revision": "81d2a08dc0a76f4a4451b8a4cf7d9153b6b22c3b",
+  "summary": "The v0.6.2 catalog merge triggered website deployment before its release objects were public. The download-integrity check returned HTTP 404.",
+  "evidence": [
+    "https://github.com/higress-group/HiRoute/issues/495",
+    "https://github.com/higress-group/HiRoute/actions/runs/43408327275"
+  ]
+}
