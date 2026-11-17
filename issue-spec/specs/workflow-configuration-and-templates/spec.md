@@ -122,6 +122,13 @@ Source SPEC comments:
 
 Init MUST generate Skills and workflow guidance from the selected built-in or project workflow, MUST expose provider capabilities only for requested operations, and MUST produce a usable implementation-to-human-handoff path without classifying a repository as planning-only or disabling Runner dispatch because automatic merge is unavailable. When init applies a non-English workflow language, the generated guidance MUST keep the English `Proposal:`, `Design:`, and `Implement:` stage prefixes while using the selected language for each staged title subject and every ordinary issue title, MUST require an explicit `--title` for staged issues instead of relying on title derivation, and MUST keep canonical structural tokens in English.
 
+GitHub init MUST validate the effective workflow and check generated-file conflicts before saving the Issue binding, changing the workflow language config, or ensuring repository labels. Preflight uses the proposed language config when requested. Explicit `--tools none` skips workflow generation and its preflight.
+
+#### Scenario: GitHub default init encounters an invalid project workflow
+
+- **WHEN** ordinary init selects skills delivery in a checkout with an invalid workflow configuration
+- **THEN** init fails before changing the existing Issue binding or making a label write
+
 #### Scenario: non-merging provider receives complete handoff guidance
 
 - **WHEN** init selects a provider with change creation and ordinary discussion but no conditional merge
