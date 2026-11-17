@@ -12,7 +12,7 @@ import (
 
 func TestIssueSpecSkillAndCommandTemplates(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
-	if got, want := len(skills), 4; got != want {
+	if got, want := len(skills), 5; got != want {
 		t.Fatalf("skills = %d, want %d", got, want)
 	}
 	if !strings.Contains(skills[0].Content, `generatedBy: "issue-spec"`) {
@@ -136,7 +136,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 func TestGeneratedGuidanceMakesBuiltInPhaseProtocolAuthoritative(t *testing.T) {
 	const authority = "For selected issue-spec steps, the built-in phase sequence and canonical artifact carriers are authoritative; never reorder/omit steps or move open decisions."
 	for _, skill := range IssueSpecSkills("owner/repo") {
-		if skill.Name == "issue-spec-github" {
+		if skill.Name == "issue-spec-github" || skill.Name == "issue-spec-feedback" {
 			continue
 		}
 		if !strings.Contains(skill.Content, authority) {
@@ -147,7 +147,7 @@ func TestGeneratedGuidanceMakesBuiltInPhaseProtocolAuthoritative(t *testing.T) {
 
 func TestTypedCommentWriterGuidanceRepeatsIssueScopedIDAllocation(t *testing.T) {
 	for _, skill := range IssueSpecSkillsWithOptions("owner/repo", WorkflowAuthoringOptions{HTMLReviewEnabled: false}) {
-		if skill.Name == "issue-spec-github" {
+		if skill.Name == "issue-spec-github" || skill.Name == "issue-spec-feedback" {
 			continue
 		}
 		for _, want := range []string{

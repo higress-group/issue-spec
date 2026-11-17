@@ -79,9 +79,14 @@ A denied or unsuccessful label operation MUST preserve the recorded evidence and
 - **WHEN** a repository maintainer has held the Issue or the Issue is closed
 - **THEN** automatic promotion is ineligible even when the confirmed threshold is met
 
-### Requirement: project instructions select the optional feedback procedure
+### Requirement: default skills expose feedback during ordinary project work
 
-The generated workflow MUST include a feedback reference for authorized tasks after ordinary initialization. Projects MAY refine triggering conditions, destinations and authorization through `guidance.shared`. The procedure MUST use existing open and closed discussion search and ordinary Issues and comments. The project can use the feedback procedure during relevant authorized work and report adoption and verification with the original Issue. Workflow update preview MUST retain its read-only behavior and project-owned instructions.
+The default skills delivery MUST include a standalone `issue-spec-feedback` entry so that applicable feedback is discoverable during ordinary project work. A reproducible problem with any repository skill's instructions, references, or scripts can be a feedback source. The standalone skill and generated workflow MUST reference the same guide. Projects MAY refine triggering conditions, destinations and authorization through `guidance.shared`. The procedure MUST use existing open and closed discussion search and ordinary Issues and comments. The project can use the feedback procedure during relevant authorized work and report adoption and verification with the original Issue. Workflow update preview MUST retain its read-only behavior and project-owned instructions.
+
+#### Scenario: project skill feedback after default initialization
+
+- **WHEN** a repository runs ordinary init and authorized use of a project skill exposes a reproducible problem
+- **THEN** the generated standalone feedback skill leads to the shared guide for routing, recording, and deduplicating the evidence
 
 ## Implementation references
 

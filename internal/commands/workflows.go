@@ -69,8 +69,10 @@ type globalPromptInstallOptions struct {
 	DryRun    bool
 }
 
+var codexWorkflowTool = workflowTool{ID: "codex", RootDir: ".agents"}
+
 var workflowTools = []workflowTool{
-	{ID: "codex", RootDir: ".agents"},
+	codexWorkflowTool,
 	{ID: "claude", RootDir: ".claude"},
 }
 
@@ -451,6 +453,9 @@ func resolveWorkflowGenerationOptions(root, toolsArg, delivery string) (string, 
 	if err != nil {
 		return "", nil, err
 	}
+	if len(tools) == 0 && strings.TrimSpace(toolsArg) == "" && delivery == workflowDeliverySkills {
+		tools = []workflowTool{codexWorkflowTool}
+	}
 	return delivery, tools, nil
 }
 
@@ -461,21 +466,18 @@ func workflowSkills(repo string, plan workflow.Plan) []templates.RenderedSkill {
 func workflowSkillsWithProvider(repo string, plan workflow.Plan, provider *workflow.ProviderPlan) []templates.RenderedSkill {
 	options := templates.WorkflowAuthoringOptions{HTMLReviewEnabled: plan.HTMLReviewEnabled()}
 	skills := templates.IssueSpecSkillsWithOptions(repo, options)
-	notice := workflowNotice(plan)
+	notice := strings.TrimRight(workflowNotice(plan), "\n")
+	if provider != nil {
+		notice += "\n\n" + strings.TrimRight(templates.ProviderWorkflowNotice(*provider), "\n")
+	}
 	for i := range skills {
-		if skills[i].Name == "issue-spec-github" {
+		switch skills[i].Name {
+		case "issue-spec-feedback", "issue-spec-github":
 			continue
 		}
-		skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + strings.TrimRight(notice, "\n") + "\n"
+		skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + notice + "\n"
 	}
 	if provider != nil {
-		providerNotice := templates.ProviderWorkflowNotice(*provider)
-		for i := range skills {
-			if skills[i].Name == "issue-spec-github" {
-				continue
-			}
-			skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + strings.TrimRight(providerNotice, "\n") + "\n"
-		}
 		skills = append(skills, templates.IssueSpecProviderSkill(repo, *provider))
 	}
 	return skills

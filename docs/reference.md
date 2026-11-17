@@ -27,7 +27,7 @@ New durable specs default to `issue-spec/specs/<capability>/spec.md`. If `opensp
 
 ### Shared skills and safe updates
 
-`init` defaults to `--delivery skills`. `.agents/skills/<name>` is canonical; Claude receives relative links per generated skill. `--delivery both|commands` remains an explicit legacy integration option. Root `AGENTS.md`/`CLAUDE.md` and project-specific skills remain project-owned.
+`init` defaults to `--delivery skills`. When tool selection is omitted, skills delivery detects repository tool directories and falls back to canonical `.agents/skills` in a fresh checkout. Claude receives relative links when selected or detected. `--delivery both|commands` remains an explicit legacy integration option. Root `AGENTS.md`/`CLAUDE.md` and project-specific skills remain project-owned.
 
 ```yaml
 # issue-spec/config.yaml — optional supplements, paths relative to checkout root
@@ -56,7 +56,7 @@ A legacy whole-directory Claude link is split while preserving previously expose
 
 ### Workflow feedback
 
-Ordinary `issue-spec init` makes feedback recording, deduplication and counting available. The built-in policy suggests `priority/high` at three confirmed occurrences. Projects can use `guidance.shared` to refine routing and standing authorization. [Workflow feedback reference](../.agents/skills/issue-spec-workflow/references/workflow-feedback.md)
+Ordinary `issue-spec init` supplies the standalone `issue-spec-feedback` skill. It can be discovered when using any project skill exposes a reproducible issue with instructions, references, or scripts. The skill shares the feedback guide with `issue-spec-workflow` and uses the existing recording and deduplication commands. The built-in policy suggests `priority/high` at three confirmed occurrences. Projects can use `guidance.shared` to refine routing and standing authorization. [Workflow feedback reference](../.agents/skills/issue-spec-workflow/references/workflow-feedback.md)
 
 ```bash
 issue-spec feedback record --repo owner/repo --issue 42 --event-file occurrence.json --dry-run --json
