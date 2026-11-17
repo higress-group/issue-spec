@@ -78,12 +78,27 @@ func (s RepoStore) CreateLabel(ctx context.Context, input models.NewLabel) (mode
 }
 
 func (s RepoStore) LabelByName(ctx context.Context, name string) (models.Label, error) {
+	return s.labelByName(ctx, name, false)
+}
+
+// LabelByNameForShare holds the definition stable through a policy-bound mutation.
+func (s RepoStore) LabelByNameForShare(ctx context.Context, name string) (models.Label, error) {
+	if err := s.requireMutationTx(); err != nil {
+		return models.Label{}, err
+	}
+	return s.labelByName(ctx, name, true)
+}
+
+func (s RepoStore) labelByName(ctx context.Context, name string, forShare bool) (models.Label, error) {
 	if err := s.validate(); err != nil {
 		return models.Label{}, err
 	}
-	label, err := scanLabel(s.db.QueryRow(ctx, `SELECT `+labelColumns+` FROM labels
-		WHERE organization_id = $1 AND repository_id = $2 AND name_key = lower($3)`,
-		s.scope.OrgID, s.scope.RepoID, strings.TrimSpace(name)))
+	query := `SELECT ` + labelColumns + ` FROM labels
+		WHERE organization_id = $1 AND repository_id = $2 AND name_key = lower($3)`
+	if forShare {
+		query += ` FOR SHARE`
+	}
+	label, err := scanLabel(s.db.QueryRow(ctx, query, s.scope.OrgID, s.scope.RepoID, strings.TrimSpace(name)))
 	if err != nil {
 		return models.Label{}, fmt.Errorf("get label: %w", mapLabelError(err))
 	}
@@ -124,6 +139,19 @@ func (s RepoStore) UpdateLabel(ctx context.Context, currentName string, input mo
 
 func (s RepoStore) IssueLabels(ctx context.Context, number int64) (models.Issue, []models.Label, error) {
 	issue, err := s.IssueByNumber(ctx, number)
+	if err != nil {
+		return models.Issue{}, nil, err
+	}
+	labels, err := s.labelsForIssue(ctx, issue.ID)
+	return issue, labels, err
+}
+
+// IssueLabelsForUpdate serializes a label decision with Issue, label and comment writes.
+func (s RepoStore) IssueLabelsForUpdate(ctx context.Context, number int64) (models.Issue, []models.Label, error) {
+	if err := s.requireMutationTx(); err != nil {
+		return models.Issue{}, nil, err
+	}
+	issue, err := s.issueForLabelMutation(ctx, number)
 	if err != nil {
 		return models.Issue{}, nil, err
 	}

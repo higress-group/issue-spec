@@ -53,6 +53,19 @@ func (s *Service) ListIssue(ctx context.Context, owner, repository string, numbe
 	return resource, issue, labels, err
 }
 
+func (s *Service) Get(ctx context.Context, owner, repository, name string, subject authz.Subject) (models.RepositoryResource, models.Label, error) {
+	resource, err := s.resolveRead(ctx, owner, repository, subject)
+	if err != nil {
+		return models.RepositoryResource{}, models.Label{}, err
+	}
+	var label models.Label
+	err = s.database.WithTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx *store.Tx) error {
+		label, err = tx.ScopedRepo(resource.Scope).LabelByName(ctx, name)
+		return err
+	})
+	return resource, label, err
+}
+
 func (s *Service) Create(ctx context.Context, owner, repository string, subject authz.Subject, input models.NewLabel) (models.RepositoryResource, models.Label, error) {
 	var resource models.RepositoryResource
 	var label models.Label

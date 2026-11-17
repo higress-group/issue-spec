@@ -25,6 +25,19 @@ issue-spec workflow which --repo owner/repo --json
 
 新的长期 spec 默认写入 `issue-spec/specs/<capability>/spec.md`。若 `openspec/specs/<capability>/spec.md` 已存在，`durable-spec` 可以更新那个遗留的长期 spec，并报告所选的兼容路径。
 
+### 工作流反馈
+
+常规 `issue-spec init` 默认生成独立的 `issue-spec-feedback` 技能。使用任意项目技能时遇到可复核的指令、引用或脚本问题，都能通过它找到反馈入口。它和 `issue-spec-workflow` 共用指引，沿用现有记录、去重和计数命令。默认累计三次确认复现时建议标记 `priority/high`。项目可通过 `guidance.shared` 定制上报去向和授权范围。 [反馈指引与配置示例](../.agents/skills/issue-spec-workflow/references/workflow-feedback.md)
+
+反馈本项目的问题时，先读取 `.issue-spec/config.json` 中的 `repo` 和 `profile`。预览和写入都使用核验后的目标仓库和 profile。
+
+```bash
+issue-spec --profile "$feedback_profile" feedback record --repo "$feedback_repo" --issue 42 --event-file occurrence.json --dry-run --json
+issue-spec --profile "$feedback_profile" feedback configure --repo "$feedback_repo" --issue 17 --dry-run --json
+```
+
+在授权写入时去掉 `--dry-run`。自定义阈值或开启自动升级时，由目标仓库维护者运行 `feedback configure`。GitHub 按标签权限校验。自托管由新版 Server 校验 Issue 创建权限，并根据已保存证据判断能否升级。
+
 ### HTML review 创作指引
 
 HTML review 创作指引默认启用。若要让 Proposal、Design 与 Implement 创作只使用类型化 Markdown 工作流，而不加载或生成面向人工 review 的 projection 指令，请显式配置这个必填布尔值：
@@ -76,7 +89,7 @@ rules:
 
 ### 共享技能、项目补充与安全升级
 
-`init` 默认 `--delivery skills`。通用技能保存在 `.agents/skills/<name>`，Claude 按技能目录使用相对软链。`--delivery both|commands` 仅在显式选择时生成旧命令。项目维护 `AGENTS.md`、`CLAUDE.md`、自有技能与补充规则。
+`init` 默认 `--delivery skills`。省略 `--tools` 时按仓库已有目录探测宿主，空仓库默认生成 `.agents/skills`。GitHub 初始化会在保存 Issue 绑定和设置标签前校验工作流配置及文件冲突。显式选择或探测到 Claude 时按技能目录生成相对软链。`--delivery both|commands` 仅在显式选择时生成旧命令。项目维护 `AGENTS.md`、`CLAUDE.md`、自有技能与补充规则。
 
 ```yaml
 # issue-spec/config.yaml，路径相对于仓库根目录

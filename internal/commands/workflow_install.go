@@ -29,6 +29,13 @@ type workflowUpdatePlan struct {
 	Generation workflowGenerationResult `json:"generation"`
 }
 
+func (p workflowUpdatePlan) conflictError() error {
+	if len(p.Conflicts) > 0 {
+		return fmt.Errorf("workflow update conflicts:\n%s", strings.Join(p.Conflicts, "\n"))
+	}
+	return nil
+}
+
 const workflowManifestPath = ".agents/skills/issue-spec-workflow/release.json"
 
 func workflowHash(body []byte) string { return fmt.Sprintf("%x", sha256.Sum256(body)) }
@@ -311,8 +318,8 @@ func planClaudeSkillLinks(root, stage string, update *workflowUpdatePlan) error 
 // Move each replaced entry into a sibling backup before installing it. A failed
 // write rolls back all completed moves, including directory/link migrations.
 func applyWorkflowUpdate(root string, update workflowUpdatePlan) (err error) {
-	if len(update.Conflicts) > 0 {
-		return fmt.Errorf("workflow update conflicts:\n%s", strings.Join(update.Conflicts, "\n"))
+	if err := update.conflictError(); err != nil {
+		return err
 	}
 	if len(update.Changes) == 0 {
 		return nil
@@ -412,7 +419,11 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 	if err != nil {
 		return update.Generation, err
 	}
-	if err = applyWorkflowUpdate(root, update); err != nil {
+	return installWorkflowArtifacts(root, update)
+}
+
+func installWorkflowArtifacts(root string, update workflowUpdatePlan) (workflowGenerationResult, error) {
+	if err := applyWorkflowUpdate(root, update); err != nil {
 		return update.Generation, err
 	}
 	for _, change := range update.Changes {

@@ -178,6 +178,24 @@ func TestInitWithoutLanguageDoesNotWriteWorkflowConfig(t *testing.T) {
 	}
 }
 
+func TestInitLanguagePreflightsTheNewConfigInsteadOfLegacy(t *testing.T) {
+	t.Chdir(t.TempDir())
+	const legacy = "schema: missing-legacy-schema\n"
+	writeWorkflowTestFile(t, "openspec/config.yaml", legacy)
+	var out, errOut bytes.Buffer
+	app := newInitTestApp(t, &out, &errOut)
+	if code := app.runInit(t.Context(), []string{"--repo", "acme/widgets", "--language", "zh"}); code != 0 {
+		t.Fatalf("init exit=%d stderr=%q", code, errOut.String())
+	}
+	if got := readTestFile(t, "openspec/config.yaml"); got != legacy {
+		t.Fatalf("init changed the legacy config: %q", got)
+	}
+	skill := readTestFile(t, ".agents/skills/issue-spec-workflow/SKILL.md")
+	if !strings.Contains(skill, "- Workflow Config: `issue-spec/config.yaml`") {
+		t.Fatalf("the generated skills did not use the planned config:\n%s", skill)
+	}
+}
+
 func TestInitToolsNoneReportsLanguageWithoutWorkflowWrites(t *testing.T) {
 	for _, jsonOutput := range []bool{false, true} {
 		name := "text"

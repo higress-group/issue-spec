@@ -131,6 +131,9 @@ type ResolveOptions struct {
 	Root          string
 	Schema        string
 	UserConfigDir string
+	// IssueSpecConfig previews pending issue-spec/config.yaml contents.
+	// A nil value reads the repository's existing configuration.
+	IssueSpecConfig []byte
 }
 
 func Resolve(root string) (Plan, error) {
@@ -147,7 +150,7 @@ func ResolveWithOptions(opts ResolveOptions) (Plan, error) {
 
 	issueConfig := filepath.Join(root, "issue-spec", "config.yaml")
 	legacyConfig := filepath.Join(root, "openspec", "config.yaml")
-	hasIssueConfig := fileExists(issueConfig)
+	hasIssueConfig := opts.IssueSpecConfig != nil || fileExists(issueConfig)
 	hasLegacyConfig := fileExists(legacyConfig)
 
 	switch {
@@ -162,7 +165,7 @@ func ResolveWithOptions(opts ResolveOptions) (Plan, error) {
 				Path:     filepath.ToSlash(legacyConfig),
 			})
 		}
-		cfg, err := readConfig(issueConfig)
+		cfg, err := readConfig(issueConfig, opts.IssueSpecConfig)
 		if err != nil {
 			return withError(plan, Diagnostic{Severity: "error", Code: "invalid_config", Message: err.Error(), Path: filepath.ToSlash(issueConfig)})
 		}
@@ -170,7 +173,7 @@ func ResolveWithOptions(opts ResolveOptions) (Plan, error) {
 	case hasLegacyConfig:
 		plan.Source.Kind = SourceLegacyOpenSpec
 		plan.Source.ConfigPath = filepath.ToSlash(legacyConfig)
-		cfg, err := readConfig(legacyConfig)
+		cfg, err := readConfig(legacyConfig, nil)
 		if err != nil {
 			return withError(plan, Diagnostic{Severity: "error", Code: "invalid_config", Message: err.Error(), Path: filepath.ToSlash(legacyConfig)})
 		}
@@ -326,10 +329,13 @@ func withError(plan Plan, diagnostic Diagnostic) (Plan, error) {
 	return plan, errors.New(diagnostic.Message)
 }
 
-func readConfig(path string) (Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, err
+func readConfig(path string, data []byte) (Config, error) {
+	if data == nil {
+		var err error
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return Config{}, err
+		}
 	}
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {

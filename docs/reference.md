@@ -27,7 +27,7 @@ New durable specs default to `issue-spec/specs/<capability>/spec.md`. If `opensp
 
 ### Shared skills and safe updates
 
-`init` defaults to `--delivery skills`. `.agents/skills/<name>` is canonical; Claude receives relative links per generated skill. `--delivery both|commands` remains an explicit legacy integration option. Root `AGENTS.md`/`CLAUDE.md` and project-specific skills remain project-owned.
+`init` defaults to `--delivery skills`. When tool selection is omitted, skills delivery detects repository tool directories and falls back to canonical `.agents/skills` in a fresh checkout. GitHub init validates workflow inputs and checks file conflicts before saving the Issue binding and ensuring labels. Claude receives relative links when selected or detected. `--delivery both|commands` remains an explicit legacy integration option. Root `AGENTS.md`/`CLAUDE.md` and project-specific skills remain project-owned.
 
 ```yaml
 # issue-spec/config.yaml — optional supplements, paths relative to checkout root
@@ -53,6 +53,19 @@ issue-spec workflow update --repo owner/repo --tools codex,claude
 The preview reports paths, actions, hashes and conflicts. The apply performs the same preflight, updates only generated files, rolls back write failures and never changes remote Issues/source bindings. The release manifest protects modified files; missing managed files also require reconciliation before recreation. Move local workflow changes into project supplements and review the remaining differences before a one-time manual adoption. There is no blanket force overwrite. Untracked legacy commands are preserved for explicit cleanup; unchanged commands recorded by the old manifest are retired by skills-only delivery.
 
 A legacy whole-directory Claude link is split while preserving previously exposed entries. Later upgrades only add generated skills, never unrelated project skills. Exact redundant Claude copies can become links; differing copies block the update. Existing worktrees retain their own committed skill version. Runtime host discovery still needs verification in a fresh session.
+
+### Workflow feedback
+
+Ordinary `issue-spec init` supplies the standalone `issue-spec-feedback` skill. It can be discovered when using any project skill exposes a reproducible issue with instructions, references, or scripts. The skill shares the feedback guide with `issue-spec-workflow` and uses the existing recording and deduplication commands. The built-in policy suggests `priority/high` at three confirmed occurrences. Projects can use `guidance.shared` to refine routing and standing authorization. [Workflow feedback reference](../.agents/skills/issue-spec-workflow/references/workflow-feedback.md)
+
+For feedback about your own project, start with `repo` and `profile` from `.issue-spec/config.json`. Use the verified destination profile and repository in both previews and writes.
+
+```bash
+issue-spec --profile "$feedback_profile" feedback record --repo "$feedback_repo" --issue 42 --event-file occurrence.json --dry-run --json
+issue-spec --profile "$feedback_profile" feedback configure --repo "$feedback_repo" --issue 17 --dry-run --json
+```
+
+Omit `--dry-run` for authorized writes. Use `feedback configure` when the destination wants a custom threshold or automatic escalation. GitHub checks label permission. On self-hosted, the updated Server checks Issue creation permission and validates eligibility from stored evidence.
 
 ### HTML review authoring
 

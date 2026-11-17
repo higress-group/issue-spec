@@ -91,6 +91,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runIssue(ctx, args[1:])
 	case "comment":
 		return a.runComment(ctx, args[1:])
+	case "feedback":
+		return a.runFeedback(ctx, args[1:])
 	case "question":
 		return a.runQuestion(ctx, args[1:])
 	case "projection":
@@ -223,6 +225,8 @@ Usage:
   issue-spec comment create --repo owner/repo --issue N --body-file reply.md [--json]
   issue-spec comment edit --repo owner/repo --comment-id N --body-file reply.md [--json]
   issue-spec comment delete --repo owner/repo --comment-id N [--json]
+  issue-spec feedback configure --repo owner/repo --issue N [--dry-run] [--json]
+  issue-spec feedback record --repo owner/repo --issue N --event-file event.json [--dry-run] [--json]
   issue-spec comment generate --type SPEC --id SPEC-1001 --input-file spec.json [--status confirmed] [--scope "..."]
   issue-spec comment generate --type SPEC|TASK --example
   issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file file.md [--allow-noncanonical]

@@ -57,6 +57,7 @@ func (a *app) runAuthStatus(ctx context.Context, args []string) int {
 		return 1
 	}
 	token.User = user.Login
+	token.UserID = user.ID
 	token.Scopes = scopes
 	if *jsonOut {
 		return a.outputJSON(map[string]any{"ok": true, "auth": token, "backend": token.Backend})

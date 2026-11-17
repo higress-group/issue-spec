@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,10 +13,12 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
 
 const workflowNeutralLanguageGuidance = "configure rules.language in the selected project workflow; for legacy OpenSpec, use openspec/config.yaml"
+const workflowLanguageConfigPath = "issue-spec/config.yaml"
 
 func (a *app) runInit(ctx context.Context, args []string) int {
 	fs := newFlagSet("init", a.err)
@@ -89,6 +92,14 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
+	var workflowPlan initWorkflowPlan
+	if !workflowNeutral {
+		workflowPlan, err = planGitHubInitWorkflow(".", *repoFlag, *tools, *delivery, *language)
+		if err != nil {
+			a.errorf("validate init workflow: %v\n", err)
+			return 1
+		}
+	}
 	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for init on %s: %v\n", auth.NormalizeHost(*host), err)
@@ -126,11 +137,19 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		}
 	}
 
-	languageRequested := strings.TrimSpace(*language) != ""
 	var languageConfigPath string
-	if languageRequested && !workflowNeutral {
-		languageConfigPath, err = writeWorkflowLanguageConfig(".", *language)
+	if workflowPlan.languageConfig != nil {
+		languageConfigPath = workflowLanguageConfigPath
+		current, err := renderWorkflowLanguageConfig(languageConfigPath, *language)
 		if err != nil {
+			a.errorf("check planned workflow language config: %v\n", err)
+			return 1
+		}
+		if !bytes.Equal(current, workflowPlan.languageConfig) {
+			a.errorf("%s changed after workflow preflight\n", languageConfigPath)
+			return 1
+		}
+		if err := writeTextFile(languageConfigPath, string(workflowPlan.languageConfig)); err != nil {
 			a.errorf("write workflow language config: %v\n", err)
 			return 1
 		}
@@ -138,7 +157,7 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 
 	workflows := workflowGenerationResult{Delivery: *delivery}
 	if !workflowNeutral {
-		workflows, err = writeWorkflowArtifacts(".", *repoFlag, *tools, *delivery)
+		workflows, err = installWorkflowArtifacts(".", workflowPlan.update)
 		if err != nil {
 			a.errorf("generate workflow artifacts: %v\n", err)
 			return 1
@@ -149,6 +168,7 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		}
 	}
 
+	languageRequested := strings.TrimSpace(*language) != ""
 	result := map[string]any{"ok": true, "repo": *repoFlag, "hostname": token.Host, "auth": token, "backend": token.Backend, "config": configPath, "labels": labels, "workflows": workflows}
 	if languageConfigPath != "" {
 		result["language"] = languageDisplay(*language)
@@ -183,6 +203,38 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		a.printWorkflowGeneration(workflows)
 	}
 	return 0
+}
+
+type initWorkflowPlan struct {
+	update         workflowUpdatePlan
+	languageConfig []byte
+}
+
+func planGitHubInitWorkflow(root, repo, toolsArg, delivery, language string) (initWorkflowPlan, error) {
+	var result initWorkflowPlan
+	delivery, tools, err := resolveWorkflowGenerationOptions(root, toolsArg, delivery)
+	if err != nil {
+		return result, err
+	}
+	result.update.Generation.Delivery = delivery
+	if strings.TrimSpace(language) != "" {
+		result.languageConfig, err = renderWorkflowLanguageConfig(filepath.Join(root, workflowLanguageConfigPath), language)
+		if err != nil {
+			return result, err
+		}
+	}
+	if len(tools) == 0 {
+		return result, nil
+	}
+	plan, err := workflow.ResolveWithOptions(workflow.ResolveOptions{Root: root, IssueSpecConfig: result.languageConfig})
+	if err != nil {
+		return result, err
+	}
+	result.update, err = planWorkflowUpdate(root, repo, delivery, tools, plan, nil)
+	if err != nil {
+		return result, err
+	}
+	return result, result.update.conflictError()
 }
 
 func resolveGlobalPromptInstallOptions(install bool, directory string, dryRun bool, delivery string) (globalPromptInstallOptions, error) {
@@ -243,19 +295,30 @@ func (a *app) printWorkflowGeneration(workflows workflowGenerationResult) {
 // generated workflow artifacts instruct agents to author natural-language content
 // in the requested language while keeping canonical structural tokens in English.
 func writeWorkflowLanguageConfig(root, language string) (string, error) {
+	path := filepath.Join(root, workflowLanguageConfigPath)
+	out, err := renderWorkflowLanguageConfig(path, language)
+	if err != nil {
+		return "", err
+	}
+	if err := writeTextFile(path, string(out)); err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(path), nil
+}
+
+func renderWorkflowLanguageConfig(path, language string) ([]byte, error) {
 	display := languageDisplay(language)
-	path := filepath.Join(root, "issue-spec", "config.yaml")
 
 	cfg := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil {
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return "", fmt.Errorf("parse existing %s: %w", filepath.ToSlash(path), err)
+			return nil, fmt.Errorf("parse existing %s: %w", filepath.ToSlash(path), err)
 		}
 		if cfg == nil {
 			cfg = map[string]any{}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
+		return nil, err
 	}
 
 	rules, _ := cfg["rules"].(map[string]any)
@@ -270,17 +333,7 @@ func writeWorkflowLanguageConfig(root, language string) (string, error) {
 	rules["language_instructions"] = fmt.Sprintf("Write natural-language body content (descriptions, rationale, design notes, questions, decisions, task descriptions, and QUESTION/scenario prose) in %[1]s. %[2]s Ordinary (non-staged) issue titles use a descriptive %[1]s title. Keep canonical structural tokens in English so validation passes: the `## Requirement:` and `### Scenario:` headings, the `**WHEN**`/`**THEN**` scenario bullets, the MUST/SHALL normative keywords, and typed comment headers.", display, stagedTitleInstructions)
 	cfg["rules"] = rules
 
-	out, err := yaml.Marshal(cfg)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, out, 0o644); err != nil {
-		return "", err
-	}
-	return filepath.ToSlash(path), nil
+	return yaml.Marshal(cfg)
 }
 
 // languageDisplay maps common language codes to a descriptive label while

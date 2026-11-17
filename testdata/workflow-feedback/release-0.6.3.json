@@ -1,0 +1,12 @@
+{
+  "source_instance": "github:github.com",
+  "source_repository": "higress-group/HiRoute",
+  "event_id": "release:v0.6.3@177eef5bd07b6145373b9689beab0ffb44b9dd8f",
+  "observed_at": "2026-11-16T08:36:44Z",
+  "revision": "177eef5bd07b6145373b9689beab0ffb44b9dd8f",
+  "summary": "The v0.6.3 catalog merge independently reached the same integrity guard before publication and returned HTTP 404.",
+  "evidence": [
+    "https://github.com/higress-group/HiRoute/issues/495",
+    "https://github.com/higress-group/HiRoute/actions/runs/43832636598/attempts/1"
+  ]
+}

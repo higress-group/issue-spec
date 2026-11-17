@@ -61,6 +61,9 @@ type Issue struct {
 	Title       string    `json:"title"`
 	Body        string    `json:"body"`
 	State       string    `json:"state"`
+	User        *User     `json:"user,omitempty"`
+	Labels      []Label   `json:"labels,omitempty"`
+	Locked      bool      `json:"locked,omitempty"`
 	PullRequest *struct{} `json:"pull_request,omitempty"`
 }
 
@@ -94,6 +97,11 @@ type LabelResult struct {
 	Name    string `json:"name"`
 	Created bool   `json:"created"`
 	Skipped bool   `json:"skipped"`
+}
+
+type Label struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 type PullRequest struct {

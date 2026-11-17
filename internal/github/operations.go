@@ -101,6 +101,14 @@ type IssueBackend interface {
 	CreateLabel(context.Context, string, string, string, string) (LabelResult, error)
 }
 
+// IssueLabelBackend exposes repository label definitions and additive issue labeling.
+// Repository label definitions and issue label assignments have separate permissions.
+type IssueLabelBackend interface {
+	GetRepositoryLabel(context.Context, string, string) (Label, error)
+	UpdateRepositoryLabelDescription(context.Context, string, string, string) (Label, error)
+	AddIssueLabels(context.Context, string, int, []string) ([]Label, error)
+}
+
 // GitHubCodeBackend is the legacy GitHub implementation of code review
 // operations. External-code self-hosted profiles use codereview.Provider
 // instead; core must not infer code-host capabilities from IssueBackend.
