@@ -29,13 +29,13 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(result.SkillFiles), 4; got != want {
+	if got, want := len(result.SkillFiles), 5; got != want {
 		t.Fatalf("skill file count = %d, want %d", got, want)
 	}
 	if got, want := len(result.SkillResourceFiles), len(templates.HumanReviewProjectionResources())+7; got != want {
 		t.Fatalf("skill resource file count = %d, want %d", got, want)
 	}
-	if got, want := len(result.SkillLinks), 4; got != want {
+	if got, want := len(result.SkillLinks), 5; got != want {
 		t.Fatalf("skill links = %v, want %v", got, want)
 	}
 	if got, want := len(result.CommandFiles), 2; got != want {
@@ -412,11 +412,13 @@ func TestCheckedInWorkflowArtifactsExactlyMatchGenerator(t *testing.T) {
 	for _, relative := range append(
 		[]string{
 			filepath.Join(".agents", "skills", "issue-spec-apply", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-feedback", "SKILL.md"),
 			filepath.Join(".agents", "skills", "issue-spec-github", "SKILL.md"),
 			filepath.Join(".agents", "skills", "issue-spec-propose", "SKILL.md"),
 			filepath.Join(".agents", "skills", "issue-spec-workflow", "SKILL.md"),
 			filepath.Join(".agents", "skills", "issue-spec-workflow", "release.json"),
 			filepath.Join(".claude", "skills", "issue-spec-apply", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-feedback", "SKILL.md"),
 			filepath.Join(".claude", "skills", "issue-spec-github", "SKILL.md"),
 			filepath.Join(".claude", "skills", "issue-spec-propose", "SKILL.md"),
 			filepath.Join(".claude", "skills", "issue-spec-workflow", "SKILL.md"),

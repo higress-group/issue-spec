@@ -584,7 +584,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	journalBefore := readTestFile(t, filepath.Join(root, ".issue-spec", "init-state.json"))
 	remoteCallsBefore := [3]int{ensureCalls, bindingCalls, labelCalls}
 	noProviderArgs := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
-		"--skip-source-binding", "--skip-labels", "--tools", "codex", "--delivery", "skills", "--json"}
+		"--skip-source-binding", "--skip-labels", "--json"}
 	{
 		var out, errOut bytes.Buffer
 		app := newApp(strings.NewReader(""), &out, &errOut)
@@ -615,6 +615,10 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		if code := app.runInit(t.Context(), noProviderArgs); code != 0 {
 			t.Fatalf("provider-neutral rerun exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
 		}
+	}
+	feedbackSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-feedback", "SKILL.md"))
+	if !strings.Contains(feedbackSkill, "../issue-spec-workflow/references/workflow-feedback.md") {
+		t.Fatalf("default self-hosted init did not link the shared feedback guide:\n%s", feedbackSkill)
 	}
 	preservedConfig := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
 	for _, want := range []string{`"key": "code.example"`, `"external_repository": "acme/widgets"`, `"change.create"`, `"change.comment"`} {

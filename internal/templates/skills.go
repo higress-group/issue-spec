@@ -46,7 +46,7 @@ func IssueSpecSkills(repo string) []RenderedSkill {
 
 func IssueSpecSkillsWithOptions(repo string, options WorkflowAuthoringOptions) []RenderedSkill {
 	workflows := issueSpecWorkflows(repo, options)
-	out := make([]RenderedSkill, 0, len(workflows)+1)
+	out := make([]RenderedSkill, 0, len(workflows)+2)
 	for _, tmpl := range workflows {
 		body := tmpl.Body
 		reviewPath := "../issue-spec-workflow/references/implementation-review.md"
@@ -73,7 +73,7 @@ func IssueSpecSkillsWithOptions(repo string, options WorkflowAuthoringOptions) [
 		}
 		out = append(out, skill)
 	}
-	out = append(out, githubCLISkill())
+	out = append(out, feedbackSkill(), githubCLISkill())
 	return out
 }
 
@@ -137,7 +137,7 @@ Use this workflow for a bounded simple Issue or optional Proposal, Design, Imple
 3. Default to ` + "`--issue`" + ` for a bounded change with one code writer. A single child or subagent is an execution choice, not a reason to create TASK or PROCESS. Use ` + "`--proposal`" + ` with optional ` + "`--design`" + ` and ` + "`--implement`" + ` only when product, design, or concrete coordination risk requires them. File count does not select the path.
 4. Read only selected issue bodies and typed planning artifacts. Historical REVIEW, VERIFY, evidence, receipt, finalization, Archive, and merge-authority data are explicit read-only audit history.
 
-When authorized work exposes evidence-backed CLI or workflow friction, use [Workflow feedback](references/workflow-feedback.md). Project guidance may refine routing and write authorization.
+When authorized work exposes evidence-backed CLI, workflow, or project skill friction, use [Workflow feedback](references/workflow-feedback.md). Project guidance may refine routing and write authorization.
 
 ## Optional Planning and Implementation
 
